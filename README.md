@@ -45,6 +45,28 @@ EasyExcel::fill_template("template.xlsx", "report.xlsx", &data)?;
 # }
 ```
 
+Java-style collection placeholders are supported as `{.field}` or
+`{prefix.field}`:
+
+```rust,no_run
+use easyexcel::{EasyExcel, FillConfig, FillWrapper, TemplateData};
+
+# fn run() -> easyexcel::Result<()> {
+let users = FillWrapper::named("users", [
+    TemplateData::new().with("name", "Alice"),
+    TemplateData::new().with("name", "Bob"),
+]);
+
+EasyExcel::fill_template_list(
+    "template.xlsx",
+    "report.xlsx",
+    &users,
+    FillConfig::new().force_new_row(true),
+)?;
+# Ok(())
+# }
+```
+
 ## Quality gates
 
 ```bash

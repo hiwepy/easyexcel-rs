@@ -316,3 +316,257 @@ fn injected_archive_io_failures_cover_all_propagation_boundaries() -> Result<()>
     assert!(panicking_writer.is_none());
     Ok(())
 }
+
+#[test]
+fn fill_config_and_wrapper_match_java_defaults_and_builders() {
+    let rows = vec![TemplateData::new().with("name", "Alice")];
+    let unnamed = FillWrapper::new(rows.clone());
+    assert_eq!(unnamed.name(), None);
+    assert_eq!(unnamed.rows(), rows);
+
+    let named = FillWrapper::named("users", rows.clone());
+    assert_eq!(named.name(), Some("users"));
+    assert_eq!(named.rows(), rows);
+    assert_eq!(FillWrapper::default().rows(), &[]);
+
+    let defaults = FillConfig::default();
+    assert_eq!(defaults, FillConfig::new());
+    assert_eq!(defaults.get_direction(), FillDirection::Vertical);
+    assert!(!defaults.get_force_new_row());
+    assert!(defaults.get_auto_style());
+
+    let configured = FillConfig::new()
+        .direction(FillDirection::Horizontal)
+        .force_new_row(true)
+        .auto_style(false);
+    assert_eq!(configured.get_direction(), FillDirection::Horizontal);
+    assert!(configured.get_force_new_row());
+    assert!(!configured.get_auto_style());
+}
+
+#[test]
+fn expands_vertical_named_rows_and_shifts_footer() -> Result<()> {
+    let directory = tempdir()?;
+    let template = directory.path().join("vertical-template.xlsx");
+    let output = directory.path().join("vertical-output.xlsx");
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.write_string(0, 0, "Name").map_err(test_error)?;
+    worksheet
+        .write_string(1, 0, "{users.name}")
+        .map_err(test_error)?;
+    worksheet
+        .write_string(1, 1, "Age {users.age}")
+        .map_err(test_error)?;
+    worksheet.write_string(2, 0, "Footer").map_err(test_error)?;
+    workbook.save(&template).map_err(test_error)?;
+
+    let wrapper = FillWrapper::named(
+        "users",
+        [
+            TemplateData::new().with("name", "Alice").with("age", 20),
+            TemplateData::new().with("name", "Bob").with("age", 30),
+            TemplateData::new().with("name", "Carol").with("age", 40),
+        ],
+    );
+    fill_xlsx_template_list(
+        &template,
+        &output,
+        &wrapper,
+        FillConfig::new().force_new_row(true),
+    )?;
+
+    let mut workbook: Xlsx<_> = open_workbook(output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    assert_eq!(
+        range.get_value((1, 0)),
+        Some(&Data::String("Alice".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((2, 0)),
+        Some(&Data::String("Bob".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((3, 1)),
+        Some(&Data::String("Age 40".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((4, 0)),
+        Some(&Data::String("Footer".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn expands_horizontal_unnamed_cells_and_can_drop_style() -> Result<()> {
+    let directory = tempdir()?;
+    let template = directory.path().join("horizontal-template.xlsx");
+    let output = directory.path().join("horizontal-output.xlsx");
+    let mut workbook = Workbook::new();
+    workbook
+        .add_worksheet()
+        .write_string(0, 0, "{.name}")
+        .map_err(test_error)?;
+    workbook.save(&template).map_err(test_error)?;
+
+    let wrapper = FillWrapper::new([
+        TemplateData::new().with("name", "A"),
+        TemplateData::new().with("name", "B"),
+        TemplateData::new().with("name", "C"),
+    ]);
+    fill_xlsx_template_list(
+        &template,
+        &output,
+        &wrapper,
+        FillConfig::new()
+            .direction(FillDirection::Horizontal)
+            .auto_style(false),
+    )?;
+
+    let mut workbook: Xlsx<_> = open_workbook(output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    assert_eq!(range.get_value((0, 0)), Some(&Data::String("A".to_owned())));
+    assert_eq!(range.get_value((0, 1)), Some(&Data::String("B".to_owned())));
+    assert_eq!(range.get_value((0, 2)), Some(&Data::String("C".to_owned())));
+    Ok(())
+}
+
+#[test]
+fn collection_parser_defensive_paths_are_deterministic() {
+    let empty = FillWrapper::default();
+    let mut no_entries = Vec::new();
+    replace_collection_placeholders(&mut no_entries, &empty, FillConfig::new());
+
+    let wrapper = FillWrapper::new([TemplateData::new().with("name", "X")]);
+    let mut entries = vec![
+        TemplateEntry {
+            name: "xl/sharedStrings.xml".to_owned(),
+            is_dir: false,
+            compression: CompressionMethod::Stored,
+            unix_mode: None,
+            bytes: vec![0xff],
+        },
+        TemplateEntry {
+            name: "xl/worksheets/sheet1.xml".to_owned(),
+            is_dir: false,
+            compression: CompressionMethod::Stored,
+            unix_mode: None,
+            bytes: vec![0xff],
+        },
+        TemplateEntry {
+            name: "other.xml".to_owned(),
+            is_dir: false,
+            compression: CompressionMethod::Stored,
+            unix_mode: None,
+            bytes: b"<row/>".to_vec(),
+        },
+        TemplateEntry {
+            name: "xl/worksheets/sheet2.xml".to_owned(),
+            is_dir: false,
+            compression: CompressionMethod::Stored,
+            unix_mode: None,
+            bytes: b"<worksheet/>".to_vec(),
+        },
+    ];
+    replace_collection_placeholders(&mut entries, &wrapper, FillConfig::new());
+
+    assert_eq!(shared_string_values("<si"), Vec::<String>::new());
+    assert_eq!(shared_string_values("<si>missing"), Vec::<String>::new());
+    assert_eq!(text_node_values("<t"), "");
+    assert_eq!(text_node_values("<t>missing"), "");
+    assert!(expand_vertical_rows("<sheet/>", &wrapper, FillConfig::new(), &[]).is_none());
+    assert!(expand_horizontal_cells("<row>", &wrapper, &[]).is_none());
+    assert_eq!(
+        expand_vertical_rows(
+            "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>{.name}</t></is></c></row>",
+            &wrapper,
+            FillConfig::new(),
+            &[]
+        ),
+        Some("<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>X</t></is></c></row>".to_owned())
+    );
+    assert!(find_collection_row("<row>", &wrapper, &[]).is_none());
+    assert!(find_collection_cell("<c>", &wrapper, &[]).is_none());
+    assert_eq!(
+        fill_row_cells("before<c", wrapper.rows().first().unwrap(), None, &[], true),
+        "before<c"
+    );
+
+    let data = wrapper.rows().first().unwrap();
+    assert_eq!(fill_cell("<c", data, None, &[], true), "<c");
+    assert_eq!(fill_cell("<c></c>", data, None, &[], true), "<c></c>");
+    assert_eq!(
+        fill_cell(
+            "<c t=\"inlineStr\"><is><t>plain</t></is></c>",
+            data,
+            None,
+            &[],
+            true
+        ),
+        "<c t=\"inlineStr\"><is><t>plain</t></is></c>"
+    );
+    assert_eq!(
+        fill_cell(
+            "<c r=\"A1\" s=\"2\" t=\"inlineStr\"><is><t>{.name}</t></is></c>",
+            data,
+            None,
+            &[],
+            false
+        ),
+        "<c r=\"A1\" t=\"inlineStr\"><is><t>X</t></is></c>"
+    );
+    assert_eq!(
+        fill_cell(
+            "<c r=\"A1\" s=\"2\" t=\"inlineStr\"><is><t>{.name}</t></is></c>",
+            data,
+            None,
+            &[],
+            true
+        ),
+        "<c r=\"A1\" s=\"2\" t=\"inlineStr\"><is><t>X</t></is></c>"
+    );
+    assert_eq!(cell_value("<c t=\"s\"></c>", &[]), None);
+    assert_eq!(cell_value("<c t=\"s\"><v>x</v></c>", &[]), None);
+    assert_eq!(cell_value("<c t=\"s\"><v>9</v></c>", &[]), None);
+    assert_eq!(cell_value("<c></c>", &[]), None);
+    assert!(!contains_collection_marker("{other.name}", &wrapper));
+}
+
+#[test]
+fn collection_coordinate_helpers_and_missing_input_are_deterministic() -> Result<()> {
+    assert_eq!(element_value("", "v"), None);
+    assert_eq!(element_value("<v>1", "v"), None);
+    assert_eq!(attribute_value("", "r"), None);
+    assert_eq!(attribute_value(" r=\"broken", "r"), None);
+    assert_eq!(replace_attribute("<c>", "r", "A1"), "<c>");
+    assert_eq!(remove_attribute("<c>", "s"), "<c>");
+    assert_eq!(shift_rows("tail", 2), "tail");
+    assert_eq!(shift_rows("tail", 0), "tail");
+    assert_eq!(shift_rows("<row r=\"1\">broken", 2), "<row r=\"1\">broken");
+    assert_eq!(shift_row("<c r=\"A1\"/>", 1, 1), "<c r=\"B2\"/>");
+    assert_eq!(
+        shift_row("<row r=\"x\"></row>", 1, 0),
+        "<row r=\"x\"></row>"
+    );
+    assert!(cell_references(" r=\"broken").is_empty());
+    assert!(cell_references(" r=\"abc\"").is_empty());
+    assert_eq!(shift_cell_reference("ABC", 1, 0), "ABC");
+    assert_eq!(shift_cell_reference("A-invalid", 1, 0), "A-invalid");
+    assert_eq!(shift_cell_reference("1", 1, 0), "1");
+    assert_eq!(shift_cell_reference("A1x", 1, 0), "A1x");
+    assert_eq!(column_name(0), "");
+    assert_eq!(column_name(27), "AA");
+
+    let directory = tempdir()?;
+    let wrapper = FillWrapper::new([TemplateData::new().with("name", "X")]);
+    assert!(
+        fill_xlsx_template_list(
+            &directory.path().join("missing.xlsx"),
+            &directory.path().join("out.xlsx"),
+            &wrapper,
+            FillConfig::new()
+        )
+        .is_err()
+    );
+    Ok(())
+}

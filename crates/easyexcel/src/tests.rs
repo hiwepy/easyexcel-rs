@@ -197,6 +197,27 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
             .do_read_sync()?,
         vec![Value("Hello Rust".to_owned())]
     );
+
+    let list_template = directory.path().join("list-template.xlsx");
+    let list_filled = directory.path().join("list-filled.xlsx");
+    EasyExcel::write::<Value>(&list_template)
+        .need_head(false)
+        .do_write(vec![Value("{.name}".to_owned())])?;
+    EasyExcel::fill_template_list(
+        &list_template,
+        &list_filled,
+        &FillWrapper::new([
+            TemplateData::new().with("name", "one"),
+            TemplateData::new().with("name", "two"),
+        ]),
+        FillConfig::new(),
+    )?;
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&list_filled)
+            .head_row_number(0)
+            .do_read_sync()?,
+        vec![Value("one".to_owned()), Value("two".to_owned())]
+    );
     Ok(())
 }
 
