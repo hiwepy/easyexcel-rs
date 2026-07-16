@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
 use easyexcel_reader::{ReadOptions, SheetSelector, read_xlsx};
-pub use easyexcel_writer::{ExcelWriter, WriteSheet};
+pub use easyexcel_writer::{ExcelWriter, MergeRange, WriteSheet};
 use easyexcel_writer::{WriteOptions, write_xlsx_with_handlers};
 
 /// Static factory matching Java `EasyExcel`'s entry point.
@@ -261,6 +261,13 @@ where
     #[must_use]
     pub const fn order_by_include_column(mut self, enabled: bool) -> Self {
         self.options.order_by_include_column = enabled;
+        self
+    }
+
+    /// Adds an absolute merged-cell range using zero-based inclusive coordinates.
+    #[must_use]
+    pub fn merge_cells(mut self, range: MergeRange) -> Self {
+        self.options.merge_ranges.push(range);
         self
     }
 

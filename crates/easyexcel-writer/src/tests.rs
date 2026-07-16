@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use calamine::{Data, Reader, Xlsx, open_workbook};
+use calamine::{Data, Dimensions, Reader, Xlsx, open_workbook};
 use chrono::NaiveDate;
 use tempfile::tempdir;
 
@@ -266,6 +266,7 @@ fn default_options_and_helpers_are_deterministic() {
             exclude_column_indexes: Vec::new(),
             exclude_column_field_names: Vec::new(),
             order_by_include_column: false,
+            merge_ranges: Vec::new(),
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");
@@ -442,7 +443,9 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
         order: 5,
         events: Rc::clone(&events),
     })];
-    let first = WriteSheet::<EveryCell>::new("Users").freeze_head(true);
+    let first = WriteSheet::<EveryCell>::new("Users")
+        .freeze_head(true)
+        .merge_cells(MergeRange::new(0, 0, 0, 1));
     let second = WriteSheet::<EveryCell>::new("Archive")
         .need_head(false)
         .constant_memory(true);
@@ -497,6 +500,12 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
 
     let mut workbook: Xlsx<_> = open_workbook(path).map_err(test_error)?;
     assert_eq!(workbook.sheet_names(), vec!["Users", "Archive"]);
+    assert_eq!(
+        workbook
+            .merge_cells_by_sheet_name("Users")
+            .map_err(test_error)?,
+        vec![Dimensions::new((0, 0), (0, 1))]
+    );
     let users = workbook.worksheet_range("Users").map_err(test_error)?;
     assert_eq!(
         users.get_value((1, 1)),
@@ -742,6 +751,17 @@ fn conversion_configuration_column_and_save_failures_propagate() -> Result<()> {
             &directory.path().join("bad-sheet.xlsx"),
             &WriteOptions {
                 sheet_name: "bad/name".to_owned(),
+                ..WriteOptions::default()
+            },
+            Vec::new()
+        )
+        .is_err()
+    );
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("bad-merge.xlsx"),
+            &WriteOptions {
+                merge_ranges: vec![MergeRange::new(0, 0, 0, 0)],
                 ..WriteOptions::default()
             },
             Vec::new()

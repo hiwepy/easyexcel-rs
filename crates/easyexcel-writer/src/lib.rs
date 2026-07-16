@@ -10,6 +10,32 @@ use easyexcel_core::{
 };
 use rust_xlsxwriter::{Format, Workbook, Worksheet};
 
+/// One absolute merged-cell range using zero-based inclusive coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MergeRange {
+    /// First row.
+    pub first_row: u32,
+    /// Last row.
+    pub last_row: u32,
+    /// First column.
+    pub first_column: u16,
+    /// Last column.
+    pub last_column: u16,
+}
+
+impl MergeRange {
+    /// Creates an absolute merge range.
+    #[must_use]
+    pub const fn new(first_row: u32, last_row: u32, first_column: u16, last_column: u16) -> Self {
+        Self {
+            first_row,
+            last_row,
+            first_column,
+            last_column,
+        }
+    }
+}
+
 /// XLSX write configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
@@ -34,6 +60,8 @@ pub struct WriteOptions {
     pub exclude_column_field_names: Vec<String>,
     /// Whether included columns follow the order of the include list.
     pub order_by_include_column: bool,
+    /// Absolute ranges merged before row data is written.
+    pub merge_ranges: Vec<MergeRange>,
 }
 
 impl Default for WriteOptions {
@@ -49,6 +77,7 @@ impl Default for WriteOptions {
             exclude_column_indexes: Vec::new(),
             exclude_column_field_names: Vec::new(),
             order_by_include_column: false,
+            merge_ranges: Vec::new(),
         }
     }
 }
@@ -97,6 +126,13 @@ impl<T> WriteSheet<T> {
     #[must_use]
     pub const fn freeze_head(mut self, enabled: bool) -> Self {
         self.options.freeze_head = enabled;
+        self
+    }
+
+    /// Adds an absolute merged-cell range.
+    #[must_use]
+    pub fn merge_cells(mut self, range: MergeRange) -> Self {
+        self.options.merge_ranges.push(range);
         self
     }
 }
@@ -260,6 +296,18 @@ where
     worksheet
         .set_name(&options.sheet_name)
         .map_err(format_error)?;
+    for range in &options.merge_ranges {
+        worksheet
+            .merge_range(
+                range.first_row,
+                range.first_column,
+                range.last_row,
+                range.last_column,
+                "",
+                &Format::new(),
+            )
+            .map_err(format_error)?;
+    }
     let freeze_panes = options
         .freeze_panes
         .or_else(|| (options.freeze_head && options.need_head).then_some((1, 0)));

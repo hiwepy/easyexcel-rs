@@ -40,7 +40,8 @@ This document is the release gate, not a marketing checklist. A row is marked
 | include/exclude columns | builder filters | implemented |
 | default styles and annotations | style model | planned |
 | formulas/images/comments/hyperlinks | `CellValue` extensions | planned |
-| merges and dynamic heads | writer metadata | planned |
+| `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |
+| loop merges and dynamic heads | writer metadata | planned |
 | template `fill` | template engine | planned |
 | CSV read/write | CSV engine | planned |
 | XLS read | calamine XLS engine | planned |
