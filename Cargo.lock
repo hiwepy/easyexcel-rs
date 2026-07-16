@@ -169,6 +169,7 @@ dependencies = [
  "easyexcel-core",
  "rust_xlsxwriter",
  "tempfile",
+ "zip 7.2.0",
 ]
 
 [[package]]

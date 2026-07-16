@@ -1,0 +1,145 @@
+use tempfile::tempdir;
+
+use super::*;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Value(String);
+
+impl ExcelRow for Value {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("value", "Value", Some(0), 0, None)];
+        COLUMNS
+    }
+
+    fn from_row(row: &RowData) -> Result<Self> {
+        Ok(Self(
+            row.cell(&Self::schema()[0])
+                .map_or_else(String::new, CellValue::as_text),
+        ))
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![CellValue::String(self.0.clone())])
+    }
+}
+
+#[derive(Default)]
+struct Listener(Vec<Value>);
+
+impl ReadListener<Value> for Listener {
+    fn invoke(&mut self, data: Value, _context: &AnalysisContext) -> Result<()> {
+        self.0.push(data);
+        Ok(())
+    }
+}
+
+#[test]
+fn sheet_selector_inputs_map_indices_borrowed_and_owned_names() {
+    assert_eq!(0_usize.into_sheet_selector(), SheetSelector::Index(0));
+    assert_eq!(
+        "Users".into_sheet_selector(),
+        SheetSelector::Name("Users".to_owned())
+    );
+    assert_eq!(
+        "Owned".to_owned().into_sheet_selector(),
+        SheetSelector::Name("Owned".to_owned())
+    );
+}
+
+#[test]
+fn factories_and_builder_options_match_java_style_chaining() {
+    let read = EasyExcel::read::<Value, _>("input.xlsx", Listener::default())
+        .sheet(2_usize)
+        .all_sheets()
+        .head_row_number(3)
+        .ignore_empty_row(false);
+    assert_eq!(read.path, PathBuf::from("input.xlsx"));
+    assert_eq!(read.options.sheet, SheetSelector::All);
+    assert_eq!(read.options.head_row_number, 3);
+    assert!(!read.options.ignore_empty_row);
+
+    let sync = EasyExcel::read_sync::<Value>("sync.xlsx")
+        .sheet("Values")
+        .head_row_number(2);
+    assert_eq!(sync.path, PathBuf::from("sync.xlsx"));
+    assert_eq!(sync.options.sheet, SheetSelector::Name("Values".to_owned()));
+    assert_eq!(sync.options.head_row_number, 2);
+
+    let write = EasyExcel::write::<Value>("output.xlsx")
+        .sheet("Values")
+        .need_head(false)
+        .freeze_head(true)
+        .freeze_panes(2, 1)
+        .constant_memory(true);
+    assert_eq!(write.path, PathBuf::from("output.xlsx"));
+    assert_eq!(write.options.sheet_name, "Values");
+    assert!(!write.options.need_head);
+    assert!(write.options.freeze_head);
+    assert_eq!(write.options.freeze_panes, Some((2, 1)));
+    assert!(write.options.constant_memory);
+}
+
+#[test]
+fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("values.xlsx");
+    let rows = vec![Value("one".to_owned()), Value("two".to_owned())];
+    EasyExcel::write::<Value>(&path)
+        .sheet("Values")
+        .freeze_head(true)
+        .do_write_iter(rows.clone())?;
+
+    let actual = EasyExcel::read_sync::<Value>(&path)
+        .sheet("Values".to_owned())
+        .do_read_sync()?;
+    assert_eq!(actual, rows);
+
+    EasyExcel::read::<Value, _>(&path, Listener::default())
+        .all_sheets()
+        .do_read()?;
+
+    let no_head = directory.path().join("no-head.xlsx");
+    EasyExcel::write::<Value>(&no_head)
+        .need_head(false)
+        .constant_memory(true)
+        .do_write(rows)?;
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&no_head)
+            .head_row_number(0)
+            .do_read_sync()?
+            .len(),
+        2
+    );
+    Ok(())
+}
+
+#[test]
+fn facade_propagates_read_sync_and_write_failures() {
+    let missing = PathBuf::from("target/does-not-exist/easyexcel.xlsx");
+    assert!(
+        EasyExcel::read::<Value, _>(&missing, Listener::default())
+            .do_read()
+            .is_err()
+    );
+    assert!(
+        EasyExcel::read_sync::<Value>(&missing)
+            .do_read_sync()
+            .is_err()
+    );
+    assert!(
+        EasyExcel::write::<Value>("target/does-not-exist/output.xlsx")
+            .do_write(std::iter::empty())
+            .is_err()
+    );
+}
+
+#[test]
+fn collecting_listener_appends_rows() -> Result<()> {
+    let mut listener = CollectListener(Vec::new());
+    listener.invoke(
+        Value("value".to_owned()),
+        &AnalysisContext::new("Sheet1", 0, 1),
+    )?;
+    assert_eq!(listener.0, vec![Value("value".to_owned())]);
+    Ok(())
+}

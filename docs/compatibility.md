@@ -32,6 +32,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `EasyExcel.write(file, head)` | `EasyExcel::write::<T>(file)` | implemented |
 | `sheet(Integer/String)` | `sheet(index/name)` | partial: name implemented |
 | `needHead` | `need_head` | implemented |
+| freeze panes | `freeze_head` / `freeze_panes` | implemented |
 | `doWrite(Collection)` | `do_write(IntoIterator)` | implemented |
 | streaming write | `do_write_iter(IntoIterator)` | implemented |
 | `ExcelWriter` multi-write lifecycle | `ExcelWriter` | planned |

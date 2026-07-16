@@ -55,7 +55,7 @@ fn writes_and_reads_typed_rows_with_java_style_builders() -> Result<()> {
 fn page_listener_receives_batches_and_contexts() -> Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("users.xlsx");
-    let users = (0..3)
+    let users = (0..4)
         .map(|age| User {
             name: format!("user-{age}"),
             age: Some(age),
@@ -75,7 +75,7 @@ fn page_listener_receives_batches_and_contexts() -> Result<()> {
     });
     EasyExcel::read::<User, _>(&path, listener).do_read()?;
 
-    assert_eq!(&*batches.borrow(), &[(2, 0), (1, 1)]);
+    assert_eq!(&*batches.borrow(), &[(2, 0), (2, 1)]);
     Ok(())
 }
 

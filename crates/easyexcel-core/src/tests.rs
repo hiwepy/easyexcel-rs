@@ -104,6 +104,21 @@ macro_rules! assert_integer_type {
         let parsed = <$ty>::from_excel_cell(Some(&CellValue::Int($value)), &context)?;
         assert_eq!(parsed.to_string(), $value.to_string());
         assert_eq!(parsed.to_excel_cell(&context)?, CellValue::Int($value));
+        assert_eq!(
+            <$ty>::from_excel_cell(Some(&CellValue::Float(7.0)), &context)?.to_string(),
+            $value.to_string()
+        );
+        assert_eq!(
+            <$ty>::from_excel_cell(Some(&CellValue::String($value.to_string())), &context)?
+                .to_string(),
+            $value.to_string()
+        );
+        assert!(<$ty>::from_excel_cell(Some(&CellValue::Float(1.5)), &context).is_err());
+        assert!(<$ty>::from_excel_cell(Some(&CellValue::Bool(true)), &context).is_err());
+        assert!(
+            <$ty>::from_excel_cell(Some(&CellValue::String("bad".to_owned())), &context).is_err()
+        );
+        assert!(<$ty>::from_excel_cell(None, &context).is_err());
     }};
 }
 
@@ -144,12 +159,24 @@ fn every_integer_type_is_supported_and_edge_paths_are_checked() -> Result<()> {
 #[test]
 fn floating_point_types_support_numeric_and_string_cells() -> Result<()> {
     let context = context(None);
-    let integer = f32::from_excel_cell(Some(&CellValue::Int(2)), &context)?;
-    assert!((integer - 2.0).abs() < f32::EPSILON);
-    let float = f32::from_excel_cell(Some(&CellValue::Float(2.5)), &context)?;
-    assert!((float - 2.5).abs() < f32::EPSILON);
-    let string = f64::from_excel_cell(Some(&CellValue::String("3.5".to_owned())), &context)?;
-    assert!((string - 3.5).abs() < f64::EPSILON);
+    for value in [
+        f32::from_excel_cell(Some(&CellValue::Int(2)), &context)?,
+        f32::from_excel_cell(Some(&CellValue::Float(2.0)), &context)?,
+        f32::from_excel_cell(Some(&CellValue::String("2".to_owned())), &context)?,
+    ] {
+        assert!((value - 2.0).abs() < f32::EPSILON);
+    }
+    assert!(f32::from_excel_cell(Some(&CellValue::Bool(true)), &context).is_err());
+    assert!(f32::from_excel_cell(Some(&CellValue::String("bad".to_owned())), &context).is_err());
+    assert!(f32::from_excel_cell(None, &context).is_err());
+
+    for value in [
+        f64::from_excel_cell(Some(&CellValue::Int(3)), &context)?,
+        f64::from_excel_cell(Some(&CellValue::Float(3.0)), &context)?,
+        f64::from_excel_cell(Some(&CellValue::String("3".to_owned())), &context)?,
+    ] {
+        assert!((value - 3.0).abs() < f64::EPSILON);
+    }
     assert!(f64::from_excel_cell(Some(&CellValue::Bool(true)), &context).is_err());
     assert!(f64::from_excel_cell(Some(&CellValue::String("bad".to_owned())), &context).is_err());
     assert!(f64::from_excel_cell(None, &context).is_err());

@@ -1,12 +1,23 @@
+use std::cell::Cell;
+
 use calamine::{Data, Reader, Xlsx, open_workbook};
 use chrono::NaiveDate;
 use tempfile::tempdir;
 
 use super::*;
 
+fn test_error(error: impl std::fmt::Display) -> ExcelError {
+    ExcelError::Format(error.to_string())
+}
+
 #[derive(Clone)]
 struct EveryCell {
     cells: Vec<CellValue>,
+    fail: bool,
+}
+
+thread_local! {
+    static USE_WIDE_SCHEMA: Cell<bool> = const { Cell::new(false) };
 }
 
 impl ExcelRow for EveryCell {
@@ -29,7 +40,9 @@ impl ExcelRow for EveryCell {
             ExcelColumn::new("large", "Large", Some(8), 0, None),
             ExcelColumn::new("missing", "Missing", Some(9), 0, None),
         ];
-        COLUMNS
+        const WIDE_COLUMNS: &[ExcelColumn] =
+            &[ExcelColumn::new("wide", "Wide", Some(65_536), 0, None)];
+        USE_WIDE_SCHEMA.with(|wide| if wide.get() { WIDE_COLUMNS } else { COLUMNS })
     }
 
     fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
@@ -37,40 +50,10 @@ impl ExcelRow for EveryCell {
     }
 
     fn to_row(&self) -> Result<Vec<CellValue>> {
+        if self.fail {
+            return Err(ExcelError::Format("row conversion failed".to_owned()));
+        }
         Ok(self.cells.clone())
-    }
-}
-
-struct BrokenRow;
-
-impl ExcelRow for BrokenRow {
-    fn schema() -> &'static [ExcelColumn] {
-        &[]
-    }
-
-    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
-        Ok(Self)
-    }
-
-    fn to_row(&self) -> Result<Vec<CellValue>> {
-        Err(ExcelError::Format("row conversion failed".to_owned()))
-    }
-}
-
-struct WideColumn;
-
-impl ExcelRow for WideColumn {
-    fn schema() -> &'static [ExcelColumn] {
-        const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("wide", "Wide", Some(65_536), 0, None)];
-        COLUMNS
-    }
-
-    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
-        Ok(Self)
-    }
-
-    fn to_row(&self) -> Result<Vec<CellValue>> {
-        Ok(vec![CellValue::String("wide".to_owned())])
     }
 }
 
@@ -88,6 +71,7 @@ fn every_cell() -> EveryCell {
             CellValue::DateTime(date.and_hms_opt(12, 34, 56).expect("valid time")),
             CellValue::Int(i64::MAX),
         ],
+        fail: false,
     }
 }
 
@@ -100,6 +84,7 @@ fn default_options_and_helpers_are_deterministic() {
             constant_memory: false,
             need_head: true,
             freeze_head: false,
+            freeze_panes: None,
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");
@@ -150,12 +135,13 @@ fn writer_emits_headers_and_every_supported_cell_type() -> Result<()> {
             constant_memory: false,
             need_head: true,
             freeze_head: true,
+            freeze_panes: None,
         },
-        [every_cell()],
+        vec![every_cell()],
     )?;
 
-    let mut workbook: Xlsx<_> = open_workbook(&path).map_err(format_error)?;
-    let range = workbook.worksheet_range("Values").map_err(format_error)?;
+    let mut workbook: Xlsx<_> = open_workbook(&path).map_err(test_error)?;
+    let range = workbook.worksheet_range("Values").map_err(test_error)?;
     assert_eq!(
         range.get_value((0, 1)),
         Some(&Data::String("String".to_owned()))
@@ -192,11 +178,12 @@ fn constant_memory_writer_can_omit_headers_and_freeze_request() -> Result<()> {
             constant_memory: true,
             need_head: false,
             freeze_head: true,
+            freeze_panes: None,
         },
-        [every_cell(), every_cell()],
+        vec![every_cell(), every_cell()],
     )?;
-    let mut workbook: Xlsx<_> = open_workbook(path).map_err(format_error)?;
-    let range = workbook.worksheet_range("Stream").map_err(format_error)?;
+    let mut workbook: Xlsx<_> = open_workbook(path).map_err(test_error)?;
+    let range = workbook.worksheet_range("Stream").map_err(test_error)?;
     assert_eq!(
         range.get_value((0, 1)),
         Some(&Data::String("text".to_owned()))
@@ -209,35 +196,105 @@ fn constant_memory_writer_can_omit_headers_and_freeze_request() -> Result<()> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn conversion_configuration_column_and_save_failures_propagate() -> Result<()> {
     let directory = tempdir()?;
+    let mut broken = every_cell();
+    broken.fail = true;
     assert!(
-        write_xlsx::<BrokenRow, _>(
+        write_xlsx::<EveryCell, _>(
             &directory.path().join("broken.xlsx"),
             &WriteOptions::default(),
-            [BrokenRow]
+            vec![broken]
         )
         .is_err()
     );
+
+    let wide_column = Box::leak(Box::new(ExcelColumn::new(
+        "wide",
+        "Wide",
+        Some(65_536),
+        0,
+        None,
+    )));
+    let columns = vec![(65_536, 0, &*wide_column)];
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    assert!(write_headers(worksheet, &columns).is_err());
     assert!(
-        write_xlsx::<WideColumn, _>(
+        write_data_row(
+            worksheet,
+            0,
+            &columns,
+            &[CellValue::String("wide".to_owned())]
+        )
+        .is_err()
+    );
+
+    USE_WIDE_SCHEMA.with(|wide| wide.set(true));
+    assert!(
+        write_xlsx::<EveryCell, _>(
             &directory.path().join("wide-head.xlsx"),
             &WriteOptions::default(),
-            std::iter::empty()
+            Vec::new()
         )
         .is_err()
     );
     assert!(
-        write_xlsx::<WideColumn, _>(
+        write_xlsx::<EveryCell, _>(
             &directory.path().join("wide-data.xlsx"),
             &WriteOptions {
                 need_head: false,
                 ..WriteOptions::default()
             },
-            [WideColumn]
+            vec![every_cell()]
         )
         .is_err()
     );
+    USE_WIDE_SCHEMA.with(|wide| wide.set(false));
+
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("bad-freeze.xlsx"),
+            &WriteOptions {
+                freeze_panes: Some((1_048_576, 0)),
+                ..WriteOptions::default()
+            },
+            Vec::new()
+        )
+        .is_err()
+    );
+
+    let long_name = Box::leak("x".repeat(32_768).into_boxed_str());
+    let long_header = Box::leak(Box::new(ExcelColumn::new(
+        "long",
+        long_name,
+        Some(0),
+        0,
+        None,
+    )));
+    assert!(write_headers(worksheet, &[(0, 0, &*long_header)]).is_err());
+
+    let date = NaiveDate::from_ymd_opt(2026, 7, 17).expect("valid date");
+    let invalid_row = 1_048_576;
+    for value in [
+        CellValue::String("text".to_owned()),
+        CellValue::Bool(true),
+        CellValue::Int(1),
+        CellValue::Int(i64::MAX),
+        CellValue::Float(1.0),
+        CellValue::Date(date),
+        CellValue::DateTime(date.and_hms_opt(1, 2, 3).expect("valid time")),
+    ] {
+        let metadata = Box::leak(Box::new(ExcelColumn::new(
+            "value",
+            "Value",
+            Some(0),
+            0,
+            None,
+        )));
+        assert!(write_data_row(worksheet, invalid_row, &[(0, 0, &*metadata)], &[value]).is_err());
+    }
     assert!(
         write_xlsx::<EveryCell, _>(
             &directory.path().join("bad-sheet.xlsx"),
@@ -245,17 +302,12 @@ fn conversion_configuration_column_and_save_failures_propagate() -> Result<()> {
                 sheet_name: "bad/name".to_owned(),
                 ..WriteOptions::default()
             },
-            std::iter::empty()
+            Vec::new()
         )
         .is_err()
     );
     assert!(
-        write_xlsx::<EveryCell, _>(
-            directory.path(),
-            &WriteOptions::default(),
-            std::iter::empty()
-        )
-        .is_err()
+        write_xlsx::<EveryCell, _>(directory.path(), &WriteOptions::default(), Vec::new()).is_err()
     );
     Ok(())
 }

@@ -16,6 +16,8 @@ pub struct WriteOptions {
     pub need_head: bool,
     /// Whether header rows are frozen.
     pub freeze_head: bool,
+    /// Explicit freeze pane position as `(row, column)`.
+    pub freeze_panes: Option<(u32, u16)>,
 }
 
 impl Default for WriteOptions {
@@ -25,6 +27,7 @@ impl Default for WriteOptions {
             constant_memory: false,
             need_head: true,
             freeze_head: false,
+            freeze_panes: None,
         }
     }
 }
@@ -48,8 +51,13 @@ where
     worksheet
         .set_name(&options.sheet_name)
         .map_err(format_error)?;
-    if options.freeze_head && options.need_head {
-        worksheet.set_freeze_panes(1, 0).map_err(format_error)?;
+    let freeze_panes = options
+        .freeze_panes
+        .or_else(|| (options.freeze_head && options.need_head).then_some((1, 0)));
+    if let Some((row, column)) = freeze_panes {
+        worksheet
+            .set_freeze_panes(row, column)
+            .map_err(format_error)?;
     }
 
     let columns = ordered_columns(T::schema());

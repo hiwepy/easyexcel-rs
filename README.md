@@ -39,5 +39,6 @@ cargo test --workspace --all-features
 ```
 
 The coverage script fails unless workspace line, region, and function coverage
-are all 100%.
-
+are all 100%. It excludes only the stable-Rust `proc_macro::TokenStream` bridge
+file; the complete `syn`/`proc_macro2` derive implementation remains inside the
+100% gate and macro behavior is also exercised by end-to-end derive tests.

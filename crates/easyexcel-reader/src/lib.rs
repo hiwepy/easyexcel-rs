@@ -52,14 +52,59 @@ impl Default for ReadOptions {
 pub fn read_xlsx<T, L>(path: &Path, options: &ReadOptions, listener: &mut L) -> Result<()>
 where
     T: ExcelRow,
-    L: ReadListener<T> + ?Sized,
+    L: ReadListener<T>,
 {
     let mut workbook: Xlsx<_> = open_workbook(path).map_err(format_error)?;
     let names = selected_sheet_names(&workbook, &options.sheet)?;
     for (sheet_no, sheet_name) in names {
-        read_sheet::<T, L, _>(&mut workbook, sheet_no, &sheet_name, options, listener)?;
+        let mut consumer = TypedRowConsumer::<T> { listener };
+        read_sheet(&mut workbook, sheet_no, &sheet_name, options, &mut consumer)?;
     }
     Ok(())
+}
+
+trait RowConsumer {
+    fn process(
+        &mut self,
+        sheet_no: usize,
+        sheet_name: &str,
+        row_index: u32,
+        cells: Vec<CellValue>,
+        options: &ReadOptions,
+        headers: &mut Arc<HashMap<String, usize>>,
+    ) -> Result<()>;
+
+    fn after(&mut self, context: &AnalysisContext) -> Result<()>;
+}
+
+struct TypedRowConsumer<'a, T> {
+    listener: &'a mut dyn ReadListener<T>,
+}
+
+impl<T: ExcelRow> RowConsumer for TypedRowConsumer<'_, T> {
+    fn process(
+        &mut self,
+        sheet_no: usize,
+        sheet_name: &str,
+        row_index: u32,
+        cells: Vec<CellValue>,
+        options: &ReadOptions,
+        headers: &mut Arc<HashMap<String, usize>>,
+    ) -> Result<()> {
+        process_row::<T>(
+            sheet_no,
+            sheet_name,
+            row_index,
+            cells,
+            options,
+            headers,
+            self.listener,
+        )
+    }
+
+    fn after(&mut self, context: &AnalysisContext) -> Result<()> {
+        self.listener.do_after_all_analysed(context)
+    }
 }
 
 fn selected_sheet_names<RS: std::io::Read + std::io::Seek>(
@@ -93,16 +138,14 @@ fn select_sheet_names(
     }
 }
 
-fn read_sheet<T, L, RS>(
+fn read_sheet<RS>(
     workbook: &mut Xlsx<RS>,
     sheet_no: usize,
     sheet_name: &str,
     options: &ReadOptions,
-    listener: &mut L,
+    consumer: &mut dyn RowConsumer,
 ) -> Result<()>
 where
-    T: ExcelRow,
-    L: ReadListener<T> + ?Sized,
     RS: std::io::Read + std::io::Seek,
 {
     let mut reader = workbook
@@ -115,14 +158,13 @@ where
     while let Some(cell) = reader.next_cell().map_err(format_error)? {
         let (row, column) = cell.get_position();
         if current_index.is_some_and(|current| current != row) {
-            process_row::<T, L>(
+            consumer.process(
                 sheet_no,
                 sheet_name,
                 current_index.expect("row index exists"),
                 std::mem::take(&mut current_cells),
                 options,
                 &mut headers,
-                listener,
             )?;
         }
         current_index = Some(row);
@@ -134,46 +176,36 @@ where
     }
 
     if let Some(row) = current_index {
-        process_row::<T, L>(
+        consumer.process(
             sheet_no,
             sheet_name,
             row,
             current_cells,
             options,
             &mut headers,
-            listener,
         )?;
     }
 
     let final_row = current_index.unwrap_or_default();
-    listener.do_after_all_analysed(&AnalysisContext::new(sheet_name, sheet_no, final_row))
+    consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn process_row<T, L>(
+fn process_row<T>(
     sheet_no: usize,
     sheet_name: &str,
     row_index: u32,
     cells: Vec<CellValue>,
     options: &ReadOptions,
     headers: &mut Arc<HashMap<String, usize>>,
-    listener: &mut L,
+    listener: &mut dyn ReadListener<T>,
 ) -> Result<()>
 where
     T: ExcelRow,
-    L: ReadListener<T> + ?Sized,
 {
     let context = AnalysisContext::new(sheet_name, sheet_no, row_index);
     if options.head_row_number > 0 && row_index + 1 == options.head_row_number {
-        let map = cells
-            .iter()
-            .enumerate()
-            .filter_map(|(index, value)| {
-                let name = value.as_text();
-                (!name.is_empty()).then_some((name, index))
-            })
-            .collect::<HashMap<_, _>>();
-        *headers = Arc::new(map);
+        *headers = Arc::new(header_map(&cells));
         return listener.invoke_head(headers, &context);
     }
     if row_index < options.head_row_number
@@ -191,6 +223,17 @@ where
             ErrorAction::Stop => Err(error),
         },
     }
+}
+
+fn header_map(cells: &[CellValue]) -> HashMap<String, usize> {
+    cells
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| {
+            let name = value.as_text();
+            (!name.is_empty()).then_some((name, index))
+        })
+        .collect()
 }
 
 fn from_calamine(value: &DataRef<'_>) -> CellValue {

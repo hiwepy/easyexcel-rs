@@ -204,6 +204,13 @@ where
         self
     }
 
+    /// Freezes rows and columns above and to the left of the position.
+    #[must_use]
+    pub const fn freeze_panes(mut self, row: u32, column: u16) -> Self {
+        self.options.freeze_panes = Some((row, column));
+        self
+    }
+
     /// Selects constant-memory output.
     #[must_use]
     pub const fn constant_memory(mut self, enabled: bool) -> Self {
@@ -235,3 +242,6 @@ where
         self.do_write(rows)
     }
 }
+
+#[cfg(test)]
+mod tests;

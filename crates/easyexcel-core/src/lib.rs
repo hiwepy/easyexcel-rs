@@ -579,13 +579,7 @@ impl<T> PageReadListener<T> {
         }
         let rows = std::mem::replace(&mut self.rows, Vec::with_capacity(self.batch_size));
         let context = context.with_batch_index(self.batch_index);
-        match (self.callback)(rows, &context) {
-            Ok(()) => {
-                self.batch_index += 1;
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
+        complete_page(&mut self.batch_index, (self.callback)(rows, &context))
     }
 }
 
@@ -593,10 +587,7 @@ impl<T> ReadListener<T> for PageReadListener<T> {
     fn invoke(&mut self, data: T, context: &AnalysisContext) -> Result<()> {
         self.rows.push(data);
         if self.rows.len() >= self.batch_size {
-            match self.flush(context) {
-                Ok(()) => {}
-                Err(error) => return Err(error),
-            }
+            return self.flush(context);
         }
         Ok(())
     }
@@ -604,6 +595,12 @@ impl<T> ReadListener<T> for PageReadListener<T> {
     fn do_after_all_analysed(&mut self, context: &AnalysisContext) -> Result<()> {
         self.flush(context)
     }
+}
+
+fn complete_page(batch_index: &mut usize, result: Result<()>) -> Result<()> {
+    result.map(|()| {
+        *batch_index += 1;
+    })
 }
 
 /// All public easyexcel errors with row and column diagnostics where applicable.
