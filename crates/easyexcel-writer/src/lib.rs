@@ -1,6 +1,6 @@
 //! XLSX writer backed by `rust_xlsxwriter`.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::marker::PhantomData;
@@ -405,12 +405,23 @@ impl<T> WriteSheet<T> {
     }
 }
 
-/// Stateful multi-sheet XLSX writer matching Java `ExcelWriter`'s lifecycle.
+#[derive(Clone)]
+struct StatefulSheetState {
+    schema: &'static [ExcelColumn],
+    options: WriteOptions,
+    next_row: u32,
+    next_data_index: usize,
+}
+
+/// Stateful XLSX or single-sheet CSV writer matching Java `ExcelWriter`'s lifecycle.
 pub struct ExcelWriter {
     path: PathBuf,
     workbook: Workbook,
     handlers: Vec<Box<dyn WriteHandler>>,
-    sheet_names: HashSet<String>,
+    sheets: HashMap<String, StatefulSheetState>,
+    csv_writer: Option<csv::Writer<CsvEncodingWriter>>,
+    csv_charset: CsvCharset,
+    csv_with_bom: bool,
     started: bool,
     finished: bool,
     password: Option<String>,
@@ -436,18 +447,41 @@ impl ExcelWriter {
         handlers: Vec<Box<dyn WriteHandler>>,
         password: Option<String>,
     ) -> Self {
+        Self::with_handlers_and_options(
+            path,
+            handlers,
+            WriteOptions {
+                password,
+                ..WriteOptions::default()
+            },
+        )
+    }
+
+    /// Creates a stateful writer with workbook-level builder options.
+    #[must_use]
+    pub fn with_handlers_and_options(
+        path: impl Into<PathBuf>,
+        handlers: Vec<Box<dyn WriteHandler>>,
+        options: WriteOptions,
+    ) -> Self {
         Self {
             path: path.into(),
             workbook: Workbook::new(),
             handlers,
-            sheet_names: HashSet::new(),
+            sheets: HashMap::new(),
+            csv_writer: None,
+            csv_charset: options.charset,
+            csv_with_bom: options.with_bom,
             started: false,
             finished: false,
-            password,
+            password: options.password,
         }
     }
 
-    /// Writes a batch to a worksheet. Multiple calls may target different sheets.
+    /// Writes a batch to a worksheet, appending when the sheet was used before.
+    ///
+    /// XLSX permits multiple sheets. CSV permits repeated writes to one logical
+    /// sheet, matching Java `EasyExcel`'s stateful writer.
     ///
     /// # Errors
     ///
@@ -464,24 +498,13 @@ impl ExcelWriter {
         }
         self.start()?;
         let sheet_name = sheet.options().sheet_name.clone();
-        if !self.sheet_names.insert(sheet_name.clone()) {
-            return Err(ExcelError::Format(format!(
-                "duplicate worksheet name: {sheet_name}"
-            )));
+        if is_csv_path(&self.path) {
+            self.write_csv_batch::<T, I>(rows, sheet)?;
+        } else {
+            self.write_xlsx_batch::<T, I>(rows, sheet)?;
         }
-        let result = write_sheet_to_workbook::<T, I>(
-            &mut self.workbook,
-            sheet.options(),
-            rows,
-            &mut self.handlers,
-        );
-        match result {
-            Ok(()) => Ok(self),
-            Err(error) => {
-                self.sheet_names.remove(&sheet_name);
-                Err(error)
-            }
-        }
+        debug_assert!(self.sheets.contains_key(&sheet_name));
+        Ok(self)
     }
 
     /// Saves and closes the writer. Repeated calls are no-ops.
@@ -494,7 +517,11 @@ impl ExcelWriter {
             return Ok(());
         }
         self.start()?;
-        save_workbook(&mut self.workbook, &self.path, self.password.as_deref())?;
+        if is_csv_path(&self.path) {
+            finish_stateful_csv_writer(&mut self.csv_writer)?;
+        } else {
+            save_workbook(&mut self.workbook, &self.path, self.password.as_deref())?;
+        }
         let context = WriteWorkbookContext::new(&self.path);
         after_workbook(&mut self.handlers, &context)?;
         self.finished = true;
@@ -511,24 +538,165 @@ impl ExcelWriter {
         if self.started {
             return Ok(());
         }
-        validate_stateful_backend(&self.path)?;
+        validate_stateful_backend(&self.path, self.password.as_deref())?;
         sort_handlers(&mut self.handlers);
         let context = WriteWorkbookContext::new(&self.path);
         before_workbook(&mut self.handlers, &context)?;
+        if is_csv_path(&self.path) {
+            self.csv_writer = Some(create_stateful_csv_writer(
+                &self.path,
+                &self.csv_charset,
+                self.csv_with_bom,
+            )?);
+        }
         self.started = true;
+        Ok(())
+    }
+
+    fn write_xlsx_batch<T, I>(&mut self, rows: I, sheet: &WriteSheet<T>) -> Result<()>
+    where
+        T: ExcelRow,
+        I: IntoIterator<Item = T>,
+    {
+        let sheet_name = sheet.options().sheet_name.clone();
+        if let Some(state) = self.sheets.get(&sheet_name).cloned() {
+            validate_stateful_schema(&sheet_name, &state, T::schema())?;
+            let worksheet = self
+                .workbook
+                .worksheet_from_name(&sheet_name)
+                .map_err(format_error)?;
+            let progress = append_rows_to_worksheet::<T, I>(
+                worksheet,
+                &state.options,
+                rows,
+                &mut self.handlers,
+                state.next_row,
+                state.next_data_index,
+                false,
+            )?;
+            if state.options.auto_width {
+                worksheet.autofit();
+            }
+            let current = self
+                .sheets
+                .get_mut(&sheet_name)
+                .expect("stateful worksheet must exist");
+            current.next_row = progress.next_row;
+            current.next_data_index = progress.next_data_index;
+            return Ok(());
+        }
+
+        let options = sheet.options().clone();
+        let progress = write_sheet_to_workbook::<T, I>(
+            &mut self.workbook,
+            &options,
+            rows,
+            &mut self.handlers,
+        )?;
+        self.sheets.insert(
+            sheet_name,
+            StatefulSheetState {
+                schema: T::schema(),
+                options,
+                next_row: progress.next_row,
+                next_data_index: progress.next_data_index,
+            },
+        );
+        Ok(())
+    }
+
+    fn write_csv_batch<T, I>(&mut self, rows: I, sheet: &WriteSheet<T>) -> Result<()>
+    where
+        T: ExcelRow,
+        I: IntoIterator<Item = T>,
+    {
+        let sheet_name = sheet.options().sheet_name.clone();
+        if let Some(existing_name) = self.sheets.keys().next()
+            && existing_name != &sheet_name
+        {
+            return Err(ExcelError::Unsupported(
+                "CSV supports only one worksheet".to_owned(),
+            ));
+        }
+
+        let (state, is_new) = if let Some(state) = self.sheets.get(&sheet_name).cloned() {
+            validate_stateful_schema(&sheet_name, &state, T::schema())?;
+            (state, false)
+        } else {
+            let mut options = sheet.options().clone();
+            options.charset = self.csv_charset.clone();
+            options.with_bom = self.csv_with_bom;
+            (
+                StatefulSheetState {
+                    schema: T::schema(),
+                    options,
+                    next_row: 0,
+                    next_data_index: 0,
+                },
+                true,
+            )
+        };
+
+        let sheet_context = WriteSheetContext::new(&sheet_name);
+        if is_new {
+            before_sheet(&mut self.handlers, &sheet_context)?;
+        }
+        let writer = self
+            .csv_writer
+            .as_mut()
+            .expect("stateful CSV writer must be initialized");
+        let progress = append_csv_rows::<T, I>(
+            writer,
+            &state.options,
+            rows,
+            &mut self.handlers,
+            state.next_row,
+            state.next_data_index,
+            is_new,
+        )?;
+        if is_new {
+            after_sheet(&mut self.handlers, &sheet_context)?;
+        }
+        self.sheets.insert(
+            sheet_name,
+            StatefulSheetState {
+                next_row: progress.next_row,
+                next_data_index: progress.next_data_index,
+                ..state
+            },
+        );
         Ok(())
     }
 }
 
-fn validate_stateful_backend(path: &Path) -> Result<()> {
+fn validate_stateful_backend(path: &Path, password: Option<&str>) -> Result<()> {
     match path.extension().and_then(std::ffi::OsStr::to_str) {
-        Some(extension) if extension.eq_ignore_ascii_case("csv") => Err(ExcelError::Unsupported(
-            "stateful multi-write is not supported for CSV".to_owned(),
-        )),
+        Some(extension) if extension.eq_ignore_ascii_case("csv") && password.is_some() => Err(
+            ExcelError::Unsupported("password protection is not supported for CSV".to_owned()),
+        ),
         Some(extension) if extension.eq_ignore_ascii_case("xls") => Err(ExcelError::Unsupported(
             "legacy XLS writing is not supported".to_owned(),
         )),
         _ => Ok(()),
+    }
+}
+
+fn is_csv_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
+}
+
+fn validate_stateful_schema(
+    sheet_name: &str,
+    state: &StatefulSheetState,
+    schema: &'static [ExcelColumn],
+) -> Result<()> {
+    if state.schema == schema {
+        Ok(())
+    } else {
+        Err(ExcelError::Format(format!(
+            "worksheet schema changed between writes: {sheet_name}"
+        )))
     }
 }
 
@@ -636,27 +804,39 @@ where
 
 fn write_csv_records(
     path: &Path,
-    mut output: Box<dyn Write>,
+    output: Box<dyn Write>,
     options: &WriteOptions,
     columns: &[(usize, usize, &'static ExcelColumn)],
     rows: &mut dyn Iterator<Item = Result<Vec<CellValue>>>,
     handlers: &mut [Box<dyn WriteHandler>],
 ) -> Result<()> {
-    let encoding = csv_encoding(&options.charset)?;
+    csv_encoding(&options.charset)?;
     sort_handlers(handlers);
     let workbook_context = WriteWorkbookContext::new(path);
     before_workbook(handlers, &workbook_context)?;
     let sheet_context = WriteSheetContext::new(&options.sheet_name);
     before_sheet(handlers, &sheet_context)?;
 
-    if options.with_bom {
-        output.write_all(csv_bom(encoding))?;
-    }
-    let mut encoded_output = CsvEncodingWriter::new(output, encoding);
-    let mut writer = csv::WriterBuilder::new().from_writer(&mut encoded_output);
+    let mut writer = create_csv_record_writer(output, &options.charset, options.with_bom)?;
+    append_csv_records(&mut writer, options, columns, rows, handlers, 0, 0, true)?;
+    finish_csv_record_writer(writer)?;
+    after_sheet(handlers, &sheet_context)?;
+    after_workbook(handlers, &workbook_context)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_csv_records(
+    writer: &mut csv::Writer<CsvEncodingWriter>,
+    options: &WriteOptions,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    rows: &mut dyn Iterator<Item = Result<Vec<CellValue>>>,
+    handlers: &mut [Box<dyn WriteHandler>],
+    mut row_index: u32,
+    mut data_index: usize,
+    write_head: bool,
+) -> Result<WriteProgress> {
     let head_rows = dynamic_head_rows(options)?;
-    let mut row_index = 0_u32;
-    if options.need_head {
+    if write_head && options.need_head {
         if let Some(head) = &options.dynamic_head {
             if head.len() != columns.len() {
                 return Err(ExcelError::Format(format!(
@@ -692,12 +872,66 @@ fn write_csv_records(
         let record = csv_data_record(row_index, columns, &cells?, &options.sheet_name, handlers)?;
         writer.write_record(record).map_err(format_error)?;
         row_index += 1;
+        data_index += 1;
     }
+    Ok(WriteProgress {
+        next_row: row_index,
+        next_data_index: data_index,
+    })
+}
+
+fn append_csv_rows<T, I>(
+    writer: &mut csv::Writer<CsvEncodingWriter>,
+    options: &WriteOptions,
+    rows: I,
+    handlers: &mut [Box<dyn WriteHandler>],
+    row_index: u32,
+    data_index: usize,
+    write_head: bool,
+) -> Result<WriteProgress>
+where
+    T: ExcelRow,
+    I: IntoIterator<Item = T>,
+{
+    let columns = selected_columns(T::schema(), options);
+    let mut rows = rows.into_iter().map(|row| row.to_row());
+    append_csv_records(
+        writer, options, &columns, &mut rows, handlers, row_index, data_index, write_head,
+    )
+}
+
+fn create_csv_record_writer(
+    mut output: Box<dyn Write>,
+    charset: &CsvCharset,
+    with_bom: bool,
+) -> Result<csv::Writer<CsvEncodingWriter>> {
+    let encoding = csv_encoding(charset)?;
+    if with_bom {
+        output.write_all(csv_bom(encoding))?;
+    }
+    Ok(csv::WriterBuilder::new().from_writer(CsvEncodingWriter::new(output, encoding)))
+}
+
+fn create_stateful_csv_writer(
+    path: &Path,
+    charset: &CsvCharset,
+    with_bom: bool,
+) -> Result<csv::Writer<CsvEncodingWriter>> {
+    create_csv_record_writer(Box::new(File::create(path)?), charset, with_bom)
+}
+
+fn finish_csv_record_writer(mut writer: csv::Writer<CsvEncodingWriter>) -> Result<()> {
     writer.flush()?;
-    drop(writer);
-    encoded_output.finish()?;
-    after_sheet(handlers, &sheet_context)?;
-    after_workbook(handlers, &workbook_context)
+    let mut output = writer.into_inner().map_err(format_error)?;
+    output.finish()?;
+    Ok(())
+}
+
+fn finish_stateful_csv_writer(writer: &mut Option<csv::Writer<CsvEncodingWriter>>) -> Result<()> {
+    if let Some(writer) = writer.take() {
+        finish_csv_record_writer(writer)?;
+    }
+    Ok(())
 }
 
 fn validate_csv_options(options: &WriteOptions) -> Result<()> {
@@ -1005,12 +1239,18 @@ fn after_csv_cell(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WriteProgress {
+    next_row: u32,
+    next_data_index: usize,
+}
+
 fn write_sheet_to_workbook<T, I>(
     workbook: &mut Workbook,
     options: &WriteOptions,
     rows: I,
     handlers: &mut [Box<dyn WriteHandler>],
-) -> Result<()>
+) -> Result<WriteProgress>
 where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
@@ -1053,9 +1293,30 @@ where
     let sheet_context = WriteSheetContext::new(&options.sheet_name);
     before_sheet(handlers, &sheet_context)?;
 
+    let progress =
+        append_rows_to_worksheet::<T, I>(worksheet, options, rows, handlers, 0, 0, true)?;
+    after_sheet(handlers, &sheet_context)?;
+    if options.auto_width {
+        worksheet.autofit();
+    }
+    Ok(progress)
+}
+
+fn append_rows_to_worksheet<T, I>(
+    worksheet: &mut Worksheet,
+    options: &WriteOptions,
+    rows: I,
+    handlers: &mut [Box<dyn WriteHandler>],
+    mut row_index: u32,
+    mut data_index: usize,
+    write_head: bool,
+) -> Result<WriteProgress>
+where
+    T: ExcelRow,
+    I: IntoIterator<Item = T>,
+{
     let columns = selected_columns(T::schema(), options);
-    let mut row_index = 0_u32;
-    if options.need_head {
+    if write_head && options.need_head {
         if let Some(head) = &options.dynamic_head {
             write_dynamic_headers_with_handlers(
                 worksheet,
@@ -1074,9 +1335,9 @@ where
                 handlers,
             )?;
         }
-        row_index = head_rows;
+        row_index = dynamic_head_rows(options)?;
     }
-    for (data_index, row) in rows.into_iter().enumerate() {
+    for row in rows {
         let cells = row.to_row()?;
         let style = (!options.content_styles.is_empty())
             .then(|| &options.content_styles[data_index % options.content_styles.len()]);
@@ -1091,12 +1352,12 @@ where
             handlers,
         )?;
         row_index += 1;
+        data_index += 1;
     }
-    after_sheet(handlers, &sheet_context)?;
-    if options.auto_width {
-        worksheet.autofit();
-    }
-    Ok(())
+    Ok(WriteProgress {
+        next_row: row_index,
+        next_data_index: data_index,
+    })
 }
 
 fn apply_loop_merges(

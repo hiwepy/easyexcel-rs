@@ -434,7 +434,7 @@ where
     /// Builds a stateful writer for multiple `.write(rows, &sheet)` calls.
     #[must_use]
     pub fn build(self) -> ExcelWriter {
-        ExcelWriter::with_handlers_and_password(self.path, self.handlers, self.options.password)
+        ExcelWriter::with_handlers_and_options(self.path, self.handlers, self.options)
     }
 
     /// Selects constant-memory output.

@@ -401,6 +401,29 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
 }
 
 #[test]
+fn facade_builds_stateful_gbk_csv_and_appends_without_repeating_head() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("stateful.csv");
+    let sheet = EasyExcel::writer_sheet::<Value>("Values");
+    let mut writer = EasyExcel::write::<Value>(&path)
+        .charset("GBK")
+        .with_bom(false)
+        .build();
+    writer
+        .write(vec![Value("第一批".to_owned())], &sheet)?
+        .write(vec![Value("第二批".to_owned())], &sheet)?;
+    writer.finish()?;
+
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&path)
+            .charset("gbk")
+            .do_read_sync()?,
+        vec![Value("第一批".to_owned()), Value("第二批".to_owned())]
+    );
+    Ok(())
+}
+
+#[test]
 fn facade_csv_stream_writer_propagates_validation_and_io_failures() {
     let mut stream_options = WriteOptions {
         with_bom: false,

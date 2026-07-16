@@ -79,6 +79,27 @@ impl Write for FailThirdFlush {
     }
 }
 
+#[derive(Default)]
+struct FailSecondFlush {
+    flushes: usize,
+}
+
+impl Write for FailSecondFlush {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let flush = self.flushes;
+        self.flushes += 1;
+        if flush == 1 {
+            Err(io::Error::other("injected CSV into-inner failure"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 struct LimitedCursor {
     inner: Cursor<Vec<u8>>,
     max_len: u64,
@@ -602,6 +623,7 @@ fn dynamic_multi_level_head_merges_parents_and_offsets_data_rows() -> Result<()>
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn dynamic_head_validation_and_backend_failures_are_typed() -> Result<()> {
     let directory = tempdir()?;
     assert_eq!(head_level_to_row(0)?, 0);
@@ -629,6 +651,34 @@ fn dynamic_head_validation_and_backend_failures_are_typed() -> Result<()> {
                 ..WriteOptions::default()
             },
             Vec::new()
+        )
+        .is_err()
+    );
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("empty-head-paths.xlsx"),
+            &WriteOptions {
+                dynamic_head: Some(vec![Vec::new(); EveryCell::schema().len()]),
+                ..WriteOptions::default()
+            },
+            Vec::new()
+        )
+        .is_err()
+    );
+    let invalid_head_options = WriteOptions {
+        dynamic_head: Some(vec![Vec::new(); EveryCell::schema().len()]),
+        ..WriteOptions::default()
+    };
+    let mut workbook = Workbook::new();
+    assert!(
+        append_rows_to_worksheet::<EveryCell, _>(
+            workbook.add_worksheet(),
+            &invalid_head_options,
+            Vec::new(),
+            &mut [],
+            0,
+            0,
+            true,
         )
         .is_err()
     );
@@ -862,6 +912,7 @@ fn constant_memory_writer_can_omit_headers_and_freeze_request() -> Result<()> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("multi.xlsx");
@@ -896,6 +947,7 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
     let mut writer = ExcelWriter::with_handlers(&path, handlers);
     assert!(!writer.is_finished());
     writer
+        .write(vec![every_cell(), every_cell()], &first)?
         .write(vec![every_cell(), every_cell()], &first)?
         .write(vec![every_cell(), every_cell()], &second)?;
     writer.finish()?;
@@ -946,11 +998,16 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
         vec![
             Dimensions::new((0, 0), (0, 1)),
             Dimensions::new((1, 0), (2, 0)),
+            Dimensions::new((3, 0), (4, 0)),
         ]
     );
     let users = workbook.worksheet_range("Users").map_err(test_error)?;
     assert_eq!(
         users.get_value((1, 1)),
+        Some(&Data::String("text".to_owned()))
+    );
+    assert_eq!(
+        users.get_value((4, 1)),
         Some(&Data::String("text".to_owned()))
     );
     let archive = workbook.worksheet_range("Archive").map_err(test_error)?;
@@ -966,6 +1023,7 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn stateful_writer_propagates_start_sheet_and_finish_failures() -> Result<()> {
     let directory = tempdir()?;
     let sheet = WriteSheet::<EveryCell>::new("Values");
@@ -988,9 +1046,12 @@ fn stateful_writer_propagates_start_sheet_and_finish_failures() -> Result<()> {
     rejected_after.write(Vec::new(), &sheet)?;
     assert!(rejected_after.finish().is_err());
 
-    let mut duplicate = ExcelWriter::new(directory.path().join("duplicate.xlsx"));
-    duplicate.write(Vec::new(), &sheet)?;
-    assert!(duplicate.write(Vec::new(), &sheet).is_err());
+    let mut schema_change = ExcelWriter::new(directory.path().join("schema-change.xlsx"));
+    schema_change.write(Vec::new(), &sheet)?;
+    USE_WIDE_SCHEMA.with(|wide| wide.set(true));
+    let schema_change_result = schema_change.write(Vec::new(), &sheet);
+    USE_WIDE_SCHEMA.with(|wide| wide.set(false));
+    assert!(matches!(schema_change_result, Err(ExcelError::Format(_))));
 
     let invalid = WriteSheet::<EveryCell>::new("bad/name");
     let mut invalid_sheet = ExcelWriter::new(directory.path().join("invalid.xlsx"));
@@ -999,13 +1060,155 @@ fn stateful_writer_propagates_start_sheet_and_finish_failures() -> Result<()> {
     let mut invalid_output = ExcelWriter::new(directory.path());
     assert!(invalid_output.finish().is_err());
 
-    let mut csv = ExcelWriter::new(directory.path().join("stateful.CSV"));
+    let mut csv = ExcelWriter::with_handlers_and_options(
+        directory.path().join("invalid-charset.CSV"),
+        Vec::new(),
+        WriteOptions {
+            charset: CsvCharset::new("not-a-charset"),
+            ..WriteOptions::default()
+        },
+    );
     assert!(matches!(
         csv.write(Vec::new(), &sheet),
         Err(ExcelError::Unsupported(_))
     ));
+    let mut protected_csv = ExcelWriter::with_handlers_and_password(
+        directory.path().join("protected.csv"),
+        Vec::new(),
+        Some("secret".to_owned()),
+    );
+    assert!(matches!(
+        protected_csv.finish(),
+        Err(ExcelError::Unsupported(_))
+    ));
+    assert!(matches!(
+        validate_csv_options(&WriteOptions {
+            password: Some("secret".to_owned()),
+            ..WriteOptions::default()
+        }),
+        Err(ExcelError::Unsupported(_))
+    ));
     let mut xls = ExcelWriter::new(directory.path().join("stateful.XLS"));
     assert!(matches!(xls.finish(), Err(ExcelError::Unsupported(_))));
+
+    let mut failed_xlsx_append = ExcelWriter::new(directory.path().join("failed-xlsx-append.xlsx"));
+    failed_xlsx_append.write(vec![every_cell()], &sheet)?;
+    let mut broken = every_cell();
+    broken.fail = true;
+    assert!(matches!(
+        failed_xlsx_append.write(vec![broken.clone()], &sheet),
+        Err(ExcelError::Format(_))
+    ));
+
+    let mut missing_cached_sheet =
+        ExcelWriter::new(directory.path().join("missing-cached-sheet.xlsx"));
+    missing_cached_sheet.write(Vec::new(), &sheet)?;
+    missing_cached_sheet.workbook = Workbook::new();
+    assert!(missing_cached_sheet.write(Vec::new(), &sheet).is_err());
+
+    let mut no_autofit = ExcelWriter::new(directory.path().join("no-autofit.xlsx"));
+    no_autofit
+        .write(Vec::new(), &sheet)?
+        .write(Vec::new(), &sheet)?;
+
+    let mut failed_csv_append = ExcelWriter::new(directory.path().join("failed-csv-append.csv"));
+    failed_csv_append.write(vec![every_cell()], &sheet)?;
+    assert!(matches!(
+        failed_csv_append.write(vec![broken], &sheet),
+        Err(ExcelError::Format(_))
+    ));
+
+    let missing_parent = directory.path().join("missing").join("stateful.csv");
+    let mut missing_csv_output = ExcelWriter::new(missing_parent);
+    assert!(missing_csv_output.finish().is_err());
+
+    for stage in [FailureStage::BeforeSheet, FailureStage::AfterSheet] {
+        let handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(FailingHandler(stage))];
+        let mut failed_sheet = ExcelWriter::with_handlers(
+            directory
+                .path()
+                .join(format!("stateful-csv-handler-{}.csv", stage as u8)),
+            handlers,
+        );
+        assert!(failed_sheet.write(Vec::new(), &sheet).is_err());
+    }
+
+    let mut failed_csv_finish = ExcelWriter::new(directory.path().join("failed-csv-finish.csv"));
+    failed_csv_finish.start()?;
+    failed_csv_finish.csv_writer = Some(csv::WriterBuilder::new().from_writer(
+        CsvEncodingWriter::new(
+            Box::new(FaultyWrite::flushing()),
+            CsvEncoding::Standard(encoding_rs::UTF_8),
+        ),
+    ));
+    assert!(failed_csv_finish.finish().is_err());
+
+    let mut missing_csv_writer = None;
+    finish_stateful_csv_writer(&mut missing_csv_writer)?;
+    Ok(())
+}
+
+#[test]
+fn stateful_csv_appends_batches_with_one_head_and_one_sheet_lifecycle() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("stateful.csv");
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(RecordingHandler {
+        order: 1,
+        events: Rc::clone(&events),
+    })];
+    let options = WriteOptions {
+        charset: CsvCharset::new("GBK"),
+        with_bom: false,
+        ..WriteOptions::default()
+    };
+    let sheet = WriteSheet::<EveryCell>::new("Values");
+    let mut writer = ExcelWriter::with_handlers_and_options(&path, handlers, options);
+    writer
+        .write(vec![every_cell()], &sheet)?
+        .write(vec![every_cell()], &sheet)?;
+    USE_WIDE_SCHEMA.with(|wide| wide.set(true));
+    let schema_change_result = writer.write(Vec::new(), &sheet);
+    USE_WIDE_SCHEMA.with(|wide| wide.set(false));
+    assert!(matches!(schema_change_result, Err(ExcelError::Format(_))));
+    let other = WriteSheet::<EveryCell>::new("Other");
+    assert!(matches!(
+        writer.write(Vec::new(), &other),
+        Err(ExcelError::Unsupported(_))
+    ));
+    writer.finish()?;
+    writer.finish()?;
+
+    let bytes = std::fs::read(path)?;
+    assert!(!bytes.starts_with(b"\xEF\xBB\xBF"));
+    let (decoded, actual, had_errors) = encoding_rs::GBK.decode(&bytes);
+    assert_eq!(actual, encoding_rs::GBK);
+    assert!(!had_errors);
+    let mut csv = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .from_reader(decoded.as_bytes());
+    let records = csv
+        .records()
+        .collect::<csv::Result<Vec<_>>>()
+        .map_err(test_error)?;
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].get(1), Some("String"));
+    assert_eq!(records[1].get(1), Some("text"));
+    assert_eq!(records[2].get(1), Some("text"));
+
+    let events = events.borrow();
+    for event in [
+        "before_workbook",
+        "after_workbook",
+        "before_sheet",
+        "after_sheet",
+    ] {
+        assert_eq!(
+            events.iter().filter(|value| value.contains(event)).count(),
+            1,
+            "event {event}"
+        );
+    }
     Ok(())
 }
 
@@ -1649,6 +1852,7 @@ fn csv_writer_to_owned_stream_validates_options() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn csv_writer_propagates_io_faults_and_column_overflow() {
     let write_errors = (0..64)
         .filter(|fail_at| {
@@ -1677,6 +1881,16 @@ fn csv_writer_propagates_io_faults_and_column_overflow() {
         write_csv_to::<EveryCell, _>(
             Path::new("finish-fault.csv"),
             Box::new(FailThirdFlush::default()),
+            &WriteOptions::default(),
+            Vec::new(),
+            &mut []
+        )
+        .is_err()
+    );
+    assert!(
+        write_csv_to::<EveryCell, _>(
+            Path::new("into-inner-fault.csv"),
+            Box::new(FailSecondFlush::default()),
             &WriteOptions::default(),
             Vec::new(),
             &mut []

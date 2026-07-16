@@ -63,6 +63,24 @@ For Java `OutputStream`-style integration, use the re-exported
 `write_csv_to_writer` function with any owned Rust `Write` implementation and a
 logical path for handler context.
 
+Stateful builders follow Java `ExcelWriter` semantics: repeated writes to the
+same sheet append rows without repeating the head. XLSX may target multiple
+sheets, while CSV accepts one logical sheet:
+
+```rust,no_run
+# use easyexcel::{EasyExcel, ExcelRow};
+# #[derive(ExcelRow)] struct User { #[excel(name = "Name")] name: String }
+# fn run(first_page: Vec<User>, second_page: Vec<User>) -> easyexcel::Result<()> {
+let sheet = EasyExcel::writer_sheet::<User>("Users");
+let mut writer = EasyExcel::write::<User>("users.csv").build();
+writer
+    .write(first_page, &sheet)?
+    .write(second_page, &sheet)?;
+writer.finish()?;
+# Ok(())
+# }
+```
+
 Legacy `.xls` files use the same typed read builders and listener lifecycle.
 The binary worksheet is materialized by Calamine before dispatch; writing
 `.xls` returns an explicit unsupported-operation error instead of emitting an

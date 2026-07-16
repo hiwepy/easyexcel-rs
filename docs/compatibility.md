@@ -46,7 +46,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `LoopMergeStrategy` | repeating data-row merge metadata | implemented |
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
-| CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; stateful multi-write and JVM-only charset providers remain |
+| CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, stateful same-sheet multi-write, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; JVM-only charset providers remain |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
@@ -92,3 +92,9 @@ return a typed unsupported-operation error.
 `write_csv_to_writer` accepts any owned `std::io::Write` sink and preserves the
 same handler lifecycle as file output. Its logical path is context metadata,
 which mirrors Java EasyExcel's `OutputStream` use without requiring a real file.
+
+Stateful `ExcelWriter::write` caches the first `WriteSheet` configuration,
+continues row and content-style indexes across batches, and emits the head only
+once. XLSX supports repeated writes to the same sheet and multiple sheets; CSV
+supports repeated writes to one logical sheet, matching Java's `CsvWorkbook`
+single-sheet constraint.
