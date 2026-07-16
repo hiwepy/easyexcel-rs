@@ -11,6 +11,7 @@ repository.workspace = true
 easyexcel-core = { path = "../easyexcel-core" }
 easyexcel-derive = { path = "../easyexcel-derive" }
 easyexcel-reader = { path = "../easyexcel-reader" }
+easyexcel-template = { path = "../easyexcel-template" }
 easyexcel-writer = { path = "../easyexcel-writer" }
 
 [dev-dependencies]
@@ -20,4 +21,3 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
-

@@ -180,6 +180,23 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
             .do_read_sync()?,
         vec![Value("second".to_owned())]
     );
+
+    let template = directory.path().join("template.xlsx");
+    let filled = directory.path().join("filled.xlsx");
+    EasyExcel::write::<Value>(&template)
+        .need_head(false)
+        .do_write(vec![Value("Hello {name}".to_owned())])?;
+    EasyExcel::fill_template(
+        &template,
+        &filled,
+        &TemplateData::new().with("name", "Rust"),
+    )?;
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&filled)
+            .head_row_number(0)
+            .do_read_sync()?,
+        vec![Value("Hello Rust".to_owned())]
+    );
     Ok(())
 }
 

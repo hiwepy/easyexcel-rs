@@ -4,6 +4,7 @@ members = [
     "crates/easyexcel-core",
     "crates/easyexcel-derive",
     "crates/easyexcel-reader",
+    "crates/easyexcel-template",
     "crates/easyexcel-writer",
 ]
 resolver = "3"

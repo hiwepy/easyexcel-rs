@@ -138,6 +138,7 @@ dependencies = [
  "easyexcel-core",
  "easyexcel-derive",
  "easyexcel-reader",
+ "easyexcel-template",
  "easyexcel-writer",
  "tempfile",
 ]
@@ -163,6 +164,17 @@ dependencies = [
 
 [[package]]
 name = "easyexcel-reader"
+version = "0.1.0"
+dependencies = [
+ "calamine",
+ "easyexcel-core",
+ "rust_xlsxwriter",
+ "tempfile",
+ "zip 7.2.0",
+]
+
+[[package]]
+name = "easyexcel-template"
 version = "0.1.0"
 dependencies = [
  "calamine",

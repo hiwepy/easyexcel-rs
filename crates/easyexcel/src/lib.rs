@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
 use easyexcel_reader::{ReadOptions, SheetSelector, read_xlsx};
+pub use easyexcel_template::{TemplateData, fill_xlsx_template};
 pub use easyexcel_writer::{
     CellStyle, ExcelWriter, HorizontalAlignment, LoopMergeStrategy, MergeRange, VerticalAlignment,
     WriteSheet,
@@ -62,6 +63,19 @@ impl EasyExcel {
         T: ExcelRow,
     {
         WriteSheet::new(name)
+    }
+
+    /// Fills scalar `{key}` placeholders in an existing XLSX template.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error.
+    pub fn fill_template(
+        template: impl AsRef<Path>,
+        output: impl AsRef<Path>,
+        data: &TemplateData,
+    ) -> Result<()> {
+        fill_xlsx_template(template.as_ref(), output.as_ref(), data)
     }
 }
 

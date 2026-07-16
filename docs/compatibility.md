@@ -45,7 +45,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |
 | `LoopMergeStrategy` | repeating data-row merge metadata | implemented |
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
-| template `fill` | template engine | planned |
+| template `fill` | OOXML-preserving template engine | partial: scalar placeholders implemented |
 | CSV read/write | CSV engine | planned |
 | XLS read | calamine XLS engine | planned |
 | password/encryption | encryption adapter | planned |

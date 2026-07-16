@@ -29,6 +29,22 @@ EasyExcel::read::<User, _>("users.xlsx", listener)
 # }
 ```
 
+Scalar placeholders in an existing workbook can be filled without rebuilding
+its OOXML package:
+
+```rust,no_run
+use easyexcel::{EasyExcel, TemplateData};
+
+# fn run() -> easyexcel::Result<()> {
+let data = TemplateData::new()
+    .with("name", "Alice")
+    .with("count", 3);
+
+EasyExcel::fill_template("template.xlsx", "report.xlsx", &data)?;
+# Ok(())
+# }
+```
+
 ## Quality gates
 
 ```bash
