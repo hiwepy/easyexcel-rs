@@ -1,8 +1,8 @@
 //! XLSX writer backed by `rust_xlsxwriter`.
 
 use std::collections::HashSet;
-use std::fs::File;
-use std::io::Write;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
@@ -10,6 +10,7 @@ use easyexcel_core::{
     CellValue, ExcelColumn, ExcelError, ExcelRow, Result, WriteCellContext, WriteHandler,
     WriteRowContext, WriteSheetContext, WriteWorkbookContext,
 };
+use ms_offcrypto_writer::Ecma376AgileWriter;
 use rust_xlsxwriter::{Format, FormatAlign, FormatPattern, Image, Note, Workbook, Worksheet};
 
 /// Horizontal cell alignment.
@@ -255,6 +256,8 @@ pub struct WriteOptions {
     pub loop_merges: Vec<LoopMergeStrategy>,
     /// Optional dynamic multi-level head paths, one path per selected column.
     pub dynamic_head: Option<Vec<Vec<String>>>,
+    /// Password used for ECMA-376 Agile Encryption of XLSX output.
+    pub password: Option<String>,
 }
 
 impl Default for WriteOptions {
@@ -277,6 +280,7 @@ impl Default for WriteOptions {
             content_styles: Vec::new(),
             loop_merges: Vec::new(),
             dynamic_head: None,
+            password: None,
         }
     }
 }
@@ -402,6 +406,7 @@ pub struct ExcelWriter {
     sheet_names: HashSet<String>,
     started: bool,
     finished: bool,
+    password: Option<String>,
 }
 
 impl ExcelWriter {
@@ -414,6 +419,16 @@ impl ExcelWriter {
     /// Creates a multi-sheet writer with owned lifecycle handlers.
     #[must_use]
     pub fn with_handlers(path: impl Into<PathBuf>, handlers: Vec<Box<dyn WriteHandler>>) -> Self {
+        Self::with_handlers_and_password(path, handlers, None)
+    }
+
+    /// Creates a multi-sheet writer with handlers and optional XLSX encryption.
+    #[must_use]
+    pub fn with_handlers_and_password(
+        path: impl Into<PathBuf>,
+        handlers: Vec<Box<dyn WriteHandler>>,
+        password: Option<String>,
+    ) -> Self {
         Self {
             path: path.into(),
             workbook: Workbook::new(),
@@ -421,6 +436,7 @@ impl ExcelWriter {
             sheet_names: HashSet::new(),
             started: false,
             finished: false,
+            password,
         }
     }
 
@@ -471,7 +487,7 @@ impl ExcelWriter {
             return Ok(());
         }
         self.start()?;
-        self.workbook.save(&self.path).map_err(format_error)?;
+        save_workbook(&mut self.workbook, &self.path, self.password.as_deref())?;
         let context = WriteWorkbookContext::new(&self.path);
         after_workbook(&mut self.handlers, &context)?;
         self.finished = true;
@@ -543,7 +559,7 @@ where
 
     let mut workbook = Workbook::new();
     write_sheet_to_workbook::<T, I>(&mut workbook, options, rows, handlers)?;
-    workbook.save(path).map_err(format_error)?;
+    save_workbook(&mut workbook, path, options.password.as_deref())?;
     after_workbook(handlers, &workbook_context)?;
     Ok(())
 }
@@ -565,6 +581,7 @@ where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
+    validate_csv_options(options)?;
     let file = File::create(path)?;
     write_csv_to::<T, I>(path, Box::new(file), options, rows, handlers)
 }
@@ -643,6 +660,53 @@ fn write_csv_records(
     writer.flush()?;
     after_sheet(handlers, &sheet_context)?;
     after_workbook(handlers, &workbook_context)
+}
+
+fn validate_csv_options(options: &WriteOptions) -> Result<()> {
+    if options.password.is_some() {
+        return Err(ExcelError::Unsupported(
+            "password protection is not supported for CSV".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn save_workbook(workbook: &mut Workbook, path: &Path, password: Option<&str>) -> Result<()> {
+    let Some(password) = password else {
+        return workbook.save(path).map_err(format_error);
+    };
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    save_encrypted_workbook_to(workbook, password, &mut file)
+}
+
+trait ReadWriteSeek: Read + Write + Seek {}
+
+impl<T> ReadWriteSeek for T where T: Read + Write + Seek {}
+
+fn save_encrypted_workbook_to(
+    workbook: &mut Workbook,
+    password: &str,
+    file: &mut dyn ReadWriteSeek,
+) -> Result<()> {
+    let mut random = rand::rng();
+    Ecma376AgileWriter::create(&mut random, password, file)
+        .map_err(ExcelError::from)
+        .and_then(|mut writer| {
+            workbook
+                .save_to_buffer()
+                .map_err(format_error)
+                .and_then(|plaintext| {
+                    // The encryption crate writes plaintext only to its in-memory cursor; its
+                    // `Write` implementation cannot reach the fallible output at this stage.
+                    let _ = writer.write_all(&plaintext);
+                    writer.finalize().map_err(ExcelError::from)
+                })
+        })
 }
 
 fn csv_header_record(

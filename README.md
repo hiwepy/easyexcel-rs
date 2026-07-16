@@ -39,6 +39,36 @@ The binary worksheet is materialized by Calamine before dispatch; writing
 `.xls` returns an explicit unsupported-operation error instead of emitting an
 XLSX package with the wrong extension.
 
+Password-protected `.xlsx` files use the same Java-style builder call on both
+read and write paths:
+
+```rust,no_run
+use easyexcel::{EasyExcel, ExcelRow};
+
+#[derive(Debug, ExcelRow)]
+struct SecretRow {
+    #[excel(name = "Value", index = 0)]
+    value: String,
+}
+
+# fn run(rows: Vec<SecretRow>) -> easyexcel::Result<()> {
+EasyExcel::write::<SecretRow>("protected.xlsx")
+    .password("123456")
+    .do_write(rows)?;
+
+let values = EasyExcel::read_sync::<SecretRow>("protected.xlsx")
+    .password("123456")
+    .do_read_sync()?;
+# let _ = values;
+# Ok(())
+# }
+```
+
+The writer emits ECMA-376 Agile Encryption (AES-256/SHA-512), while the reader
+accepts Agile and Standard encrypted OOXML. Encryption buffers the plaintext
+OOXML package in memory. Password-protected legacy `.xls` is a separate BIFF
+encryption format and is currently unsupported.
+
 Scalar placeholders in an existing workbook can be filled without rebuilding
 its OOXML package:
 

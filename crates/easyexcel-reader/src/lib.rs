@@ -1,6 +1,8 @@
 //! XLSX, XLS, and CSV readers backed by Calamine and the Rust CSV engine.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -32,6 +34,8 @@ pub struct ReadOptions {
     pub head_row_number: u32,
     /// Whether rows containing only empty cells are ignored.
     pub ignore_empty_row: bool,
+    /// Password used to decrypt an encrypted OOXML workbook.
+    pub password: Option<String>,
 }
 
 impl Default for ReadOptions {
@@ -40,6 +44,7 @@ impl Default for ReadOptions {
             sheet: SheetSelector::First,
             head_row_number: 1,
             ignore_empty_row: true,
+            password: None,
         }
     }
 }
@@ -54,13 +59,66 @@ where
     T: ExcelRow,
     L: ReadListener<T>,
 {
-    let mut workbook: Xlsx<_> = open_workbook(path).map_err(format_error)?;
+    let mut workbook = open_xlsx(path, options.password.as_deref())?;
     let names = selected_sheet_names(&workbook, &options.sheet)?;
     for (sheet_no, sheet_name) in names {
         let mut consumer = TypedRowConsumer::<T> { listener };
         read_sheet(&mut workbook, sheet_no, &sheet_name, options, &mut consumer)?;
     }
     Ok(())
+}
+
+enum XlsxInput {
+    File(BufReader<File>),
+    Memory(Cursor<Vec<u8>>),
+}
+
+impl Read for XlsxInput {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::File(reader) => reader.read(buffer),
+            Self::Memory(reader) => reader.read(buffer),
+        }
+    }
+}
+
+impl Seek for XlsxInput {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::File(reader) => reader.seek(position),
+            Self::Memory(reader) => reader.seek(position),
+        }
+    }
+}
+
+fn open_xlsx(path: &Path, password: Option<&str>) -> Result<Xlsx<XlsxInput>> {
+    let mut reader = BufReader::new(File::open(path)?);
+    // If the lightweight probe itself fails, the XLSX parser below still
+    // returns the authoritative workbook error from the unchanged stream.
+    let input = if is_compound_document(&mut reader) {
+        let password = password.ok_or_else(|| {
+            ExcelError::Unsupported("encrypted OOXML workbook requires a password".to_owned())
+        })?;
+        let decrypted = match office_crypto::decrypt_from_file(path, password) {
+            Ok(decrypted) => decrypted,
+            Err(error) => return Err(decryption_error(&error)),
+        };
+        XlsxInput::Memory(Cursor::new(decrypted))
+    } else {
+        XlsxInput::File(reader)
+    };
+    Xlsx::new(input).map_err(format_error)
+}
+
+fn is_compound_document(reader: &mut dyn BufRead) -> bool {
+    const MAGIC: [u8; 8] = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    reader
+        .fill_buf()
+        .is_ok_and(|actual| actual.len() >= MAGIC.len() && actual[..MAGIC.len()] == MAGIC)
+}
+
+fn decryption_error(error: &office_crypto::DecryptError) -> ExcelError {
+    ExcelError::Format(format!("cannot decrypt workbook: {error}"))
 }
 
 /// Reads selected legacy XLS sheets through the typed listener lifecycle.

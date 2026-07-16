@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::fs::File;
-use std::io::{self, Read as _, Write};
+use std::io::{self, Cursor, Read as _, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -55,6 +55,49 @@ impl Write for FaultyWrite {
             return Err(io::Error::other("injected CSV flush failure"));
         }
         Ok(())
+    }
+}
+
+struct LimitedCursor {
+    inner: Cursor<Vec<u8>>,
+    max_len: u64,
+}
+
+impl LimitedCursor {
+    const fn new(max_len: u64) -> Self {
+        Self {
+            inner: Cursor::new(Vec::new()),
+            max_len,
+        }
+    }
+}
+
+impl std::io::Read for LimitedCursor {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buffer)
+    }
+}
+
+impl Write for LimitedCursor {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let end = self
+            .inner
+            .position()
+            .saturating_add(u64::try_from(buffer.len()).unwrap_or(u64::MAX));
+        if end > self.max_len {
+            return Err(io::Error::other("injected encrypted output failure"));
+        }
+        self.inner.write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Seek for LimitedCursor {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(position)
     }
 }
 
@@ -394,6 +437,7 @@ fn default_options_and_helpers_are_deterministic() {
             content_styles: Vec::new(),
             loop_merges: Vec::new(),
             dynamic_head: None,
+            password: None,
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");
@@ -1228,6 +1272,50 @@ fn conversion_configuration_column_and_save_failures_propagate() -> Result<()> {
     assert!(
         write_xlsx::<EveryCell, _>(directory.path(), &WriteOptions::default(), Vec::new()).is_err()
     );
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("missing").join("encrypted.xlsx"),
+            &WriteOptions {
+                password: Some("123456".to_owned()),
+                ..WriteOptions::default()
+            },
+            Vec::new(),
+        )
+        .is_err()
+    );
+    let mut invalid_encrypted = Workbook::new();
+    invalid_encrypted
+        .add_worksheet()
+        .set_name("Duplicate")
+        .map_err(test_error)?;
+    invalid_encrypted
+        .add_worksheet()
+        .set_name("Duplicate")
+        .map_err(test_error)?;
+    assert!(
+        save_workbook(
+            &mut invalid_encrypted,
+            &directory.path().join("invalid-encrypted.xlsx"),
+            Some("123456"),
+        )
+        .is_err()
+    );
+    let mut create_failure = Workbook::new();
+    create_failure.add_worksheet();
+    let mut create_output = LimitedCursor::new(0);
+    assert!(
+        save_encrypted_workbook_to(&mut create_failure, "123456", &mut create_output,).is_err()
+    );
+    let mut finalize_failure = Workbook::new();
+    finalize_failure.add_worksheet();
+    let mut finalize_output = LimitedCursor::new(4_096);
+    assert!(
+        save_encrypted_workbook_to(&mut finalize_failure, "123456", &mut finalize_output,).is_err()
+    );
+    let mut successful = Workbook::new();
+    successful.add_worksheet();
+    let mut successful_output = LimitedCursor::new(u64::MAX);
+    save_encrypted_workbook_to(&mut successful, "123456", &mut successful_output)?;
     Ok(())
 }
 

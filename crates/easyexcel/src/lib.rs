@@ -161,6 +161,13 @@ where
         self
     }
 
+    /// Sets the password for an encrypted OOXML workbook.
+    #[must_use]
+    pub fn password(mut self, password: impl Into<String>) -> Self {
+        self.options.password = Some(password.into());
+        self
+    }
+
     /// Executes the read and consumes the builder.
     ///
     /// # Errors
@@ -199,6 +206,13 @@ where
     #[must_use]
     pub const fn head_row_number(mut self, rows: u32) -> Self {
         self.options.head_row_number = rows;
+        self
+    }
+
+    /// Sets the password for an encrypted OOXML workbook.
+    #[must_use]
+    pub fn password(mut self, password: impl Into<String>) -> Self {
+        self.options.password = Some(password.into());
         self
     }
 
@@ -382,10 +396,17 @@ where
         self
     }
 
+    /// Encrypts XLSX output using ECMA-376 Agile Encryption.
+    #[must_use]
+    pub fn password(mut self, password: impl Into<String>) -> Self {
+        self.options.password = Some(password.into());
+        self
+    }
+
     /// Builds a stateful writer for multiple `.write(rows, &sheet)` calls.
     #[must_use]
     pub fn build(self) -> ExcelWriter {
-        ExcelWriter::with_handlers(self.path, self.handlers)
+        ExcelWriter::with_handlers_and_password(self.path, self.handlers, self.options.password)
     }
 
     /// Selects constant-memory output.

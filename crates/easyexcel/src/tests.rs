@@ -1,3 +1,5 @@
+use std::fs;
+
 use tempfile::tempdir;
 
 use super::*;
@@ -26,6 +28,8 @@ impl ExcelRow for Value {
 #[derive(Default)]
 struct Listener(Vec<Value>);
 
+struct FailingListener;
+
 struct NoopWriteHandler;
 
 impl WriteHandler for NoopWriteHandler {}
@@ -33,6 +37,20 @@ impl WriteHandler for NoopWriteHandler {}
 impl ReadListener<Value> for Listener {
     fn invoke(&mut self, data: Value, _context: &AnalysisContext) -> Result<()> {
         self.0.push(data);
+        Ok(())
+    }
+}
+
+impl ReadListener<Value> for FailingListener {
+    fn invoke_head(
+        &mut self,
+        _head: &std::collections::HashMap<String, usize>,
+        _context: &AnalysisContext,
+    ) -> Result<()> {
+        Err(ExcelError::Format("injected listener failure".to_owned()))
+    }
+
+    fn invoke(&mut self, _data: Value, _context: &AnalysisContext) -> Result<()> {
         Ok(())
     }
 }
@@ -58,18 +76,22 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .sheet(2_usize)
         .all_sheets()
         .head_row_number(3)
-        .ignore_empty_row(false);
+        .ignore_empty_row(false)
+        .password("read-secret");
     assert_eq!(read.path, PathBuf::from("input.xlsx"));
     assert_eq!(read.options.sheet, SheetSelector::All);
     assert_eq!(read.options.head_row_number, 3);
     assert!(!read.options.ignore_empty_row);
+    assert_eq!(read.options.password.as_deref(), Some("read-secret"));
 
     let sync = EasyExcel::read_sync::<Value>("sync.xlsx")
         .sheet("Values")
-        .head_row_number(2);
+        .head_row_number(2)
+        .password("sync-secret");
     assert_eq!(sync.path, PathBuf::from("sync.xlsx"));
     assert_eq!(sync.options.sheet, SheetSelector::Name("Values".to_owned()));
     assert_eq!(sync.options.head_row_number, 2);
+    assert_eq!(sync.options.password.as_deref(), Some("sync-secret"));
 
     let write = EasyExcel::write::<Value>("output.xlsx")
         .sheet("Values")
@@ -89,6 +111,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .content_styles([CellStyle::new().wrap_text(true)])
         .loop_merge(LoopMergeStrategy::new(2, 1, 0).expect("loop merge"))
         .head([["Group", "Value"]])
+        .password("write-secret")
         .register_write_handler(NoopWriteHandler)
         .constant_memory(true);
     assert_eq!(write.path, PathBuf::from("output.xlsx"));
@@ -123,9 +146,11 @@ fn factories_and_builder_options_match_java_style_chaining() {
     );
     assert_eq!(write.handlers.len(), 1);
     assert!(write.options.constant_memory);
+    assert_eq!(write.options.password.as_deref(), Some("write-secret"));
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("values.xlsx");
@@ -146,6 +171,67 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
     EasyExcel::read::<Value, _>(&csv, Listener::default())
         .sheet("CsvSheet")
         .do_read()?;
+    assert!(matches!(
+        EasyExcel::write::<Value>(directory.path().join("protected.csv"))
+            .password("secret")
+            .do_write(rows.clone()),
+        Err(ExcelError::Unsupported(_))
+    ));
+
+    let encrypted = directory.path().join("protected.xlsx");
+    EasyExcel::write::<Value>(&encrypted)
+        .password("123456")
+        .do_write(rows.clone())?;
+    assert_eq!(
+        &fs::read(&encrypted)?[..8],
+        &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]
+    );
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&encrypted)
+            .password("123456")
+            .do_read_sync()?,
+        rows
+    );
+    assert!(
+        EasyExcel::read_sync::<Value>(&encrypted)
+            .password("wrong")
+            .do_read_sync()
+            .is_err()
+    );
+    assert!(
+        EasyExcel::read_sync::<Value>(&encrypted)
+            .do_read_sync()
+            .is_err()
+    );
+    let invalid_encrypted = directory.path().join("invalid-encrypted.xlsx");
+    fs::write(
+        &invalid_encrypted,
+        [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1],
+    )?;
+    assert!(
+        EasyExcel::read_sync::<Value>(&invalid_encrypted)
+            .password("123456")
+            .do_read_sync()
+            .is_err()
+    );
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&path)
+            .password("ignored-for-plain-xlsx")
+            .sheet("Values")
+            .do_read_sync()?,
+        rows
+    );
+    assert!(
+        EasyExcel::read_sync::<Value>(&path)
+            .sheet(99_usize)
+            .do_read_sync()
+            .is_err()
+    );
+    assert!(
+        EasyExcel::read::<Value, _>(&path, FailingListener)
+            .do_read()
+            .is_err()
+    );
 
     EasyExcel::read::<Value, _>(&path, Listener::default())
         .all_sheets()
@@ -155,7 +241,7 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
     EasyExcel::write::<Value>(&no_head)
         .need_head(false)
         .constant_memory(true)
-        .do_write(rows)?;
+        .do_write(rows.clone())?;
     assert_eq!(
         EasyExcel::read_sync::<Value>(&no_head)
             .head_row_number(0)
@@ -188,6 +274,19 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
             .head_row_number(0)
             .do_read_sync()?,
         vec![Value("second".to_owned())]
+    );
+
+    let encrypted_multi = directory.path().join("encrypted-multi.xlsx");
+    let mut encrypted_writer = EasyExcel::write::<Value>(&encrypted_multi)
+        .password("stateful")
+        .build();
+    encrypted_writer.write(rows.clone(), &first)?.finish()?;
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&encrypted_multi)
+            .password("stateful")
+            .sheet("First")
+            .do_read_sync()?,
+        rows
     );
 
     let template = directory.path().join("template.xlsx");
@@ -260,6 +359,17 @@ fn facade_propagates_read_sync_and_write_failures() {
     );
     assert!(
         EasyExcel::write::<Value>("target/does-not-exist/output.xlsx")
+            .do_write(Vec::new())
+            .is_err()
+    );
+    assert!(
+        EasyExcel::write::<Value>("target/does-not-exist/output.csv")
+            .do_write(Vec::new())
+            .is_err()
+    );
+    assert!(
+        EasyExcel::write::<Value>("target/does-not-exist/encrypted.xlsx")
+            .password("123456")
             .do_write(Vec::new())
             .is_err()
     );

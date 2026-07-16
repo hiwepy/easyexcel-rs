@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::sync::Arc;
 
 use base64::Engine;
@@ -13,6 +13,22 @@ use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 use super::*;
+
+struct FaultyBufRead;
+
+impl Read for FaultyBufRead {
+    fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+        Err(std::io::Error::other("injected probe failure"))
+    }
+}
+
+impl BufRead for FaultyBufRead {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        Err(std::io::Error::other("injected probe failure"))
+    }
+
+    fn consume(&mut self, _amount: usize) {}
+}
 
 fn test_error(error: impl std::fmt::Display) -> ExcelError {
     ExcelError::Format(error.to_string())
@@ -112,6 +128,7 @@ fn options() -> ReadOptions {
         sheet: SheetSelector::First,
         head_row_number: 1,
         ignore_empty_row: true,
+        password: None,
     }
 }
 
@@ -241,6 +258,7 @@ fn helpers_preserve_diagnostics_and_xlsx_column_limits() {
         format_error("broken").to_string(),
         "excel format error: broken"
     );
+    assert!(!is_compound_document(&mut FaultyBufRead));
 }
 
 #[test]
@@ -375,6 +393,45 @@ fn reads_java_easyexcel_legacy_multisheet_fixture() -> Result<()> {
     let invalid = directory.path().join("invalid.xls");
     fs::write(&invalid, b"not an XLS workbook")?;
     assert!(read_xls::<TestRow, _>(&invalid, &options(), &mut probe).is_err());
+    Ok(())
+}
+
+#[test]
+fn reads_java_easyexcel_encrypted_xlsx_fixture() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("java-encrypt07.xlsx");
+    let compressed = base64::engine::general_purpose::STANDARD
+        .decode(include_str!("fixtures/java-encrypt07.xlsx.gz.b64").trim())
+        .map_err(test_error)?;
+    let mut decoder = GzDecoder::new(compressed.as_slice());
+    let mut workbook = Vec::new();
+    decoder.read_to_end(&mut workbook)?;
+    assert!(is_compound_document(&mut workbook.as_slice()));
+    assert!(!is_compound_document(&mut &workbook[..4]));
+    assert!(!is_compound_document(&mut &b"not-cfb!"[..]));
+    fs::write(&path, workbook)?;
+
+    let mut probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_xlsx::<TestRow, _>(
+        &path,
+        &ReadOptions {
+            password: Some("123456".to_owned()),
+            ..options()
+        },
+        &mut probe,
+    )?;
+    assert!(read_xlsx::<TestRow, _>(&path, &options(), &mut probe).is_err());
+    assert_eq!(
+        probe.rows,
+        (0..10)
+            .map(|index| TestRow(format!("姓名{index}")))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(probe.heads[0].get("姓名"), Some(&0));
+    assert_eq!(probe.after, vec![("0".to_owned(), 0, 10)]);
     Ok(())
 }
 
@@ -747,6 +804,8 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
         listener: &mut direct,
     };
     assert!(read_sheet(&mut opened, 0, "Missing", &options(), &mut consumer).is_err());
+    let mut public_opened = open_xlsx(&path, None)?;
+    assert!(read_sheet(&mut public_opened, 0, "Missing", &options(), &mut consumer,).is_err());
 
     let empty_path = fixture_directory.path().join("empty.xlsx");
     let mut empty_workbook = Workbook::new();
@@ -830,5 +889,30 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
     let invalid = directory.path().join("invalid.xlsx");
     fs::write(&invalid, b"not an xlsx")?;
     assert!(read_xlsx::<TestRow, _>(&invalid, &options(), &mut probe).is_err());
+    assert!(
+        read_xlsx::<TestRow, _>(
+            &directory.path().join("missing.xlsx"),
+            &options(),
+            &mut probe,
+        )
+        .is_err()
+    );
+    assert!(read_xlsx::<TestRow, _>(directory.path(), &options(), &mut probe).is_err());
+    let invalid_encrypted = directory.path().join("invalid-encrypted.xlsx");
+    fs::write(
+        &invalid_encrypted,
+        [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1],
+    )?;
+    assert!(
+        read_xlsx::<TestRow, _>(
+            &invalid_encrypted,
+            &ReadOptions {
+                password: Some("123456".to_owned()),
+                ..options()
+            },
+            &mut probe,
+        )
+        .is_err()
+    );
     Ok(())
 }

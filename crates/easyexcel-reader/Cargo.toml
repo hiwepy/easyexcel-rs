@@ -11,6 +11,7 @@ repository.workspace = true
 calamine.workspace = true
 csv.workspace = true
 easyexcel-core = { path = "../easyexcel-core" }
+office-crypto.workspace = true
 
 [dev-dependencies]
 base64.workspace = true

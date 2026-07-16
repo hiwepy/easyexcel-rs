@@ -49,7 +49,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, UTF-8 BOM, and case-insensitive `.csv` dispatch implemented; charset configuration and stateful multi-write remain |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
-| password/encryption | encryption adapter | planned |
+| XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
 | Axum/Actix adapters | `easyexcel-web` | planned |
 
 ## Verification evidence required for 1.0
@@ -61,3 +61,17 @@ This document is the release gate, not a marketing checklist. A row is marked
 5. Million-row read/write benchmarks record time, peak RSS, and temporary disk.
 6. `cargo llvm-cov` reports 100% lines, regions, and functions.
 7. Formatting, Clippy, tests, docs, MSRV, and security audit are green in CI.
+
+## Encryption boundary
+
+Password-protected `.xlsx` files are OOXML packages stored inside an OLE/CFB
+encryption container. The writer emits ECMA-376 Agile Encryption using AES-256
+and SHA-512. The reader recognizes the CFB signature and decrypts Agile or
+Standard OOXML before handing the package to the normal typed XLSX engine.
+Supplying a password for an unencrypted XLSX is harmless, matching Java
+EasyExcel's builder behavior.
+
+Encryption currently buffers the plaintext OOXML package in memory before it
+is encrypted or parsed. Legacy encrypted `.xls` uses a different BIFF/RC4
+mechanism and returns a typed unsupported-format error; it is not covered by
+the OOXML password implementation.
