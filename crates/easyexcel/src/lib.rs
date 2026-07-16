@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
 use easyexcel_reader::{ReadOptions, SheetSelector, read_xlsx};
-use easyexcel_writer::{WriteOptions, write_xlsx};
+use easyexcel_writer::{WriteOptions, write_xlsx_with_handlers};
 
 /// Static factory matching Java `EasyExcel`'s entry point.
 pub struct EasyExcel;
@@ -46,6 +46,7 @@ impl EasyExcel {
         ExcelWriterBuilder {
             path: path.into(),
             options: WriteOptions::default(),
+            handlers: Vec::new(),
             marker: PhantomData,
         }
     }
@@ -176,6 +177,7 @@ impl<T> ReadListener<T> for CollectListener<T> {
 pub struct ExcelWriterBuilder<T> {
     path: PathBuf,
     options: WriteOptions,
+    handlers: Vec<Box<dyn WriteHandler>>,
     marker: PhantomData<T>,
 }
 
@@ -252,6 +254,13 @@ where
         self
     }
 
+    /// Registers a write lifecycle handler. Handlers execute by ascending order.
+    #[must_use]
+    pub fn register_write_handler(mut self, handler: impl WriteHandler + 'static) -> Self {
+        self.handlers.push(Box::new(handler));
+        self
+    }
+
     /// Selects constant-memory output.
     #[must_use]
     pub const fn constant_memory(mut self, enabled: bool) -> Self {
@@ -264,11 +273,16 @@ where
     /// # Errors
     ///
     /// Returns a conversion, worksheet-configuration, XLSX-format, or I/O error.
-    pub fn do_write<I>(self, rows: I) -> Result<()>
+    pub fn do_write<I>(mut self, rows: I) -> Result<()>
     where
         I: IntoIterator<Item = T>,
     {
-        write_xlsx::<T, I>(Path::new(&self.path), &self.options, rows)
+        write_xlsx_with_handlers::<T, I>(
+            Path::new(&self.path),
+            &self.options,
+            rows,
+            &mut self.handlers,
+        )
     }
 
     /// Alias emphasizing that the input is consumed incrementally.

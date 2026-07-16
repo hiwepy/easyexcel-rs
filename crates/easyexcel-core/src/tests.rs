@@ -409,3 +409,40 @@ fn every_error_variant_has_actionable_display_text() {
     assert_eq!(io_error.to_string(), "disk");
     assert_eq!(ErrorAction::SkipRow, ErrorAction::SkipRow);
 }
+
+struct DefaultWriteHandler;
+
+impl WriteHandler for DefaultWriteHandler {}
+
+#[test]
+fn write_handler_contexts_and_defaults_cover_the_full_lifecycle() -> Result<()> {
+    let workbook = WriteWorkbookContext::new("output.xlsx");
+    assert_eq!(workbook.path(), std::path::Path::new("output.xlsx"));
+    let sheet = WriteSheetContext::new("Users");
+    assert_eq!(sheet.sheet_name(), "Users");
+    let row = WriteRowContext {
+        sheet_name: "Users".to_owned(),
+        row_index: 1,
+        is_head: false,
+    };
+    let mut cell = WriteCellContext {
+        sheet_name: "Users".to_owned(),
+        row_index: 1,
+        column_index: 0,
+        field: Some("name"),
+        is_head: false,
+        value: CellValue::String("Alice".to_owned()),
+        skip: false,
+    };
+    let mut handler = DefaultWriteHandler;
+    assert_eq!(handler.order(), 0);
+    handler.before_workbook(&workbook)?;
+    handler.before_sheet(&sheet)?;
+    handler.before_row(&row)?;
+    handler.before_cell(&mut cell)?;
+    handler.after_cell(&cell)?;
+    handler.after_row(&row)?;
+    handler.after_sheet(&sheet)?;
+    handler.after_workbook(&workbook)?;
+    Ok(())
+}

@@ -2,7 +2,10 @@
 
 use std::path::Path;
 
-use easyexcel_core::{CellValue, ExcelColumn, ExcelError, ExcelRow, Result};
+use easyexcel_core::{
+    CellValue, ExcelColumn, ExcelError, ExcelRow, Result, WriteCellContext, WriteHandler,
+    WriteRowContext, WriteSheetContext, WriteWorkbookContext,
+};
 use rust_xlsxwriter::{Format, Workbook, Worksheet};
 
 /// XLSX write configuration.
@@ -58,6 +61,28 @@ where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
+    write_xlsx_with_handlers(path, options, rows, &mut [])
+}
+
+/// Writes typed rows while invoking ordered write handlers.
+///
+/// # Errors
+///
+/// Returns a conversion, handler, worksheet-configuration, XLSX-format, or I/O error.
+pub fn write_xlsx_with_handlers<T, I>(
+    path: &Path,
+    options: &WriteOptions,
+    rows: I,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()>
+where
+    T: ExcelRow,
+    I: IntoIterator<Item = T>,
+{
+    sort_handlers(handlers);
+    let workbook_context = WriteWorkbookContext::new(path);
+    before_workbook(handlers, &workbook_context)?;
+
     let mut workbook = Workbook::new();
     let worksheet = if options.constant_memory {
         workbook.add_worksheet_with_constant_memory()
@@ -76,18 +101,69 @@ where
             .map_err(format_error)?;
     }
 
+    let sheet_context = WriteSheetContext::new(&options.sheet_name);
+    before_sheet(handlers, &sheet_context)?;
+
     let columns = selected_columns(T::schema(), options);
     let mut row_index = 0_u32;
     if options.need_head {
-        write_headers(worksheet, &columns)?;
+        write_headers_with_handlers(worksheet, &columns, &options.sheet_name, handlers)?;
         row_index = 1;
     }
     for row in rows {
         let cells = row.to_row()?;
-        write_data_row(worksheet, row_index, &columns, &cells)?;
+        write_data_row_with_handlers(
+            worksheet,
+            row_index,
+            &columns,
+            &cells,
+            &options.sheet_name,
+            handlers,
+        )?;
         row_index += 1;
     }
-    workbook.save(path).map_err(format_error)
+    after_sheet(handlers, &sheet_context)?;
+    workbook.save(path).map_err(format_error)?;
+    after_workbook(handlers, &workbook_context)?;
+    Ok(())
+}
+
+fn sort_handlers(handlers: &mut [Box<dyn WriteHandler>]) {
+    handlers.sort_by_key(|handler| handler.order());
+}
+
+fn before_workbook(
+    handlers: &mut [Box<dyn WriteHandler>],
+    context: &WriteWorkbookContext,
+) -> Result<()> {
+    for handler in handlers.iter_mut() {
+        handler.before_workbook(context)?;
+    }
+    Ok(())
+}
+
+fn after_workbook(
+    handlers: &mut [Box<dyn WriteHandler>],
+    context: &WriteWorkbookContext,
+) -> Result<()> {
+    for handler in handlers.iter_mut() {
+        handler.after_workbook(context)?;
+    }
+    Ok(())
+}
+
+fn before_sheet(handlers: &mut [Box<dyn WriteHandler>], context: &WriteSheetContext) -> Result<()> {
+    for handler in handlers.iter_mut() {
+        handler.before_sheet(context)?;
+    }
+    Ok(())
+}
+
+fn after_sheet(handlers: &mut [Box<dyn WriteHandler>], context: &WriteSheetContext) -> Result<()> {
+    for handler in handlers.iter_mut() {
+        handler.after_sheet(context)?;
+    }
+    Ok(())
 }
 
 fn ordered_columns(schema: &'static [ExcelColumn]) -> Vec<(usize, usize, &'static ExcelColumn)> {
@@ -152,62 +228,163 @@ fn selected_columns(
     columns
 }
 
+#[cfg(test)]
 fn write_headers(
     worksheet: &mut Worksheet,
     columns: &[(usize, usize, &'static ExcelColumn)],
 ) -> Result<()> {
+    write_headers_with_handlers(worksheet, columns, "", &mut [])
+}
+
+fn write_headers_with_handlers(
+    worksheet: &mut Worksheet,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    sheet_name: &str,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()> {
     let format = Format::new().set_bold();
+    let row_context = WriteRowContext {
+        sheet_name: sheet_name.to_owned(),
+        row_index: 0,
+        is_head: true,
+    };
+    for handler in handlers.iter_mut() {
+        handler.before_row(&row_context)?;
+    }
     for (physical_index, _, column) in columns {
-        worksheet
-            .write_string_with_format(0, to_column(*physical_index)?, column.name, &format)
-            .map_err(format_error)?;
+        let column_index = to_column(*physical_index)?;
+        let mut context = WriteCellContext {
+            sheet_name: sheet_name.to_owned(),
+            row_index: 0,
+            column_index,
+            field: Some(column.field),
+            is_head: true,
+            value: CellValue::String(column.name.to_owned()),
+            skip: false,
+        };
+        for handler in handlers.iter_mut() {
+            handler.before_cell(&mut context)?;
+        }
+        if !context.skip {
+            match &context.value {
+                CellValue::String(value) | CellValue::Error(value) => {
+                    worksheet
+                        .write_string_with_format(0, context.column_index, value, &format)
+                        .map_err(format_error)?;
+                }
+                value => write_cell(worksheet, 0, context.column_index, column, value)?,
+            }
+        }
+        for handler in handlers.iter_mut() {
+            handler.after_cell(&context)?;
+        }
+    }
+    for handler in handlers.iter_mut() {
+        handler.after_row(&row_context)?;
     }
     Ok(())
 }
 
+#[cfg(test)]
 fn write_data_row(
     worksheet: &mut Worksheet,
     row_index: u32,
     columns: &[(usize, usize, &'static ExcelColumn)],
     cells: &[CellValue],
 ) -> Result<()> {
+    write_data_row_with_handlers(worksheet, row_index, columns, cells, "", &mut [])
+}
+
+fn write_data_row_with_handlers(
+    worksheet: &mut Worksheet,
+    row_index: u32,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    cells: &[CellValue],
+    sheet_name: &str,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()> {
+    let row_context = WriteRowContext {
+        sheet_name: sheet_name.to_owned(),
+        row_index,
+        is_head: false,
+    };
+    for handler in handlers.iter_mut() {
+        handler.before_row(&row_context)?;
+    }
     for (physical_index, schema_index, metadata) in columns {
         let value = cells.get(*schema_index).unwrap_or(&CellValue::Empty);
         let column = to_column(*physical_index)?;
-        match value {
-            CellValue::Empty => {}
-            CellValue::String(value) | CellValue::Error(value) => {
-                worksheet
-                    .write_string(row_index, column, value)
-                    .map_err(format_error)?;
-            }
-            CellValue::Bool(value) => {
-                worksheet
-                    .write_boolean(row_index, column, *value)
-                    .map_err(format_error)?;
-            }
-            CellValue::Int(value) => {
-                write_integer(worksheet, row_index, column, *value)?;
-            }
-            CellValue::Float(value) => {
-                worksheet
-                    .write_number(row_index, column, *value)
-                    .map_err(format_error)?;
-            }
-            CellValue::Date(value) => {
-                let format =
-                    Format::new().set_num_format(excel_date_format(metadata.format, "yyyy-mm-dd"));
-                worksheet
-                    .write_datetime_with_format(row_index, column, *value, &format)
-                    .map_err(format_error)?;
-            }
-            CellValue::DateTime(value) => {
-                let format = Format::new()
-                    .set_num_format(excel_date_format(metadata.format, "yyyy-mm-dd hh:mm:ss"));
-                worksheet
-                    .write_datetime_with_format(row_index, column, *value, &format)
-                    .map_err(format_error)?;
-            }
+        let mut context = WriteCellContext {
+            sheet_name: sheet_name.to_owned(),
+            row_index,
+            column_index: column,
+            field: Some(metadata.field),
+            is_head: false,
+            value: value.clone(),
+            skip: false,
+        };
+        for handler in handlers.iter_mut() {
+            handler.before_cell(&mut context)?;
+        }
+        if !context.skip {
+            write_cell(
+                worksheet,
+                row_index,
+                context.column_index,
+                metadata,
+                &context.value,
+            )?;
+        }
+        for handler in handlers.iter_mut() {
+            handler.after_cell(&context)?;
+        }
+    }
+    for handler in handlers.iter_mut() {
+        handler.after_row(&row_context)?;
+    }
+    Ok(())
+}
+
+fn write_cell(
+    worksheet: &mut Worksheet,
+    row_index: u32,
+    column: u16,
+    metadata: &ExcelColumn,
+    value: &CellValue,
+) -> Result<()> {
+    match value {
+        CellValue::Empty => {}
+        CellValue::String(value) | CellValue::Error(value) => {
+            worksheet
+                .write_string(row_index, column, value)
+                .map_err(format_error)?;
+        }
+        CellValue::Bool(value) => {
+            worksheet
+                .write_boolean(row_index, column, *value)
+                .map_err(format_error)?;
+        }
+        CellValue::Int(value) => {
+            write_integer(worksheet, row_index, column, *value)?;
+        }
+        CellValue::Float(value) => {
+            worksheet
+                .write_number(row_index, column, *value)
+                .map_err(format_error)?;
+        }
+        CellValue::Date(value) => {
+            let format =
+                Format::new().set_num_format(excel_date_format(metadata.format, "yyyy-mm-dd"));
+            worksheet
+                .write_datetime_with_format(row_index, column, *value, &format)
+                .map_err(format_error)?;
+        }
+        CellValue::DateTime(value) => {
+            let format = Format::new()
+                .set_num_format(excel_date_format(metadata.format, "yyyy-mm-dd hh:mm:ss"));
+            worksheet
+                .write_datetime_with_format(row_index, column, *value, &format)
+                .map_err(format_error)?;
         }
     }
     Ok(())

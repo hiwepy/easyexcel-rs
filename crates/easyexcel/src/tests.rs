@@ -26,6 +26,10 @@ impl ExcelRow for Value {
 #[derive(Default)]
 struct Listener(Vec<Value>);
 
+struct NoopWriteHandler;
+
+impl WriteHandler for NoopWriteHandler {}
+
 impl ReadListener<Value> for Listener {
     fn invoke(&mut self, data: Value, _context: &AnalysisContext) -> Result<()> {
         self.0.push(data);
@@ -75,6 +79,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .exclude_column_indexes([3])
         .exclude_column_field_names(["ignored".to_owned()])
         .order_by_include_column(true)
+        .register_write_handler(NoopWriteHandler)
         .constant_memory(true);
     assert_eq!(write.path, PathBuf::from("output.xlsx"));
     assert_eq!(write.options.sheet_name, "Values");
@@ -92,6 +97,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         vec!["ignored".to_owned()]
     );
     assert!(write.options.order_by_include_column);
+    assert_eq!(write.handlers.len(), 1);
     assert!(write.options.constant_memory);
 }
 
@@ -144,7 +150,7 @@ fn facade_propagates_read_sync_and_write_failures() {
     );
     assert!(
         EasyExcel::write::<Value>("target/does-not-exist/output.xlsx")
-            .do_write(std::iter::empty())
+            .do_write(Vec::new())
             .is_err()
     );
 }

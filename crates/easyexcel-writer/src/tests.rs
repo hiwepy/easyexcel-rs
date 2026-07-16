@@ -1,4 +1,6 @@
 use std::cell::Cell;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use calamine::{Data, Reader, Xlsx, open_workbook};
 use chrono::NaiveDate;
@@ -72,6 +74,180 @@ fn every_cell() -> EveryCell {
             CellValue::Int(i64::MAX),
         ],
         fail: false,
+    }
+}
+
+struct RecordingHandler {
+    order: i32,
+    events: Rc<RefCell<Vec<String>>>,
+}
+
+impl WriteHandler for RecordingHandler {
+    fn order(&self) -> i32 {
+        self.order
+    }
+
+    fn before_workbook(&mut self, context: &WriteWorkbookContext) -> Result<()> {
+        self.events.borrow_mut().push(format!(
+            "{}:before_workbook:{}",
+            self.order,
+            context.path().display()
+        ));
+        Ok(())
+    }
+
+    fn after_workbook(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+        self.events
+            .borrow_mut()
+            .push(format!("{}:after_workbook", self.order));
+        Ok(())
+    }
+
+    fn before_sheet(&mut self, context: &WriteSheetContext) -> Result<()> {
+        self.events.borrow_mut().push(format!(
+            "{}:before_sheet:{}",
+            self.order,
+            context.sheet_name()
+        ));
+        Ok(())
+    }
+
+    fn after_sheet(&mut self, _context: &WriteSheetContext) -> Result<()> {
+        self.events
+            .borrow_mut()
+            .push(format!("{}:after_sheet", self.order));
+        Ok(())
+    }
+
+    fn before_row(&mut self, context: &WriteRowContext) -> Result<()> {
+        self.events
+            .borrow_mut()
+            .push(format!("{}:before_row:{}", self.order, context.is_head));
+        Ok(())
+    }
+
+    fn after_row(&mut self, context: &WriteRowContext) -> Result<()> {
+        self.events
+            .borrow_mut()
+            .push(format!("{}:after_row:{}", self.order, context.is_head));
+        Ok(())
+    }
+
+    fn before_cell(&mut self, context: &mut WriteCellContext) -> Result<()> {
+        self.events.borrow_mut().push(format!(
+            "{}:before_cell:{}:{}",
+            self.order, context.is_head, context.column_index
+        ));
+        if self.order < 0 {
+            match (context.is_head, context.field) {
+                (true, Some("empty")) | (false, Some("error")) => context.skip = true,
+                (true, Some("string")) => context.value = CellValue::Bool(true),
+                (true, Some("error")) => {
+                    context.value = CellValue::Error("header-error".to_owned());
+                }
+                (false, Some("string")) => {
+                    context.value = CellValue::String("transformed".to_owned());
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn after_cell(&mut self, context: &WriteCellContext) -> Result<()> {
+        self.events.borrow_mut().push(format!(
+            "{}:after_cell:{}:{}",
+            self.order, context.is_head, context.skip
+        ));
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FailureStage {
+    BeforeWorkbook,
+    BeforeSheet,
+    BeforeHeadRow,
+    BeforeHeadCell,
+    AfterHeadCell,
+    AfterHeadRow,
+    BeforeDataRow,
+    BeforeDataCell,
+    AfterDataCell,
+    AfterDataRow,
+    AfterSheet,
+    AfterWorkbook,
+}
+
+struct FailingHandler(FailureStage);
+
+struct InvalidHeaderValueHandler;
+
+impl WriteHandler for InvalidHeaderValueHandler {
+    fn before_cell(&mut self, context: &mut WriteCellContext) -> Result<()> {
+        context.column_index = u16::MAX;
+        context.value = CellValue::Bool(true);
+        Ok(())
+    }
+}
+
+impl FailingHandler {
+    fn result(&self, stage: FailureStage) -> Result<()> {
+        if self.0 == stage {
+            Err(ExcelError::Format("handler failed".to_owned()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl WriteHandler for FailingHandler {
+    fn before_workbook(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+        self.result(FailureStage::BeforeWorkbook)
+    }
+
+    fn after_workbook(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+        self.result(FailureStage::AfterWorkbook)
+    }
+
+    fn before_sheet(&mut self, _context: &WriteSheetContext) -> Result<()> {
+        self.result(FailureStage::BeforeSheet)
+    }
+
+    fn after_sheet(&mut self, _context: &WriteSheetContext) -> Result<()> {
+        self.result(FailureStage::AfterSheet)
+    }
+
+    fn before_row(&mut self, context: &WriteRowContext) -> Result<()> {
+        self.result(if context.is_head {
+            FailureStage::BeforeHeadRow
+        } else {
+            FailureStage::BeforeDataRow
+        })
+    }
+
+    fn after_row(&mut self, context: &WriteRowContext) -> Result<()> {
+        self.result(if context.is_head {
+            FailureStage::AfterHeadRow
+        } else {
+            FailureStage::AfterDataRow
+        })
+    }
+
+    fn before_cell(&mut self, context: &mut WriteCellContext) -> Result<()> {
+        self.result(if context.is_head {
+            FailureStage::BeforeHeadCell
+        } else {
+            FailureStage::BeforeDataCell
+        })
+    }
+
+    fn after_cell(&mut self, context: &WriteCellContext) -> Result<()> {
+        self.result(if context.is_head {
+            FailureStage::AfterHeadCell
+        } else {
+            FailureStage::AfterDataCell
+        })
     }
 }
 
@@ -253,6 +429,93 @@ fn constant_memory_writer_can_omit_headers_and_freeze_request() -> Result<()> {
     assert_eq!(
         range.get_value((1, 1)),
         Some(&Data::String("text".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn ordered_handlers_observe_transform_and_skip_the_full_lifecycle() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("handled.xlsx");
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![
+        Box::new(RecordingHandler {
+            order: 10,
+            events: Rc::clone(&events),
+        }),
+        Box::new(RecordingHandler {
+            order: -10,
+            events: Rc::clone(&events),
+        }),
+    ];
+    write_xlsx_with_handlers::<EveryCell, _>(
+        &path,
+        &WriteOptions::default(),
+        vec![every_cell()],
+        &mut handlers,
+    )?;
+
+    let actual = events.borrow();
+    assert!(actual[0].starts_with("-10:before_workbook:"));
+    assert!(actual[1].starts_with("10:before_workbook:"));
+    assert!(actual.iter().any(|event| event == "-10:after_workbook"));
+    assert!(actual.iter().any(|event| event == "10:after_workbook"));
+    drop(actual);
+
+    let mut workbook: Xlsx<_> = open_workbook(path).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    assert_eq!(range.get_value((0, 0)), None);
+    assert_eq!(range.get_value((0, 1)), Some(&Data::Bool(true)));
+    assert_eq!(
+        range.get_value((1, 1)),
+        Some(&Data::String("transformed".to_owned()))
+    );
+    assert_eq!(range.get_value((1, 2)), Some(&Data::Empty));
+    Ok(())
+}
+
+#[test]
+fn every_handler_failure_stage_is_propagated() -> Result<()> {
+    let directory = tempdir()?;
+    for (index, stage) in [
+        FailureStage::BeforeWorkbook,
+        FailureStage::BeforeSheet,
+        FailureStage::BeforeHeadRow,
+        FailureStage::BeforeHeadCell,
+        FailureStage::AfterHeadCell,
+        FailureStage::AfterHeadRow,
+        FailureStage::BeforeDataRow,
+        FailureStage::BeforeDataCell,
+        FailureStage::AfterDataCell,
+        FailureStage::AfterDataRow,
+        FailureStage::AfterSheet,
+        FailureStage::AfterWorkbook,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(FailingHandler(stage))];
+        let error = write_xlsx_with_handlers::<EveryCell, _>(
+            &directory.path().join(format!("handler-{index}.xlsx")),
+            &WriteOptions::default(),
+            vec![every_cell()],
+            &mut handlers,
+        )
+        .expect_err("handler failure must propagate");
+        assert_eq!(error.to_string(), "excel format error: handler failed");
+    }
+
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(InvalidHeaderValueHandler)];
+    assert!(
+        write_headers_with_handlers(
+            worksheet,
+            &selected_columns(EveryCell::schema(), &WriteOptions::default()),
+            "Sheet1",
+            &mut handlers,
+        )
+        .is_err()
     );
     Ok(())
 }

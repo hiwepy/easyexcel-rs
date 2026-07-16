@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -198,6 +199,129 @@ pub trait IntoExcelCell {
     ///
     /// Returns an error when the Rust value cannot be represented by an Excel cell.
     fn to_excel_cell(&self, context: &ConvertContext) -> Result<CellValue>;
+}
+
+/// Workbook-level write lifecycle context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteWorkbookContext {
+    path: PathBuf,
+}
+
+impl WriteWorkbookContext {
+    /// Creates a workbook context for an output path.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Returns the output path.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Worksheet-level write lifecycle context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteSheetContext {
+    sheet_name: String,
+}
+
+impl WriteSheetContext {
+    /// Creates a worksheet context.
+    #[must_use]
+    pub fn new(sheet_name: impl Into<String>) -> Self {
+        Self {
+            sheet_name: sheet_name.into(),
+        }
+    }
+
+    /// Returns the worksheet name.
+    #[must_use]
+    pub fn sheet_name(&self) -> &str {
+        &self.sheet_name
+    }
+}
+
+/// Row-level write lifecycle context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteRowContext {
+    /// Worksheet name.
+    pub sheet_name: String,
+    /// Physical zero-based row index.
+    pub row_index: u32,
+    /// Whether this is a header row.
+    pub is_head: bool,
+}
+
+/// Mutable cell-level write lifecycle context.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WriteCellContext {
+    /// Worksheet name.
+    pub sheet_name: String,
+    /// Physical zero-based row index.
+    pub row_index: u32,
+    /// Physical zero-based column index.
+    pub column_index: u16,
+    /// Rust field name, when backed by a typed column.
+    pub field: Option<&'static str>,
+    /// Whether this is a header cell.
+    pub is_head: bool,
+    /// Value that will be written. A handler may replace it.
+    pub value: CellValue,
+    /// A handler may set this to suppress the physical cell.
+    pub skip: bool,
+}
+
+/// Intercepts the workbook, worksheet, row, and cell write lifecycle.
+///
+/// Any callback may return an error to stop the write immediately.
+#[allow(clippy::missing_errors_doc)]
+pub trait WriteHandler {
+    /// Lower orders execute first.
+    fn order(&self) -> i32 {
+        0
+    }
+
+    /// Called before the workbook is created.
+    fn before_workbook(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called after the workbook is saved.
+    fn after_workbook(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called after the worksheet is configured and before rows are written.
+    fn before_sheet(&mut self, _context: &WriteSheetContext) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called after all worksheet rows are written.
+    fn after_sheet(&mut self, _context: &WriteSheetContext) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called before a row is written.
+    fn before_row(&mut self, _context: &WriteRowContext) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called after a row is written.
+    fn after_row(&mut self, _context: &WriteRowContext) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called before a cell is written and may transform or skip it.
+    fn before_cell(&mut self, _context: &mut WriteCellContext) -> Result<()> {
+        Ok(())
+    }
+
+    /// Called after a cell has been processed.
+    fn after_cell(&mut self, _context: &WriteCellContext) -> Result<()> {
+        Ok(())
+    }
 }
 
 impl FromExcelCell for String {
