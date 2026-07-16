@@ -1,0 +1,230 @@
+//! Streaming XLSX reader backed by Calamine's cell stream.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use calamine::{DataRef, Reader, Xlsx, open_workbook};
+use easyexcel_core::{
+    AnalysisContext, CellValue, ErrorAction, ExcelError, ExcelRow, ReadListener, Result, RowData,
+};
+
+/// Selects a worksheet by index, name, or all sheets.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SheetSelector {
+    /// The first worksheet.
+    #[default]
+    First,
+    /// A zero-based worksheet index.
+    Index(usize),
+    /// A worksheet name.
+    Name(String),
+    /// Every worksheet in workbook order.
+    All,
+}
+
+/// XLSX read configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadOptions {
+    /// Sheet selection.
+    pub sheet: SheetSelector,
+    /// Number of header rows. The final header row is used for name mapping.
+    pub head_row_number: u32,
+    /// Whether rows containing only empty cells are ignored.
+    pub ignore_empty_row: bool,
+}
+
+impl Default for ReadOptions {
+    fn default() -> Self {
+        Self {
+            sheet: SheetSelector::First,
+            head_row_number: 1,
+            ignore_empty_row: true,
+        }
+    }
+}
+
+/// Reads selected XLSX sheets and dispatches typed row events.
+///
+/// # Errors
+///
+/// Returns an I/O, workbook-format, sheet-selection, conversion, or listener error.
+pub fn read_xlsx<T, L>(path: &Path, options: &ReadOptions, listener: &mut L) -> Result<()>
+where
+    T: ExcelRow,
+    L: ReadListener<T> + ?Sized,
+{
+    let mut workbook: Xlsx<_> = open_workbook(path).map_err(format_error)?;
+    let names = selected_sheet_names(&workbook, &options.sheet)?;
+    for (sheet_no, sheet_name) in names {
+        read_sheet::<T, L, _>(&mut workbook, sheet_no, &sheet_name, options, listener)?;
+    }
+    Ok(())
+}
+
+fn selected_sheet_names<RS: std::io::Read + std::io::Seek>(
+    workbook: &Xlsx<RS>,
+    selector: &SheetSelector,
+) -> Result<Vec<(usize, String)>> {
+    select_sheet_names(workbook.sheet_names(), selector)
+}
+
+fn select_sheet_names(
+    names: Vec<String>,
+    selector: &SheetSelector,
+) -> Result<Vec<(usize, String)>> {
+    match selector {
+        SheetSelector::First => names
+            .first()
+            .cloned()
+            .map(|name| vec![(0, name)])
+            .ok_or_else(|| ExcelError::SheetNotFound("0".to_owned())),
+        SheetSelector::Index(index) => names
+            .get(*index)
+            .cloned()
+            .map(|name| vec![(*index, name)])
+            .ok_or_else(|| ExcelError::SheetNotFound(index.to_string())),
+        SheetSelector::Name(name) => names
+            .iter()
+            .position(|candidate| candidate == name)
+            .map(|index| vec![(index, name.clone())])
+            .ok_or_else(|| ExcelError::SheetNotFound(name.clone())),
+        SheetSelector::All => Ok(names.into_iter().enumerate().collect()),
+    }
+}
+
+fn read_sheet<T, L, RS>(
+    workbook: &mut Xlsx<RS>,
+    sheet_no: usize,
+    sheet_name: &str,
+    options: &ReadOptions,
+    listener: &mut L,
+) -> Result<()>
+where
+    T: ExcelRow,
+    L: ReadListener<T> + ?Sized,
+    RS: std::io::Read + std::io::Seek,
+{
+    let mut reader = workbook
+        .worksheet_cells_reader(sheet_name)
+        .map_err(format_error)?;
+    let mut current_index = None;
+    let mut current_cells = Vec::new();
+    let mut headers = Arc::new(HashMap::new());
+
+    while let Some(cell) = reader.next_cell().map_err(format_error)? {
+        let (row, column) = cell.get_position();
+        if current_index.is_some_and(|current| current != row) {
+            process_row::<T, L>(
+                sheet_no,
+                sheet_name,
+                current_index.expect("row index exists"),
+                std::mem::take(&mut current_cells),
+                options,
+                &mut headers,
+                listener,
+            )?;
+        }
+        current_index = Some(row);
+        let column = to_column_index(column)?;
+        if current_cells.len() <= column {
+            current_cells.resize(column + 1, CellValue::Empty);
+        }
+        current_cells[column] = from_calamine(cell.get_value());
+    }
+
+    if let Some(row) = current_index {
+        process_row::<T, L>(
+            sheet_no,
+            sheet_name,
+            row,
+            current_cells,
+            options,
+            &mut headers,
+            listener,
+        )?;
+    }
+
+    let final_row = current_index.unwrap_or_default();
+    listener.do_after_all_analysed(&AnalysisContext::new(sheet_name, sheet_no, final_row))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_row<T, L>(
+    sheet_no: usize,
+    sheet_name: &str,
+    row_index: u32,
+    cells: Vec<CellValue>,
+    options: &ReadOptions,
+    headers: &mut Arc<HashMap<String, usize>>,
+    listener: &mut L,
+) -> Result<()>
+where
+    T: ExcelRow,
+    L: ReadListener<T> + ?Sized,
+{
+    let context = AnalysisContext::new(sheet_name, sheet_no, row_index);
+    if options.head_row_number > 0 && row_index + 1 == options.head_row_number {
+        let map = cells
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| {
+                let name = value.as_text();
+                (!name.is_empty()).then_some((name, index))
+            })
+            .collect::<HashMap<_, _>>();
+        *headers = Arc::new(map);
+        return listener.invoke_head(headers, &context);
+    }
+    if row_index < options.head_row_number
+        || (options.ignore_empty_row && cells.iter().all(CellValue::is_empty))
+        || !listener.has_next(&context)
+    {
+        return Ok(());
+    }
+
+    let row = RowData::new(sheet_name, row_index, cells, Arc::clone(headers));
+    match T::from_row(&row) {
+        Ok(data) => listener.invoke(data, &context),
+        Err(error) => match listener.on_exception(&error, &context) {
+            ErrorAction::Continue | ErrorAction::SkipRow => Ok(()),
+            ErrorAction::Stop => Err(error),
+        },
+    }
+}
+
+fn from_calamine(value: &DataRef<'_>) -> CellValue {
+    match value {
+        DataRef::Empty => CellValue::Empty,
+        DataRef::String(value) | DataRef::DateTimeIso(value) | DataRef::DurationIso(value) => {
+            CellValue::String(value.clone())
+        }
+        DataRef::SharedString(value) => CellValue::String((*value).to_owned()),
+        DataRef::Bool(value) => CellValue::Bool(*value),
+        DataRef::Int(value) => CellValue::Int(*value),
+        DataRef::Float(value) => CellValue::Float(*value),
+        DataRef::DateTime(value) => {
+            if value.is_datetime() {
+                value
+                    .as_datetime()
+                    .map_or(CellValue::Float(value.as_f64()), CellValue::DateTime)
+            } else {
+                CellValue::Float(value.as_f64())
+            }
+        }
+        DataRef::Error(value) => CellValue::Error(format!("{value:?}")),
+    }
+}
+
+fn format_error(error: impl std::fmt::Display) -> ExcelError {
+    ExcelError::Format(error.to_string())
+}
+
+fn to_column_index(column: u32) -> Result<usize> {
+    u16::try_from(column)
+        .map(usize::from)
+        .map_err(|_| ExcelError::Format("column index exceeds XLSX limit".to_owned()))
+}
+
+#[cfg(test)]
+mod tests;

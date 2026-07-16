@@ -1,0 +1,23 @@
+[package]
+name = "easyexcel"
+description = "A Rust implementation of the Alibaba EasyExcel programming model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+easyexcel-core = { path = "../easyexcel-core" }
+easyexcel-derive = { path = "../easyexcel-derive" }
+easyexcel-reader = { path = "../easyexcel-reader" }
+easyexcel-writer = { path = "../easyexcel-writer" }
+
+[dev-dependencies]
+calamine.workspace = true
+chrono.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
+

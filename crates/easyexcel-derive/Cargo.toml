@@ -1,0 +1,23 @@
+[package]
+name = "easyexcel-derive"
+description = "Derive macros for easyexcel-rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro-crate.workspace = true
+proc-macro2.workspace = true
+quote.workspace = true
+syn.workspace = true
+
+[dev-dependencies]
+easyexcel-core = { path = "../easyexcel-core" }
+
+[lints]
+workspace = true

@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "crates/easyexcel",
+    "crates/easyexcel-core",
+    "crates/easyexcel-derive",
+    "crates/easyexcel-reader",
+    "crates/easyexcel-writer",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+repository = "https://github.com/hiwepy/easyexcel-rs"
+
+[workspace.dependencies]
+calamine = { version = "0.36.0", features = ["chrono"] }
+chrono = { version = "0.4.41", default-features = false, features = ["std"] }
+proc-macro-crate = "3.4.0"
+proc-macro2 = "1.0.103"
+quote = "1.0.40"
+rust_xlsxwriter = { version = "0.96.0", features = ["chrono", "constant_memory"] }
+syn = { version = "2.0.104", features = ["full"] }
+tempfile = "3.20.0"
+thiserror = "2.0.18"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

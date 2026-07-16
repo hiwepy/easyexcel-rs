@@ -1,0 +1,20 @@
+[package]
+name = "easyexcel-writer"
+description = "Streaming writers for easyexcel-rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+easyexcel-core = { path = "../easyexcel-core" }
+rust_xlsxwriter.workspace = true
+
+[dev-dependencies]
+calamine.workspace = true
+chrono.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
