@@ -315,6 +315,8 @@ dependencies = [
  "calamine",
  "csv",
  "easyexcel-core",
+ "encoding_rs",
+ "encoding_rs_io",
  "flate2",
  "office-crypto",
  "rust_xlsxwriter",
@@ -341,6 +343,7 @@ dependencies = [
  "chrono",
  "csv",
  "easyexcel-core",
+ "encoding_rs",
  "ms-offcrypto-writer",
  "rand",
  "rust_xlsxwriter",
@@ -364,6 +367,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "encoding_rs_io"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cc3c5651fb62ab8aa3103998dade57efdd028544bd300516baa31840c252a83"
+dependencies = [
+ "encoding_rs",
 ]
 
 [[package]]

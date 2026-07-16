@@ -1,5 +1,7 @@
 use std::fs;
+use std::io::Cursor;
 
+use chrono::NaiveDate;
 use tempfile::tempdir;
 
 use super::*;
@@ -23,6 +25,51 @@ impl ExcelRow for Value {
     fn to_row(&self) -> Result<Vec<CellValue>> {
         Ok(vec![CellValue::String(self.0.clone())])
     }
+}
+
+struct WideCell(CellValue);
+
+impl ExcelRow for WideCell {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] =
+            &[ExcelColumn::new("value", "Value", Some(16_384), 0, None)];
+        COLUMNS
+    }
+
+    fn from_row(_row: &RowData) -> Result<Self> {
+        Err(ExcelError::Unsupported("write-only test row".to_owned()))
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![self.0.clone()])
+    }
+}
+
+struct SingleCell(CellValue);
+
+impl ExcelRow for SingleCell {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("value", "Value", Some(0), 0, None)];
+        COLUMNS
+    }
+
+    fn from_row(_row: &RowData) -> Result<Self> {
+        Err(ExcelError::Unsupported("write-only test row".to_owned()))
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![self.0.clone()])
+    }
+}
+
+fn tiny_png() -> Vec<u8> {
+    vec![
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8,
+        0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]
 }
 
 #[derive(Default)]
@@ -77,21 +124,25 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .all_sheets()
         .head_row_number(3)
         .ignore_empty_row(false)
-        .password("read-secret");
+        .password("read-secret")
+        .charset("GBK");
     assert_eq!(read.path, PathBuf::from("input.xlsx"));
     assert_eq!(read.options.sheet, SheetSelector::All);
     assert_eq!(read.options.head_row_number, 3);
     assert!(!read.options.ignore_empty_row);
     assert_eq!(read.options.password.as_deref(), Some("read-secret"));
+    assert_eq!(read.options.charset.name(), "GBK");
 
     let sync = EasyExcel::read_sync::<Value>("sync.xlsx")
         .sheet("Values")
         .head_row_number(2)
-        .password("sync-secret");
+        .password("sync-secret")
+        .charset(CsvCharset::new("UTF-16BE"));
     assert_eq!(sync.path, PathBuf::from("sync.xlsx"));
     assert_eq!(sync.options.sheet, SheetSelector::Name("Values".to_owned()));
     assert_eq!(sync.options.head_row_number, 2);
     assert_eq!(sync.options.password.as_deref(), Some("sync-secret"));
+    assert_eq!(sync.options.charset.name(), "UTF-16BE");
 
     let write = EasyExcel::write::<Value>("output.xlsx")
         .sheet("Values")
@@ -112,6 +163,8 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .loop_merge(LoopMergeStrategy::new(2, 1, 0).expect("loop merge"))
         .head([["Group", "Value"]])
         .password("write-secret")
+        .charset("GBK")
+        .with_bom(false)
         .register_write_handler(NoopWriteHandler)
         .constant_memory(true);
     assert_eq!(write.path, PathBuf::from("output.xlsx"));
@@ -147,6 +200,8 @@ fn factories_and_builder_options_match_java_style_chaining() {
     assert_eq!(write.handlers.len(), 1);
     assert!(write.options.constant_memory);
     assert_eq!(write.options.password.as_deref(), Some("write-secret"));
+    assert_eq!(write.options.charset.name(), "GBK");
+    assert!(!write.options.with_bom);
 }
 
 #[test]
@@ -170,6 +225,22 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
     assert_eq!(EasyExcel::read_sync::<Value>(&csv).do_read_sync()?, rows);
     EasyExcel::read::<Value, _>(&csv, Listener::default())
         .sheet("CsvSheet")
+        .do_read()?;
+
+    let gbk_csv = directory.path().join("values-gbk.csv");
+    let chinese = vec![Value("姓名".repeat(5_000))];
+    EasyExcel::write::<Value>(&gbk_csv)
+        .charset("GBK")
+        .with_bom(false)
+        .do_write(chinese.clone())?;
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&gbk_csv)
+            .charset("gbk")
+            .do_read_sync()?,
+        chinese
+    );
+    EasyExcel::read::<Value, _>(&gbk_csv, Listener::default())
+        .charset("GBK")
         .do_read()?;
     assert!(matches!(
         EasyExcel::write::<Value>(directory.path().join("protected.csv"))
@@ -330,6 +401,45 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
 }
 
 #[test]
+fn facade_csv_stream_writer_propagates_validation_and_io_failures() {
+    let mut stream_options = WriteOptions {
+        with_bom: false,
+        ..WriteOptions::default()
+    };
+    assert!(
+        write_csv_to_writer::<Value, _, _>(
+            Path::new("stream.csv"),
+            Cursor::new(Vec::new()),
+            &stream_options,
+            [Value("streamed".to_owned())],
+            &mut [],
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        write_csv_to_writer::<Value, _, _>(
+            Path::new("stream.csv"),
+            Cursor::new(Vec::new().into_boxed_slice()),
+            &stream_options,
+            [Value("output failure".to_owned())],
+            &mut [],
+        ),
+        Err(ExcelError::Io(_) | ExcelError::Format(_))
+    ));
+    stream_options.charset = CsvCharset::new("not-a-real-charset");
+    assert!(matches!(
+        write_csv_to_writer::<Value, _, _>(
+            Path::new("stream.csv"),
+            Cursor::new(Vec::new()),
+            &stream_options,
+            [Value("ignored".to_owned())],
+            &mut [],
+        ),
+        Err(ExcelError::Unsupported(_))
+    ));
+}
+
+#[test]
 fn facade_propagates_read_sync_and_write_failures() {
     let missing = PathBuf::from("target/does-not-exist/easyexcel.xlsx");
     assert!(
@@ -377,6 +487,50 @@ fn facade_propagates_read_sync_and_write_failures() {
         EasyExcel::write::<Value>("output.xls").do_write(Vec::new()),
         Err(ExcelError::Unsupported(_))
     ));
+
+    let directory = tempdir().expect("temporary directory");
+    let date = NaiveDate::from_ymd_opt(2026, 7, 17).expect("valid date");
+    for (index, value) in [
+        CellValue::Empty,
+        CellValue::String("text".to_owned()),
+        CellValue::Error("#DIV/0!".to_owned()),
+        CellValue::Bool(true),
+        CellValue::Int(1),
+        CellValue::Int(i64::MAX),
+        CellValue::Float(1.25),
+        CellValue::Date(date),
+        CellValue::DateTime(date.and_hms_opt(12, 34, 56).expect("valid time")),
+        CellValue::Formula("1+1".to_owned()),
+        CellValue::Hyperlink {
+            url: "https://www.rust-lang.org".to_owned(),
+            text: "Rust".to_owned(),
+        },
+        CellValue::Comment {
+            value: Box::new(CellValue::String("annotated".to_owned())),
+            text: "cell note".to_owned(),
+        },
+        CellValue::Image(vec![1, 2, 3]),
+        CellValue::Image(tiny_png()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            EasyExcel::write::<WideCell>(directory.path().join(format!("wide-cell-{index}.xlsx")))
+                .need_head(false)
+                .do_write([WideCell(value)])
+                .is_err()
+        );
+    }
+    assert!(
+        EasyExcel::write::<SingleCell>(directory.path().join("oversized-comment.xlsx"))
+            .need_head(false)
+            .do_write([SingleCell(CellValue::Comment {
+                value: Box::new(CellValue::String("annotated".to_owned())),
+                text: "x".repeat(32_768),
+            })])
+            .is_err()
+    );
 }
 
 #[test]

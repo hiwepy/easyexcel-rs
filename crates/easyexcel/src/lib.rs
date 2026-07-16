@@ -12,9 +12,9 @@ pub use easyexcel_template::{
 };
 pub use easyexcel_writer::{
     CellStyle, ExcelWriter, HorizontalAlignment, LoopMergeStrategy, MergeRange, VerticalAlignment,
-    WriteSheet,
+    WriteOptions, WriteSheet, write_csv_to_writer,
 };
-use easyexcel_writer::{WriteOptions, write_csv_with_handlers, write_xlsx_with_handlers};
+use easyexcel_writer::{write_csv_with_handlers, write_xlsx_with_handlers};
 
 /// Static factory matching Java `EasyExcel`'s entry point.
 pub struct EasyExcel;
@@ -168,6 +168,13 @@ where
         self
     }
 
+    /// Sets the character encoding used for CSV input.
+    #[must_use]
+    pub fn charset(mut self, charset: impl Into<CsvCharset>) -> Self {
+        self.options.charset = charset.into();
+        self
+    }
+
     /// Executes the read and consumes the builder.
     ///
     /// # Errors
@@ -213,6 +220,13 @@ where
     #[must_use]
     pub fn password(mut self, password: impl Into<String>) -> Self {
         self.options.password = Some(password.into());
+        self
+    }
+
+    /// Sets the character encoding used for CSV input.
+    #[must_use]
+    pub fn charset(mut self, charset: impl Into<CsvCharset>) -> Self {
+        self.options.charset = charset.into();
         self
     }
 
@@ -400,6 +414,20 @@ where
     #[must_use]
     pub fn password(mut self, password: impl Into<String>) -> Self {
         self.options.password = Some(password.into());
+        self
+    }
+
+    /// Sets the character encoding used for CSV output.
+    #[must_use]
+    pub fn charset(mut self, charset: impl Into<CsvCharset>) -> Self {
+        self.options.charset = charset.into();
+        self
+    }
+
+    /// Enables or disables the CSV byte-order mark. Java `EasyExcel` defaults to enabled.
+    #[must_use]
+    pub const fn with_bom(mut self, enabled: bool) -> Self {
+        self.options.with_bom = enabled;
         self
     }
 

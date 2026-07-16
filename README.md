@@ -31,8 +31,37 @@ EasyExcel::read::<User, _>("users.xlsx", listener)
 
 The same read and write builders automatically select the CSV engine for a
 `.csv` path. Typed mapping, listeners, column filters, and write handlers keep
-the same lifecycle; CSV output is UTF-8 with a BOM by default for Excel
-compatibility.
+the same lifecycle. Like Java EasyExcel, CSV output includes a BOM by default
+when the selected charset defines one. Charset names are case-insensitive:
+
+```rust,no_run
+use easyexcel::{EasyExcel, ExcelRow};
+
+#[derive(ExcelRow)]
+struct User {
+    #[excel(name = "姓名")]
+    name: String,
+}
+
+# fn run(users: Vec<User>) -> easyexcel::Result<()> {
+EasyExcel::write::<User>("users.csv")
+    .charset("GBK")
+    .with_bom(false)
+    .do_write(users)?;
+
+let users = EasyExcel::read_sync::<User>("users.csv")
+    .charset("gbk")
+    .do_read_sync()?;
+# let _ = users;
+# Ok(())
+# }
+```
+
+UTF-8, UTF-16LE/BE, GBK, and the other encodings exposed by `encoding_rs` are
+transcoded incrementally rather than buffering the complete CSV file.
+For Java `OutputStream`-style integration, use the re-exported
+`write_csv_to_writer` function with any owned Rust `Write` implementation and a
+logical path for handler context.
 
 Legacy `.xls` files use the same typed read builders and listener lifecycle.
 The binary worksheet is materialized by Calamine before dispatch; writing

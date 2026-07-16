@@ -6,6 +6,14 @@ use chrono::{NaiveDate, NaiveDateTime};
 
 use super::*;
 
+#[test]
+fn csv_charset_accepts_java_style_names_and_has_a_utf8_default() {
+    assert_eq!(CsvCharset::default(), CsvCharset::utf8());
+    assert_eq!(CsvCharset::default().name(), "UTF-8");
+    assert_eq!(CsvCharset::from("GBK").name(), "GBK");
+    assert_eq!(CsvCharset::from("UTF-16BE".to_owned()).name(), "UTF-16BE");
+}
+
 fn context(format: Option<&'static str>) -> ConvertContext {
     ConvertContext {
         sheet_name: "Users".to_owned(),

@@ -8,8 +8,11 @@ use std::sync::Arc;
 
 use calamine::{Data, DataRef, Range, Reader, Xls, Xlsx, open_workbook};
 use easyexcel_core::{
-    AnalysisContext, CellValue, ErrorAction, ExcelError, ExcelRow, ReadListener, Result, RowData,
+    AnalysisContext, CellValue, CsvCharset, ErrorAction, ExcelError, ExcelRow, ReadListener,
+    Result, RowData,
 };
+use encoding_rs::Encoding;
+use encoding_rs_io::DecodeReaderBytesBuilder;
 
 /// Selects a worksheet by index, name, or all sheets.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -36,6 +39,8 @@ pub struct ReadOptions {
     pub ignore_empty_row: bool,
     /// Password used to decrypt an encrypted OOXML workbook.
     pub password: Option<String>,
+    /// Character encoding used when reading CSV input.
+    pub charset: CsvCharset,
 }
 
 impl Default for ReadOptions {
@@ -45,6 +50,7 @@ impl Default for ReadOptions {
             head_row_number: 1,
             ignore_empty_row: true,
             password: None,
+            charset: CsvCharset::default(),
         }
     }
 }
@@ -156,12 +162,22 @@ where
     L: ReadListener<T>,
 {
     let sheet_name = csv_sheet_name(&options.sheet)?;
+    let encoding = csv_encoding(&options.charset)?;
+    let input = DecodeReaderBytesBuilder::new()
+        .encoding(Some(encoding))
+        .strip_bom(true)
+        .build(File::open(path)?);
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
         .flexible(true)
-        .from_path(path)
-        .map_err(format_error)?;
+        .from_reader(input);
     read_csv_records::<T, L>(&mut reader.records(), 0, &sheet_name, options, listener)
+}
+
+fn csv_encoding(charset: &CsvCharset) -> Result<&'static Encoding> {
+    Encoding::for_label(charset.name().as_bytes()).ok_or_else(|| {
+        ExcelError::Unsupported(format!("unsupported CSV charset: {}", charset.name()))
+    })
 }
 
 fn read_csv_records<T, L>(

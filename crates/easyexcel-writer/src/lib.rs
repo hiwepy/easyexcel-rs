@@ -7,9 +7,10 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use easyexcel_core::{
-    CellValue, ExcelColumn, ExcelError, ExcelRow, Result, WriteCellContext, WriteHandler,
-    WriteRowContext, WriteSheetContext, WriteWorkbookContext,
+    CellValue, CsvCharset, ExcelColumn, ExcelError, ExcelRow, Result, WriteCellContext,
+    WriteHandler, WriteRowContext, WriteSheetContext, WriteWorkbookContext,
 };
+use encoding_rs::{CoderResult, Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use ms_offcrypto_writer::Ecma376AgileWriter;
 use rust_xlsxwriter::{Format, FormatAlign, FormatPattern, Image, Note, Workbook, Worksheet};
 
@@ -258,6 +259,10 @@ pub struct WriteOptions {
     pub dynamic_head: Option<Vec<Vec<String>>>,
     /// Password used for ECMA-376 Agile Encryption of XLSX output.
     pub password: Option<String>,
+    /// Character encoding used for CSV output.
+    pub charset: CsvCharset,
+    /// Whether CSV output starts with the encoding's byte-order mark.
+    pub with_bom: bool,
 }
 
 impl Default for WriteOptions {
@@ -281,6 +286,8 @@ impl Default for WriteOptions {
             loop_merges: Vec::new(),
             dynamic_head: None,
             password: None,
+            charset: CsvCharset::default(),
+            with_bom: true,
         }
     }
 }
@@ -586,6 +593,31 @@ where
     write_csv_to::<T, I>(path, Box::new(file), options, rows, handlers)
 }
 
+/// Writes typed CSV rows to an owned byte stream.
+///
+/// `logical_path` is used by write-handler contexts and does not need to exist
+/// on the filesystem. This is the Rust equivalent of Java `EasyExcel`'s
+/// `OutputStream` CSV entry point.
+///
+/// # Errors
+///
+/// Returns a conversion, handler, CSV-format, charset, or stream I/O error.
+pub fn write_csv_to_writer<T, I, W>(
+    logical_path: &Path,
+    output: W,
+    options: &WriteOptions,
+    rows: I,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()>
+where
+    T: ExcelRow,
+    I: IntoIterator<Item = T>,
+    W: Write + 'static,
+{
+    validate_csv_options(options)?;
+    write_csv_to::<T, I>(logical_path, Box::new(output), options, rows, handlers)
+}
+
 fn write_csv_to<T, I>(
     path: &Path,
     output: Box<dyn Write>,
@@ -610,14 +642,18 @@ fn write_csv_records(
     rows: &mut dyn Iterator<Item = Result<Vec<CellValue>>>,
     handlers: &mut [Box<dyn WriteHandler>],
 ) -> Result<()> {
+    let encoding = csv_encoding(&options.charset)?;
     sort_handlers(handlers);
     let workbook_context = WriteWorkbookContext::new(path);
     before_workbook(handlers, &workbook_context)?;
     let sheet_context = WriteSheetContext::new(&options.sheet_name);
     before_sheet(handlers, &sheet_context)?;
 
-    output.write_all(b"\xEF\xBB\xBF")?;
-    let mut writer = csv::WriterBuilder::new().from_writer(output);
+    if options.with_bom {
+        output.write_all(csv_bom(encoding))?;
+    }
+    let mut encoded_output = CsvEncodingWriter::new(output, encoding);
+    let mut writer = csv::WriterBuilder::new().from_writer(&mut encoded_output);
     let head_rows = dynamic_head_rows(options)?;
     let mut row_index = 0_u32;
     if options.need_head {
@@ -658,6 +694,8 @@ fn write_csv_records(
         row_index += 1;
     }
     writer.flush()?;
+    drop(writer);
+    encoded_output.finish()?;
     after_sheet(handlers, &sheet_context)?;
     after_workbook(handlers, &workbook_context)
 }
@@ -668,7 +706,147 @@ fn validate_csv_options(options: &WriteOptions) -> Result<()> {
             "password protection is not supported for CSV".to_owned(),
         ));
     }
+    csv_encoding(&options.charset)?;
     Ok(())
+}
+
+fn csv_encoding(charset: &CsvCharset) -> Result<CsvEncoding> {
+    let encoding = Encoding::for_label(charset.name().as_bytes()).ok_or_else(|| {
+        ExcelError::Unsupported(format!("unsupported CSV charset: {}", charset.name()))
+    })?;
+    Ok(if encoding == UTF_16LE {
+        CsvEncoding::Utf16Le
+    } else if encoding == UTF_16BE {
+        CsvEncoding::Utf16Be
+    } else {
+        CsvEncoding::Standard(encoding)
+    })
+}
+
+fn csv_bom(encoding: CsvEncoding) -> &'static [u8] {
+    match encoding {
+        CsvEncoding::Standard(encoding) if encoding == UTF_8 => b"\xEF\xBB\xBF",
+        CsvEncoding::Utf16Le => b"\xFF\xFE",
+        CsvEncoding::Utf16Be => b"\xFE\xFF",
+        CsvEncoding::Standard(_) => b"",
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CsvEncoding {
+    Standard(&'static Encoding),
+    Utf16Le,
+    Utf16Be,
+}
+
+enum CsvEncoder {
+    Standard(encoding_rs::Encoder),
+    Utf16Le,
+    Utf16Be,
+}
+
+struct CsvEncodingWriter {
+    output: Box<dyn Write>,
+    encoder: CsvEncoder,
+    pending_utf8: Vec<u8>,
+}
+
+impl CsvEncodingWriter {
+    fn new(output: Box<dyn Write>, encoding: CsvEncoding) -> Self {
+        Self {
+            output,
+            encoder: match encoding {
+                CsvEncoding::Standard(encoding) => CsvEncoder::Standard(encoding.new_encoder()),
+                CsvEncoding::Utf16Le => CsvEncoder::Utf16Le,
+                CsvEncoding::Utf16Be => CsvEncoder::Utf16Be,
+            },
+            pending_utf8: Vec::new(),
+        }
+    }
+
+    fn encode_text(&mut self, text: &str, last: bool) -> std::io::Result<()> {
+        match &mut self.encoder {
+            CsvEncoder::Standard(encoder) => {
+                Self::encode_standard(&mut self.output, encoder, text, last)
+            }
+            CsvEncoder::Utf16Le => Self::encode_utf16(&mut self.output, text, u16::to_le_bytes),
+            CsvEncoder::Utf16Be => Self::encode_utf16(&mut self.output, text, u16::to_be_bytes),
+        }
+    }
+
+    fn encode_standard(
+        output: &mut dyn Write,
+        encoder: &mut encoding_rs::Encoder,
+        mut text: &str,
+        last: bool,
+    ) -> std::io::Result<()> {
+        loop {
+            // Keep the transcoder chunk below csv's internal buffer so a
+            // single upstream write can be continued without accumulating
+            // the complete record in memory.
+            let mut buffer = [0_u8; 4 * 1_024];
+            let (result, read, written, _) = encoder.encode_from_utf8(text, &mut buffer, last);
+            output.write_all(&buffer[..written])?;
+            text = &text[read..];
+            if result == CoderResult::InputEmpty {
+                return Ok(());
+            }
+        }
+    }
+
+    fn encode_utf16(
+        output: &mut dyn Write,
+        text: &str,
+        to_bytes: fn(u16) -> [u8; 2],
+    ) -> std::io::Result<()> {
+        let mut encoded = [0_u8; 8 * 1_024];
+        let mut length = 0;
+        for unit in text.encode_utf16() {
+            if length == encoded.len() {
+                output.write_all(&encoded)?;
+                length = 0;
+            }
+            let bytes = to_bytes(unit);
+            encoded[length] = bytes[0];
+            encoded[length + 1] = bytes[1];
+            length += 2;
+        }
+        output.write_all(&encoded[..length])
+    }
+
+    fn finish(&mut self) -> std::io::Result<()> {
+        if !self.pending_utf8.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "CSV writer ended with incomplete UTF-8",
+            ));
+        }
+        self.encode_text("", true)?;
+        self.output.flush()
+    }
+}
+
+impl Write for CsvEncodingWriter {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.pending_utf8.extend_from_slice(buffer);
+        let valid_length = match std::str::from_utf8(&self.pending_utf8) {
+            Ok(_) => self.pending_utf8.len(),
+            Err(error) if error.error_len().is_none() => error.valid_up_to(),
+            Err(error) => {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+            }
+        };
+        if valid_length > 0 {
+            let valid = self.pending_utf8.drain(..valid_length).collect::<Vec<_>>();
+            let text = String::from_utf8_lossy(&valid);
+            self.encode_text(text.as_ref(), false)?;
+        }
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.output.flush()
+    }
 }
 
 fn save_workbook(workbook: &mut Workbook, path: &Path, password: Option<&str>) -> Result<()> {
@@ -1452,13 +1630,14 @@ fn write_integer(
         let number = value as f64;
         worksheet
             .write_number_with_format(row, column, number, format)
-            .map_err(format_error)?;
+            .map(|_| ())
+            .map_err(format_error)
     } else {
         worksheet
             .write_string_with_format(row, column, value.to_string(), format)
-            .map_err(format_error)?;
+            .map(|_| ())
+            .map_err(format_error)
     }
-    Ok(())
 }
 
 fn excel_date_format(format: Option<&str>, default: &str) -> String {

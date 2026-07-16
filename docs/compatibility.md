@@ -46,7 +46,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `LoopMergeStrategy` | repeating data-row merge metadata | implemented |
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
-| CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, UTF-8 BOM, and case-insensitive `.csv` dispatch implemented; charset configuration and stateful multi-write remain |
+| CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; stateful multi-write and JVM-only charset providers remain |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
@@ -75,3 +75,20 @@ Encryption currently buffers the plaintext OOXML package in memory before it
 is encrypted or parsed. Legacy encrypted `.xls` uses a different BIFF/RC4
 mechanism and returns a typed unsupported-format error; it is not covered by
 the OOXML password implementation.
+
+## CSV charset boundary
+
+CSV builders accept Java-style, case-insensitive charset labels through
+`charset(...)`, and writers expose `with_bom(...)` with Java EasyExcel's
+default of `true`. UTF-8 and UTF-16 byte-order marks are emitted only for
+encodings that define one; GBK has no BOM. Reading removes a matching BOM and
+transcodes incrementally to UTF-8 before typed row conversion.
+
+The built-in backend covers UTF-8, UTF-16LE/BE, GBK, and WHATWG encoding labels
+provided by `encoding_rs`. A JVM installation can expose additional custom
+`CharsetProvider` implementations; those provider-specific names currently
+return a typed unsupported-operation error.
+
+`write_csv_to_writer` accepts any owned `std::io::Write` sink and preserves the
+same handler lifecycle as file output. Its logical path is context metadata,
+which mirrors Java EasyExcel's `OutputStream` use without requiring a real file.

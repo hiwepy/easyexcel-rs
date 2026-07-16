@@ -129,6 +129,7 @@ fn options() -> ReadOptions {
         head_row_number: 1,
         ignore_empty_row: true,
         password: None,
+        charset: CsvCharset::default(),
     }
 }
 
@@ -192,6 +193,19 @@ fn column_name(index: u32) -> String {
         value = (value - 1) / 26;
     }
     name
+}
+
+fn encode_csv_fixture(encoding: &'static encoding_rs::Encoding, value: &str) -> Vec<u8> {
+    if encoding == encoding_rs::UTF_16BE {
+        value.encode_utf16().flat_map(u16::to_be_bytes).collect()
+    } else if encoding == encoding_rs::UTF_16LE {
+        value.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    } else {
+        let (encoded, actual, had_errors) = encoding.encode(value);
+        assert_eq!(actual, encoding);
+        assert!(!had_errors);
+        encoded.into_owned()
+    }
 }
 
 #[test]
@@ -509,9 +523,21 @@ fn csv_read_uses_typed_lifecycle_single_sheet_selection_and_flexible_rows() -> R
         assert!(csv_row_index(usize::try_from(u64::from(u32::MAX) + 1).unwrap()).is_err());
     }
 
-    let invalid = directory.path().join("invalid.csv");
-    fs::write(&invalid, [0xff])?;
-    assert!(read_csv::<TestRow, _>(&invalid, &options(), &mut probe).is_err());
+    let malformed_utf8 = directory.path().join("malformed-utf8.csv");
+    fs::write(&malformed_utf8, [0xff])?;
+    let mut replacement_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_csv::<TestRow, _>(
+        &malformed_utf8,
+        &ReadOptions {
+            head_row_number: 0,
+            ..options()
+        },
+        &mut replacement_probe,
+    )?;
+    assert_eq!(replacement_probe.rows, vec![TestRow("�".to_owned())]);
     assert!(
         read_csv::<TestRow, _>(
             &path,
@@ -556,6 +582,22 @@ fn csv_read_uses_typed_lifecycle_single_sheet_selection_and_flexible_rows() -> R
         &mut record_probe,
     )?;
     assert_eq!(record_probe.rows.len(), 3);
+    let mut invalid_utf8_reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .from_reader([0xFF].as_slice());
+    assert!(
+        read_csv_records::<TestRow, _>(
+            &mut invalid_utf8_reader.records(),
+            0,
+            "Sheet1",
+            &ReadOptions {
+                head_row_number: 0,
+                ..options()
+            },
+            &mut record_probe,
+        )
+        .is_err()
+    );
     if usize::BITS > 32 {
         assert!(
             read_csv_records::<TestRow, _>(
@@ -592,6 +634,90 @@ fn csv_read_uses_typed_lifecycle_single_sheet_selection_and_flexible_rows() -> R
         )
         .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn csv_read_decodes_java_charset_names_and_strips_matching_bom() -> Result<()> {
+    let directory = tempdir()?;
+    for (name, encoding, bom) in [
+        ("utf-8", encoding_rs::UTF_8, b"\xEF\xBB\xBF".as_slice()),
+        ("GBK", encoding_rs::GBK, b"".as_slice()),
+        ("UTF-16BE", encoding_rs::UTF_16BE, b"\xFE\xFF".as_slice()),
+        ("UTF-16LE", encoding_rs::UTF_16LE, b"\xFF\xFE".as_slice()),
+    ] {
+        let path = directory
+            .path()
+            .join(format!("{}.csv", name.to_lowercase()));
+        let mut bytes = bom.to_vec();
+        bytes.extend_from_slice(&encode_csv_fixture(encoding, "Value\r\n姓名\r\n"));
+        fs::write(&path, bytes)?;
+
+        let mut probe = Probe {
+            continue_reading: true,
+            ..Probe::default()
+        };
+        read_csv::<TestRow, _>(
+            &path,
+            &ReadOptions {
+                charset: CsvCharset::new(name),
+                ..options()
+            },
+            &mut probe,
+        )?;
+        assert_eq!(
+            probe.rows,
+            vec![TestRow("姓名".to_owned())],
+            "charset {name}"
+        );
+    }
+
+    let mut probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    let error = read_csv::<TestRow, _>(
+        &directory.path().join("utf-8.csv"),
+        &ReadOptions {
+            charset: CsvCharset::new("not-a-charset"),
+            ..options()
+        },
+        &mut probe,
+    )
+    .expect_err("unknown charset must be rejected");
+    assert!(matches!(error, ExcelError::Unsupported(_)));
+    Ok(())
+}
+
+#[test]
+fn reads_java_easyexcel_official_csv_bom_fixtures() -> Result<()> {
+    let directory = tempdir()?;
+    for (name, fixture) in [
+        (
+            "no-bom.csv",
+            include_str!("fixtures/java-bom-no-bom.csv.b64"),
+        ),
+        (
+            "office-bom.csv",
+            include_str!("fixtures/java-bom-office-bom.csv.b64"),
+        ),
+    ] {
+        let path = directory.path().join(name);
+        fs::write(
+            &path,
+            base64::engine::general_purpose::STANDARD
+                .decode(fixture.trim())
+                .map_err(test_error)?,
+        )?;
+        let mut probe = Probe {
+            continue_reading: true,
+            ..Probe::default()
+        };
+        read_csv::<TestRow, _>(&path, &options(), &mut probe)?;
+        assert_eq!(probe.rows.len(), 10);
+        assert_eq!(probe.rows[0], TestRow("姓名0".to_owned()));
+        assert_eq!(probe.rows[9], TestRow("姓名9".to_owned()));
+    }
     Ok(())
 }
 

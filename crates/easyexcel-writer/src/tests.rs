@@ -58,6 +58,27 @@ impl Write for FaultyWrite {
     }
 }
 
+#[derive(Default)]
+struct FailThirdFlush {
+    flushes: usize,
+}
+
+impl Write for FailThirdFlush {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let flush = self.flushes;
+        self.flushes += 1;
+        if flush == 2 {
+            Err(io::Error::other("injected CSV finish flush failure"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 struct LimitedCursor {
     inner: Cursor<Vec<u8>>,
     max_len: u64,
@@ -438,6 +459,8 @@ fn default_options_and_helpers_are_deterministic() {
             loop_merges: Vec::new(),
             dynamic_head: None,
             password: None,
+            charset: CsvCharset::default(),
+            with_bom: true,
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");
@@ -1367,6 +1390,118 @@ fn csv_writer_emits_bom_all_cell_values_and_handler_lifecycle() -> Result<()> {
 }
 
 #[test]
+fn csv_writer_encodes_java_charsets_and_configurable_bom() -> Result<()> {
+    let directory = tempdir()?;
+    let mut row = every_cell();
+    row.cells[1] = CellValue::String("姓名".to_owned());
+
+    for (name, encoding, expected_bom) in [
+        ("utf-8", encoding_rs::UTF_8, b"\xEF\xBB\xBF".as_slice()),
+        ("GBK", encoding_rs::GBK, b"".as_slice()),
+        ("UTF-16BE", encoding_rs::UTF_16BE, b"\xFE\xFF".as_slice()),
+        ("UTF-16LE", encoding_rs::UTF_16LE, b"\xFF\xFE".as_slice()),
+    ] {
+        let path = directory
+            .path()
+            .join(format!("{}.csv", name.to_lowercase()));
+        write_csv_with_handlers::<EveryCell, _>(
+            &path,
+            &WriteOptions {
+                charset: CsvCharset::new(name),
+                ..WriteOptions::default()
+            },
+            [row.clone()],
+            &mut [],
+        )?;
+        let bytes = std::fs::read(path)?;
+        assert!(bytes.starts_with(expected_bom));
+        let (decoded, actual_encoding, had_errors) = encoding.decode(&bytes);
+        assert_eq!(actual_encoding, encoding);
+        assert!(!had_errors);
+        assert!(decoded.contains("姓名"));
+    }
+
+    let no_bom = directory.path().join("no-bom.csv");
+    write_csv_with_handlers::<EveryCell, _>(
+        &no_bom,
+        &WriteOptions {
+            with_bom: false,
+            ..WriteOptions::default()
+        },
+        [row],
+        &mut [],
+    )?;
+    assert!(!std::fs::read(no_bom)?.starts_with(b"\xEF\xBB\xBF"));
+
+    let unsupported = directory.path().join("unsupported.csv");
+    let error = write_csv_with_handlers::<EveryCell, _>(
+        &unsupported,
+        &WriteOptions {
+            charset: CsvCharset::new("not-a-charset"),
+            ..WriteOptions::default()
+        },
+        Vec::new(),
+        &mut [],
+    )
+    .expect_err("unknown charset must be rejected");
+    assert!(matches!(error, ExcelError::Unsupported(_)));
+    assert!(!unsupported.exists());
+    Ok(())
+}
+
+#[test]
+fn csv_transcoding_writer_handles_chunk_boundaries_and_invalid_utf8() -> Result<()> {
+    let mut split = CsvEncodingWriter::new(
+        Box::new(Vec::<u8>::new()),
+        CsvEncoding::Standard(encoding_rs::GBK),
+    );
+    assert_eq!(split.write(&[0xE5])?, 1);
+    assert!(split.finish().is_err());
+
+    let mut split_ok = CsvEncodingWriter::new(
+        Box::new(Vec::<u8>::new()),
+        CsvEncoding::Standard(encoding_rs::GBK),
+    );
+    assert_eq!(split_ok.write(&[0xE5])?, 1);
+    assert_eq!(split_ok.write(&[0xA7, 0x93])?, 2);
+    split_ok.finish()?;
+
+    let mut invalid = CsvEncodingWriter::new(
+        Box::new(Vec::<u8>::new()),
+        CsvEncoding::Standard(encoding_rs::UTF_8),
+    );
+    assert!(invalid.write(&[0xFF]).is_err());
+
+    let mut long = CsvEncodingWriter::new(Box::new(Vec::<u8>::new()), CsvEncoding::Utf16Be);
+    let value = "姓名".repeat(5_000);
+    long.write_all(value.as_bytes())?;
+    long.finish()?;
+
+    let mut standard_long = CsvEncodingWriter::new(
+        Box::new(Vec::<u8>::new()),
+        CsvEncoding::Standard(encoding_rs::GBK),
+    );
+    standard_long.write_all(value.as_bytes())?;
+    standard_long.finish()?;
+
+    let mut failing_utf16 =
+        CsvEncodingWriter::new(Box::new(FaultyWrite::writing(0)), CsvEncoding::Utf16Le);
+    assert!(failing_utf16.write_all(value.as_bytes()).is_err());
+
+    let mut direct_utf16 = Vec::new();
+    CsvEncodingWriter::encode_utf16(&mut direct_utf16, "姓名", u16::to_le_bytes)?;
+    assert_eq!(direct_utf16, [0xD3, 0x59, 0x0D, 0x54]);
+
+    let mut finish_failure = CsvEncodingWriter::new(
+        Box::new(FaultyWrite::writing(1)),
+        CsvEncoding::Standard(encoding_rs::ISO_2022_JP),
+    );
+    finish_failure.write_all("日本".as_bytes())?;
+    assert!(finish_failure.finish().is_err());
+    Ok(())
+}
+
+#[test]
 fn csv_writer_supports_dynamic_heads_no_head_and_configuration_failures() -> Result<()> {
     let directory = tempdir()?;
     let mut dynamic = (0..EveryCell::schema().len())
@@ -1487,6 +1622,33 @@ fn csv_writer_propagates_every_handler_failure() -> Result<()> {
 }
 
 #[test]
+fn csv_writer_to_owned_stream_validates_options() {
+    assert!(
+        write_csv_to_writer::<EveryCell, _, _>(
+            Path::new("stream.csv"),
+            Cursor::new(Vec::new()),
+            &WriteOptions::default(),
+            [every_cell()],
+            &mut [],
+        )
+        .is_ok()
+    );
+    assert!(
+        write_csv_to_writer::<EveryCell, _, _>(
+            Path::new("stream.csv"),
+            Cursor::new(Vec::new()),
+            &WriteOptions {
+                charset: CsvCharset::new("not-a-charset"),
+                ..WriteOptions::default()
+            },
+            [every_cell()],
+            &mut [],
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn csv_writer_propagates_io_faults_and_column_overflow() {
     let write_errors = (0..64)
         .filter(|fail_at| {
@@ -1507,6 +1669,29 @@ fn csv_writer_propagates_io_faults_and_column_overflow() {
             Box::new(FaultyWrite::flushing()),
             &WriteOptions::default(),
             [every_cell()],
+            &mut []
+        )
+        .is_err()
+    );
+    assert!(
+        write_csv_to::<EveryCell, _>(
+            Path::new("finish-fault.csv"),
+            Box::new(FailThirdFlush::default()),
+            &WriteOptions::default(),
+            Vec::new(),
+            &mut []
+        )
+        .is_err()
+    );
+    assert!(
+        write_csv_to::<EveryCell, _>(
+            Path::new("charset-fault.csv"),
+            Box::new(Vec::<u8>::new()),
+            &WriteOptions {
+                charset: CsvCharset::new("not-a-charset"),
+                ..WriteOptions::default()
+            },
+            Vec::new(),
             &mut []
         )
         .is_err()

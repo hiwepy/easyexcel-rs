@@ -21,6 +21,8 @@ base64 = "0.22.1"
 calamine = { version = "0.36.0", features = ["chrono"] }
 chrono = { version = "0.4.41", default-features = false, features = ["std"] }
 csv = "1.4.0"
+encoding_rs = "0.8.35"
+encoding_rs_io = "0.1.7"
 flate2 = "1.1.9"
 ms-offcrypto-writer = "1.0.7"
 office-crypto = "0.2.0"
