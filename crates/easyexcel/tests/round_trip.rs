@@ -4,7 +4,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use chrono::NaiveDate;
-use easyexcel::{AnalysisContext, EasyExcel, ExcelRow, PageReadListener, ReadListener, Result};
+use easyexcel::{
+    AnalysisContext, CellValue, Converter, EasyExcel, ExcelRow, PageReadListener,
+    ReadConverterContext, ReadListener, Result, WriteConverterContext,
+};
 use tempfile::tempdir;
 
 #[derive(Debug, Clone, PartialEq, ExcelRow)]
@@ -17,6 +20,39 @@ struct User {
     registered_on: NaiveDate,
     #[excel(ignore)]
     transient: String,
+}
+
+#[derive(Default)]
+struct NameConverter;
+
+impl Converter<String> for NameConverter {
+    fn convert_to_rust_data(&self, context: &ReadConverterContext<'_>) -> Result<String> {
+        Ok(context
+            .cell()
+            .map_or_else(String::new, CellValue::as_text)
+            .strip_prefix("excel:")
+            .unwrap_or_default()
+            .to_owned())
+    }
+
+    fn convert_to_excel_data(
+        &self,
+        context: &WriteConverterContext<'_, String>,
+    ) -> Result<CellValue> {
+        Ok(CellValue::String(format!("excel:{}", context.value())))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
+struct ConvertedName {
+    #[excel(name = "姓名", index = 0, converter = NameConverter)]
+    name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
+struct RawName {
+    #[excel(name = "姓名", index = 0)]
+    name: String,
 }
 
 #[test]
@@ -48,6 +84,27 @@ fn writes_and_reads_typed_rows_with_java_style_builders() -> Result<()> {
         .sheet("用户")
         .do_read_sync()?;
     assert_eq!(actual, users);
+    Ok(())
+}
+
+#[test]
+fn derive_selected_converter_transforms_read_and_write_values() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("converted.xlsx");
+    let expected = vec![ConvertedName {
+        name: "alice".to_owned(),
+    }];
+    EasyExcel::write::<ConvertedName>(&path).do_write(expected.clone())?;
+    assert_eq!(
+        EasyExcel::read_sync::<RawName>(&path).do_read_sync()?,
+        vec![RawName {
+            name: "excel:alice".to_owned()
+        }]
+    );
+    assert_eq!(
+        EasyExcel::read_sync::<ConvertedName>(&path).do_read_sync()?,
+        expected
+    );
     Ok(())
 }
 

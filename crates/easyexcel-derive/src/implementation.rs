@@ -10,6 +10,7 @@ struct FieldOptions {
     index: Option<LitInt>,
     order: Option<LitInt>,
     format: Option<LitStr>,
+    converter: Option<Path>,
 }
 
 pub(crate) fn expand_excel_row_tokens(
@@ -55,6 +56,7 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
         }
 
         let field_name = ident.to_string();
+        let converter = options.converter;
         let header_name = options
             .name
             .unwrap_or_else(|| LitStr::new(&field_name, ident.span()));
@@ -79,16 +81,15 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
             )
         ));
         let position = syn::Index::from(schema_position);
+        let read_conversion = field_read_conversion(&crate_path, &ty, converter.as_ref());
         readers.push(quote! {
             #ident: {
                 let column = &Self::schema()[#position];
                 let context = row.convert_context(column);
-                <#ty as #crate_path::FromExcelCell>::from_excel_cell(
-                    row.cell(column),
-                    &context,
-                )?
+                #read_conversion
             }
         });
+        let write_conversion = field_write_conversion(&crate_path, &ty, &ident, converter.as_ref());
         writers.push(quote! {
             {
                 let column = &Self::schema()[#position];
@@ -99,7 +100,7 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
                     field: column.field,
                     format: column.format,
                 };
-                #crate_path::IntoExcelCell::to_excel_cell(&self.#ident, &context)?
+                #write_conversion
             }
         });
         schema_position += 1;
@@ -122,6 +123,62 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
             }
         }
     })
+}
+
+fn field_read_conversion(
+    crate_path: &proc_macro2::TokenStream,
+    ty: &syn::Type,
+    converter: Option<&Path>,
+) -> proc_macro2::TokenStream {
+    converter.map_or_else(
+        || {
+            quote! {
+                <#ty as #crate_path::FromExcelCell>::from_excel_cell(
+                    row.cell(column),
+                    &context,
+                )?
+            }
+        },
+        |converter| {
+            quote! {
+                #crate_path::Converter::<#ty>::convert_to_rust_data(
+                    &<#converter as ::core::default::Default>::default(),
+                    &#crate_path::ReadConverterContext::new(
+                        row.cell(column),
+                        column,
+                        &context,
+                    ),
+                )?
+            }
+        },
+    )
+}
+
+fn field_write_conversion(
+    crate_path: &proc_macro2::TokenStream,
+    ty: &syn::Type,
+    ident: &syn::Ident,
+    converter: Option<&Path>,
+) -> proc_macro2::TokenStream {
+    converter.map_or_else(
+        || {
+            quote! {
+                #crate_path::IntoExcelCell::to_excel_cell(&self.#ident, &context)?
+            }
+        },
+        |converter| {
+            quote! {
+                #crate_path::Converter::<#ty>::convert_to_excel_data(
+                    &<#converter as ::core::default::Default>::default(),
+                    &#crate_path::WriteConverterContext::new(
+                        &self.#ident,
+                        column,
+                        &context,
+                    ),
+                )?
+            }
+        },
+    )
 }
 
 fn parse_struct_options(attrs: &[syn::Attribute]) -> syn::Result<bool> {
@@ -162,6 +219,10 @@ fn parse_field_options(attrs: &[syn::Attribute]) -> syn::Result<FieldOptions> {
             }
             if meta.path.is_ident("format") {
                 options.format = Some(meta.value()?.parse()?);
+                return Ok(());
+            }
+            if meta.path.is_ident("converter") {
+                options.converter = Some(meta.value()?.parse()?);
                 return Ok(());
             }
             Err(meta.error("unsupported ExcelRow field option"))

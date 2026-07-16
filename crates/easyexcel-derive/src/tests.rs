@@ -58,7 +58,7 @@ fn struct_options_accept_ignore_unannotated_and_reject_unknown_values() {
 fn field_options_parse_every_supported_value_and_reject_unknown_values() {
     let input: DeriveInput = parse_quote! {
         struct User {
-            #[excel(name = "姓名", index = 2, order = 1, format = "%Y-%m-%d", ignore)]
+            #[excel(name = "姓名", index = 2, order = 1, format = "%Y-%m-%d", converter = crate::NameConverter, ignore)]
             name: String,
         }
     };
@@ -87,6 +87,7 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
         1
     );
     assert_eq!(options.format.expect("format").value(), "%Y-%m-%d");
+    assert_eq!(options.converter.expect("converter").segments.len(), 2);
 
     let input: DeriveInput = parse_quote! {
         struct User { #[excel(unknown)] name: String }
@@ -112,6 +113,8 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
         "order = \"first\"",
         "format",
         "format = 1",
+        "converter",
+        "converter = 1",
     ] {
         let source = format!("struct User {{ #[excel({attribute})] value: String }}");
         let input = syn::parse_str::<DeriveInput>(&source).expect("attribute tokens");
@@ -168,6 +171,28 @@ fn expansion_generates_schema_readers_writers_defaults_and_generics() {
     assert!(expanded.contains("\"value\""));
     assert!(expanded.contains("Option :: None"));
     assert!(expanded.contains("i32 :: MAX"));
+
+    let converter_input: DeriveInput = parse_quote! {
+        struct Converted {
+            #[excel(converter = crate::NameConverter)]
+            value: String,
+        }
+    };
+    let expanded = expand_excel_row(converter_input)
+        .expect("converter expansion")
+        .to_string();
+    for expected in [
+        "Converter :: < String > :: convert_to_rust_data",
+        "ReadConverterContext :: new",
+        "NameConverter as :: core :: default :: Default",
+        "Converter :: < String > :: convert_to_excel_data",
+        "WriteConverterContext :: new",
+    ] {
+        assert!(
+            expanded.contains(expected),
+            "missing `{expected}` in {expanded}"
+        );
+    }
 }
 
 #[test]

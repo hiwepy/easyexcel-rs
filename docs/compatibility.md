@@ -28,7 +28,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `@ExcelIgnore` | `#[excel(ignore)]` | implemented |
 | `@ExcelIgnoreUnannotated` | `#[excel(ignore_unannotated)]` | implemented |
 | built-in scalar converters | `FromExcelCell` / `IntoExcelCell` | partial |
-| custom `Converter<T>` | `Converter<T>` | planned |
+| custom `Converter<T>` | `#[excel(converter = Type)]` + converter contexts | partial: field converter implemented |
 | `EasyExcel.write(file, head)` | `EasyExcel::write::<T>(file)` | implemented |
 | `sheet(Integer/String)` | `sheet(index/name)` | partial: name implemented |
 | `needHead` | `need_head` | implemented |

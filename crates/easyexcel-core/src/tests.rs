@@ -263,6 +263,57 @@ fn option_conversion_distinguishes_empty_and_present_values() -> Result<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct PrefixConverter;
+
+impl Converter<String> for PrefixConverter {
+    fn convert_to_rust_data(&self, context: &ReadConverterContext<'_>) -> Result<String> {
+        Ok(format!(
+            "{}:{}:{}",
+            context.column().field,
+            context.convert_context().row_index,
+            context.cell().map_or_else(String::new, CellValue::as_text)
+        ))
+    }
+
+    fn convert_to_excel_data(
+        &self,
+        context: &WriteConverterContext<'_, String>,
+    ) -> Result<CellValue> {
+        Ok(CellValue::String(format!(
+            "{}:{}:{}",
+            context.column().name,
+            context.convert_context().column_index.unwrap_or_default(),
+            context.value()
+        )))
+    }
+}
+
+struct UnsupportedConverter;
+
+impl Converter<String> for UnsupportedConverter {}
+
+#[test]
+fn custom_converter_contexts_support_both_directions_and_defaults() -> Result<()> {
+    let column = ExcelColumn::new("name", "Name", Some(1), 0, Some("text"));
+    let context = context(Some("text"));
+    let cell = CellValue::String("alice".to_owned());
+    let read = ReadConverterContext::new(Some(&cell), &column, &context);
+    assert_eq!(PrefixConverter.convert_to_rust_data(&read)?, "name:2:alice");
+    let value = "bob".to_owned();
+    let write = WriteConverterContext::new(&value, &column, &context);
+    assert_eq!(
+        PrefixConverter.convert_to_excel_data(&write)?,
+        CellValue::String("Name:1:bob".to_owned())
+    );
+
+    let empty = ReadConverterContext::new(None, &column, &context);
+    assert_eq!(PrefixConverter.convert_to_rust_data(&empty)?, "name:2:");
+    assert!(UnsupportedConverter.convert_to_rust_data(&read).is_err());
+    assert!(UnsupportedConverter.convert_to_excel_data(&write).is_err());
+    Ok(())
+}
+
 #[test]
 fn analysis_context_exposes_sheet_row_and_batch_coordinates() {
     let context = AnalysisContext::new("Users", 3, 9);

@@ -201,6 +201,104 @@ pub trait IntoExcelCell {
     fn to_excel_cell(&self, context: &ConvertContext) -> Result<CellValue>;
 }
 
+/// Context supplied to a custom cell-to-Rust converter.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadConverterContext<'a> {
+    cell: Option<&'a CellValue>,
+    column: &'a ExcelColumn,
+    context: &'a ConvertContext,
+}
+
+impl<'a> ReadConverterContext<'a> {
+    /// Creates a read conversion context.
+    #[must_use]
+    pub const fn new(
+        cell: Option<&'a CellValue>,
+        column: &'a ExcelColumn,
+        context: &'a ConvertContext,
+    ) -> Self {
+        Self {
+            cell,
+            column,
+            context,
+        }
+    }
+
+    /// Returns the source cell, or `None` when it is physically absent.
+    #[must_use]
+    pub const fn cell(&self) -> Option<&'a CellValue> {
+        self.cell
+    }
+
+    /// Returns the field's static column metadata.
+    #[must_use]
+    pub const fn column(&self) -> &'a ExcelColumn {
+        self.column
+    }
+
+    /// Returns the resolved row, column, field, and format information.
+    #[must_use]
+    pub const fn convert_context(&self) -> &'a ConvertContext {
+        self.context
+    }
+}
+
+/// Context supplied to a custom Rust-to-cell converter.
+#[derive(Debug, Clone, Copy)]
+pub struct WriteConverterContext<'a, T> {
+    value: &'a T,
+    column: &'a ExcelColumn,
+    context: &'a ConvertContext,
+}
+
+impl<'a, T> WriteConverterContext<'a, T> {
+    /// Creates a write conversion context.
+    #[must_use]
+    pub const fn new(value: &'a T, column: &'a ExcelColumn, context: &'a ConvertContext) -> Self {
+        Self {
+            value,
+            column,
+            context,
+        }
+    }
+
+    /// Returns the Rust field value.
+    #[must_use]
+    pub const fn value(&self) -> &'a T {
+        self.value
+    }
+
+    /// Returns the field's static column metadata.
+    #[must_use]
+    pub const fn column(&self) -> &'a ExcelColumn {
+        self.column
+    }
+
+    /// Returns the target row, column, field, and format information.
+    #[must_use]
+    pub const fn convert_context(&self) -> &'a ConvertContext {
+        self.context
+    }
+}
+
+/// Custom bidirectional converter selected by `#[excel(converter = Type)]`.
+#[allow(clippy::missing_errors_doc)]
+pub trait Converter<T> {
+    /// Converts an Excel cell into a Rust field value.
+    fn convert_to_rust_data(&self, _context: &ReadConverterContext<'_>) -> Result<T> {
+        Err(ExcelError::Unsupported(
+            "custom converter does not support reading".to_owned(),
+        ))
+    }
+
+    /// Converts a Rust field value into an Excel cell.
+    fn convert_to_excel_data(&self, _context: &WriteConverterContext<'_, T>) -> Result<CellValue> {
+        Err(ExcelError::Unsupported(
+            "custom converter does not support writing".to_owned(),
+        ))
+    }
+}
+
 /// Workbook-level write lifecycle context.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriteWorkbookContext {
