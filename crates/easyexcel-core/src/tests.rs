@@ -29,6 +29,22 @@ fn cell_values_have_stable_text_and_empty_semantics() {
         (CellValue::Float(1.5), "1.5"),
         (CellValue::Date(date), "2026-07-17"),
         (CellValue::DateTime(datetime), "2026-07-17 12:34:56"),
+        (CellValue::Formula("SUM(A1:A2)".to_owned()), "SUM(A1:A2)"),
+        (
+            CellValue::Hyperlink {
+                url: "https://rust-lang.org".to_owned(),
+                text: "Rust".to_owned(),
+            },
+            "Rust",
+        ),
+        (
+            CellValue::Comment {
+                value: Box::new(CellValue::String("value".to_owned())),
+                text: "note".to_owned(),
+            },
+            "value",
+        ),
+        (CellValue::Image(vec![1, 2, 3]), ""),
     ];
     for (value, expected) in cases {
         assert_eq!(value.as_text(), expected);

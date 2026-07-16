@@ -8,7 +8,7 @@ use easyexcel_core::{
     CellValue, ExcelColumn, ExcelError, ExcelRow, Result, WriteCellContext, WriteHandler,
     WriteRowContext, WriteSheetContext, WriteWorkbookContext,
 };
-use rust_xlsxwriter::{Format, Workbook, Worksheet};
+use rust_xlsxwriter::{Format, Image, Note, Workbook, Worksheet};
 
 /// One absolute merged-cell range using zero-based inclusive coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -628,8 +628,39 @@ fn write_cell(
                 .write_datetime_with_format(row_index, column, *value, &format)
                 .map_err(format_error)?;
         }
+        CellValue::Formula(value) => {
+            worksheet
+                .write_formula(row_index, column, value.as_str())
+                .map_err(format_error)?;
+        }
+        CellValue::Hyperlink { url, text } => {
+            worksheet
+                .write_url_with_text(row_index, column, url.as_str(), text)
+                .map_err(format_error)?;
+        }
+        CellValue::Comment { value, text } => {
+            write_cell(worksheet, row_index, column, metadata, value)?;
+            worksheet
+                .insert_note(row_index, column, &Note::new(text))
+                .map_err(format_error)?;
+        }
+        CellValue::Image(bytes) => {
+            let image = image_from_buffer(bytes)?;
+            worksheet
+                .insert_image_fit_to_cell(row_index, column, &image, true)
+                .map_err(format_error)?;
+        }
     }
     Ok(())
+}
+
+fn image_from_buffer(bytes: &[u8]) -> Result<Image> {
+    if bytes.len() < 8 {
+        return Err(ExcelError::Format(
+            "image buffer is too short to contain a valid header".to_owned(),
+        ));
+    }
+    Image::new_from_buffer(bytes).map_err(format_error)
 }
 
 fn write_integer(worksheet: &mut Worksheet, row: u32, column: u16, value: i64) -> Result<()> {

@@ -1,15 +1,41 @@
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::fs::File;
+use std::io::Read as _;
+use std::path::Path;
 use std::rc::Rc;
 
 use calamine::{Data, Dimensions, Reader, Xlsx, open_workbook};
 use chrono::NaiveDate;
 use tempfile::tempdir;
+use zip::ZipArchive;
 
 use super::*;
 
 fn test_error(error: impl std::fmt::Display) -> ExcelError {
     ExcelError::Format(error.to_string())
+}
+
+fn zip_entry(path: &Path, name: &str) -> Result<String> {
+    let file = File::open(path)?;
+    let mut archive = ZipArchive::new(file).map_err(test_error)?;
+    let mut entry = archive.by_name(name).map_err(test_error)?;
+    let mut value = String::new();
+    entry.read_to_string(&mut value)?;
+    Ok(value)
+}
+
+fn zip_names(path: &Path) -> Result<Vec<String>> {
+    let file = File::open(path)?;
+    let mut archive = ZipArchive::new(file).map_err(test_error)?;
+    (0..archive.len())
+        .map(|index| {
+            archive
+                .by_index(index)
+                .map(|entry| entry.name().to_owned())
+                .map_err(test_error)
+        })
+        .collect::<Result<Vec<_>>>()
 }
 
 #[derive(Clone)]
@@ -41,6 +67,10 @@ impl ExcelRow for EveryCell {
             ),
             ExcelColumn::new("large", "Large", Some(8), 0, None),
             ExcelColumn::new("missing", "Missing", Some(9), 0, None),
+            ExcelColumn::new("formula", "Formula", Some(10), 0, None),
+            ExcelColumn::new("link", "Link", Some(11), 0, None),
+            ExcelColumn::new("comment", "Comment", Some(12), 0, None),
+            ExcelColumn::new("image", "Image", Some(13), 0, None),
         ];
         const WIDE_COLUMNS: &[ExcelColumn] =
             &[ExcelColumn::new("wide", "Wide", Some(65_536), 0, None)];
@@ -72,9 +102,30 @@ fn every_cell() -> EveryCell {
             CellValue::Date(date),
             CellValue::DateTime(date.and_hms_opt(12, 34, 56).expect("valid time")),
             CellValue::Int(i64::MAX),
+            CellValue::Empty,
+            CellValue::Formula("SUM(E2:F2)".to_owned()),
+            CellValue::Hyperlink {
+                url: "https://www.rust-lang.org".to_owned(),
+                text: "Rust".to_owned(),
+            },
+            CellValue::Comment {
+                value: Box::new(CellValue::String("annotated".to_owned())),
+                text: "cell note".to_owned(),
+            },
+            CellValue::Image(tiny_png()),
         ],
         fail: false,
     }
+}
+
+fn tiny_png() -> Vec<u8> {
+    vec![
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8,
+        0xcf, 0xc0, 0xf0, 0x1f, 0x00, 0x05, 0x00, 0x01, 0xff, 0x89, 0x99, 0x3d, 0x1d, 0x00, 0x00,
+        0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]
 }
 
 struct RecordingHandler {
@@ -404,6 +455,27 @@ fn writer_emits_headers_and_every_supported_cell_type() -> Result<()> {
         Some(&Data::String(i64::MAX.to_string()))
     );
     assert_eq!(range.get_value((1, 9)), Some(&Data::Empty));
+    assert_eq!(
+        range.get_value((1, 11)),
+        Some(&Data::String("Rust".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((1, 12)),
+        Some(&Data::String("annotated".to_owned()))
+    );
+    let formulas = workbook.worksheet_formula("Values").map_err(test_error)?;
+    assert!(
+        formulas
+            .get_value((1, 10))
+            .is_some_and(|formula| formula.contains("SUM(E2:F2)"))
+    );
+
+    let sheet = zip_entry(&path, "xl/worksheets/sheet1.xml")?;
+    assert!(sheet.contains("<hyperlink ref=\"L2\""));
+    let comments = zip_entry(&path, "xl/comments1.xml")?;
+    assert!(comments.contains("cell note"));
+    let names = zip_names(&path)?;
+    assert!(names.iter().any(|name| name == "xl/media/image1.png"));
     Ok(())
 }
 
@@ -742,6 +814,20 @@ fn conversion_configuration_column_and_save_failures_propagate() -> Result<()> {
         CellValue::Float(1.0),
         CellValue::Date(date),
         CellValue::DateTime(date.and_hms_opt(1, 2, 3).expect("valid time")),
+        CellValue::Formula("1+1".to_owned()),
+        CellValue::Hyperlink {
+            url: "https://www.rust-lang.org".to_owned(),
+            text: "Rust".to_owned(),
+        },
+        CellValue::Comment {
+            value: Box::new(CellValue::String("value".to_owned())),
+            text: "note".to_owned(),
+        },
+        CellValue::Comment {
+            value: Box::new(CellValue::Empty),
+            text: "note".to_owned(),
+        },
+        CellValue::Image(tiny_png()),
     ] {
         let metadata = Box::leak(Box::new(ExcelColumn::new(
             "value",
@@ -751,6 +837,24 @@ fn conversion_configuration_column_and_save_failures_propagate() -> Result<()> {
             None,
         )));
         assert!(write_data_row(worksheet, invalid_row, &[(0, 0, &*metadata)], &[value]).is_err());
+    }
+    let metadata = Box::leak(Box::new(ExcelColumn::new(
+        "image",
+        "Image",
+        Some(0),
+        0,
+        None,
+    )));
+    for bytes in [vec![1, 2, 3], vec![0; 8]] {
+        assert!(
+            write_data_row(
+                worksheet,
+                0,
+                &[(0, 0, &*metadata)],
+                &[CellValue::Image(bytes)]
+            )
+            .is_err()
+        );
     }
     assert!(
         write_xlsx::<EveryCell, _>(

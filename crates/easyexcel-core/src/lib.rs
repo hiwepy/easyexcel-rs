@@ -31,6 +31,24 @@ pub enum CellValue {
     DateTime(NaiveDateTime),
     /// An Excel error value.
     Error(String),
+    /// An Excel formula expression without the leading `=` requirement.
+    Formula(String),
+    /// A clickable hyperlink and its displayed text.
+    Hyperlink {
+        /// Link target.
+        url: String,
+        /// Displayed cell text.
+        text: String,
+    },
+    /// A value decorated with an Excel cell note/comment.
+    Comment {
+        /// Underlying cell value.
+        value: Box<CellValue>,
+        /// Note text.
+        text: String,
+    },
+    /// Encoded PNG, JPEG, GIF, or BMP image bytes.
+    Image(Vec<u8>),
 }
 
 impl CellValue {
@@ -44,13 +62,15 @@ impl CellValue {
     #[must_use]
     pub fn as_text(&self) -> String {
         match self {
-            Self::Empty => String::new(),
-            Self::String(value) | Self::Error(value) => value.clone(),
+            Self::Empty | Self::Image(_) => String::new(),
+            Self::String(value) | Self::Error(value) | Self::Formula(value) => value.clone(),
             Self::Bool(value) => value.to_string(),
             Self::Int(value) => value.to_string(),
             Self::Float(value) => value.to_string(),
             Self::Date(value) => value.format("%Y-%m-%d").to_string(),
             Self::DateTime(value) => value.format("%Y-%m-%d %H:%M:%S").to_string(),
+            Self::Hyperlink { text, .. } => text.clone(),
+            Self::Comment { value, .. } => value.as_text(),
         }
     }
 }

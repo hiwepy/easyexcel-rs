@@ -40,7 +40,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | include/exclude columns | builder filters | implemented |
 | column width / auto width | `column_width` / `auto_width` | implemented |
 | default styles and annotations | style model | planned |
-| formulas/images/comments/hyperlinks | `CellValue` extensions | planned |
+| formulas/images/comments/hyperlinks | rich `CellValue` variants | partial: XLSX write implemented |
 | `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |
 | loop merges and dynamic heads | writer metadata | planned |
 | template `fill` | template engine | planned |
