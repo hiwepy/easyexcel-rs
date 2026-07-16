@@ -164,6 +164,57 @@ impl MergeRange {
     }
 }
 
+/// Repeating merge strategy equivalent to Java `LoopMergeStrategy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoopMergeStrategy {
+    each_rows: u32,
+    column_extend: u16,
+    column_index: u16,
+}
+
+impl LoopMergeStrategy {
+    /// Creates a repeating merge strategy.
+    ///
+    /// # Errors
+    ///
+    /// Returns a format error when dimensions are zero or no range would be merged.
+    pub fn new(each_rows: u32, column_extend: u16, column_index: u16) -> Result<Self> {
+        if each_rows == 0 || column_extend == 0 {
+            return Err(ExcelError::Format(
+                "loop merge row and column spans must be greater than zero".to_owned(),
+            ));
+        }
+        if each_rows == 1 && column_extend == 1 {
+            return Err(ExcelError::Format(
+                "loop merge must span multiple rows or columns".to_owned(),
+            ));
+        }
+        Ok(Self {
+            each_rows,
+            column_extend,
+            column_index,
+        })
+    }
+
+    /// Number of rows in each merge group.
+    #[must_use]
+    pub const fn each_rows(self) -> u32 {
+        self.each_rows
+    }
+
+    /// Number of columns in each merge group.
+    #[must_use]
+    pub const fn column_extend(self) -> u16 {
+        self.column_extend
+    }
+
+    /// Zero-based first column.
+    #[must_use]
+    pub const fn column_index(self) -> u16 {
+        self.column_index
+    }
+}
+
 /// XLSX write configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
@@ -198,6 +249,8 @@ pub struct WriteOptions {
     pub head_style: CellStyle,
     /// Content styles cycled by relative data-row index.
     pub content_styles: Vec<CellStyle>,
+    /// Repeating merge strategies applied to data rows.
+    pub loop_merges: Vec<LoopMergeStrategy>,
 }
 
 impl Default for WriteOptions {
@@ -218,6 +271,7 @@ impl Default for WriteOptions {
             column_widths: Vec::new(),
             head_style: CellStyle::new().bold(true),
             content_styles: Vec::new(),
+            loop_merges: Vec::new(),
         }
     }
 }
@@ -308,6 +362,13 @@ impl<T> WriteSheet<T> {
     #[must_use]
     pub fn content_styles(mut self, styles: impl IntoIterator<Item = CellStyle>) -> Self {
         self.options.content_styles = styles.into_iter().collect();
+        self
+    }
+
+    /// Registers a repeating data-row merge strategy.
+    #[must_use]
+    pub fn loop_merge(mut self, strategy: LoopMergeStrategy) -> Self {
+        self.options.loop_merges.push(strategy);
         self
     }
 }
@@ -516,6 +577,7 @@ where
         let cells = row.to_row()?;
         let style = (!options.content_styles.is_empty())
             .then(|| &options.content_styles[data_index % options.content_styles.len()]);
+        apply_loop_merges(worksheet, row_index, data_index, &options.loop_merges)?;
         write_data_row_with_handlers(
             worksheet,
             row_index,
@@ -530,6 +592,39 @@ where
     after_sheet(handlers, &sheet_context)?;
     if options.auto_width {
         worksheet.autofit();
+    }
+    Ok(())
+}
+
+fn apply_loop_merges(
+    worksheet: &mut Worksheet,
+    row_index: u32,
+    data_index: usize,
+    strategies: &[LoopMergeStrategy],
+) -> Result<()> {
+    for strategy in strategies {
+        #[allow(clippy::cast_possible_truncation)]
+        let each_rows = strategy.each_rows as usize;
+        if !data_index.is_multiple_of(each_rows) {
+            continue;
+        }
+        let last_row = row_index
+            .checked_add(strategy.each_rows - 1)
+            .ok_or_else(|| ExcelError::Format("loop merge row overflow".to_owned()))?;
+        let last_column = strategy
+            .column_index
+            .checked_add(strategy.column_extend - 1)
+            .ok_or_else(|| ExcelError::Format("loop merge column overflow".to_owned()))?;
+        worksheet
+            .merge_range(
+                row_index,
+                strategy.column_index,
+                last_row,
+                last_column,
+                "",
+                &Format::new(),
+            )
+            .map_err(format_error)?;
     }
     Ok(())
 }

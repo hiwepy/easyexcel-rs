@@ -7,7 +7,8 @@ pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
 use easyexcel_reader::{ReadOptions, SheetSelector, read_xlsx};
 pub use easyexcel_writer::{
-    CellStyle, ExcelWriter, HorizontalAlignment, MergeRange, VerticalAlignment, WriteSheet,
+    CellStyle, ExcelWriter, HorizontalAlignment, LoopMergeStrategy, MergeRange, VerticalAlignment,
+    WriteSheet,
 };
 use easyexcel_writer::{WriteOptions, write_xlsx_with_handlers};
 
@@ -305,6 +306,13 @@ where
     #[must_use]
     pub fn content_styles(mut self, styles: impl IntoIterator<Item = CellStyle>) -> Self {
         self.options.content_styles = styles.into_iter().collect();
+        self
+    }
+
+    /// Registers a repeating data-row merge strategy.
+    #[must_use]
+    pub fn loop_merge(mut self, strategy: LoopMergeStrategy) -> Self {
+        self.options.loop_merges.push(strategy);
         self
     }
 

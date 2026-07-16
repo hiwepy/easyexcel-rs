@@ -330,6 +330,7 @@ fn default_options_and_helpers_are_deterministic() {
             column_widths: Vec::new(),
             head_style: CellStyle::new().bold(true),
             content_styles: Vec::new(),
+            loop_merges: Vec::new(),
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");
@@ -344,6 +345,13 @@ fn default_options_and_helpers_are_deterministic() {
         format_error("broken").to_string(),
         "excel format error: broken"
     );
+    assert!(LoopMergeStrategy::new(0, 1, 0).is_err());
+    assert!(LoopMergeStrategy::new(1, 0, 0).is_err());
+    assert!(LoopMergeStrategy::new(1, 1, 0).is_err());
+    let strategy = LoopMergeStrategy::new(2, 3, 4).expect("loop merge");
+    assert_eq!(strategy.each_rows(), 2);
+    assert_eq!(strategy.column_extend(), 3);
+    assert_eq!(strategy.column_index(), 4);
 }
 
 #[test]
@@ -602,7 +610,8 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
         .column_width(0, 20)
         .head_style(CellStyle::new().italic(true))
         .content_style(CellStyle::new().bold(true))
-        .content_styles([CellStyle::new().wrap_text(true)]);
+        .content_styles([CellStyle::new().wrap_text(true)])
+        .loop_merge(LoopMergeStrategy::new(2, 1, 0)?);
     let second = WriteSheet::<EveryCell>::new("Archive")
         .need_head(false)
         .constant_memory(true);
@@ -613,13 +622,14 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
     assert!(first.options().head_style.italic);
     assert_eq!(first.options().content_styles.len(), 1);
     assert!(first.options().content_styles[0].wrap_text);
+    assert_eq!(first.options().loop_merges.len(), 1);
     assert!(!second.options().need_head);
     assert!(second.options().constant_memory);
 
     let mut writer = ExcelWriter::with_handlers(&path, handlers);
     assert!(!writer.is_finished());
     writer
-        .write(vec![every_cell()], &first)?
+        .write(vec![every_cell(), every_cell()], &first)?
         .write(vec![every_cell(), every_cell()], &second)?;
     writer.finish()?;
     assert!(writer.is_finished());
@@ -666,7 +676,10 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
         workbook
             .merge_cells_by_sheet_name("Users")
             .map_err(test_error)?,
-        vec![Dimensions::new((0, 0), (0, 1))]
+        vec![
+            Dimensions::new((0, 0), (0, 1)),
+            Dimensions::new((1, 0), (2, 0)),
+        ]
     );
     let users = workbook.worksheet_range("Users").map_err(test_error)?;
     assert_eq!(
@@ -983,6 +996,24 @@ fn conversion_configuration_column_and_save_failures_propagate() -> Result<()> {
                 ..WriteOptions::default()
             },
             Vec::new()
+        )
+        .is_err()
+    );
+    assert!(
+        apply_loop_merges(worksheet, u32::MAX, 0, &[LoopMergeStrategy::new(2, 1, 0)?]).is_err()
+    );
+    assert!(
+        apply_loop_merges(worksheet, 0, 0, &[LoopMergeStrategy::new(1, 2, u16::MAX)?]).is_err()
+    );
+    assert!(apply_loop_merges(worksheet, 0, 0, &[LoopMergeStrategy::new(1, 2, 16_383)?]).is_err());
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("bad-loop-merge.xlsx"),
+            &WriteOptions {
+                loop_merges: vec![LoopMergeStrategy::new(1, 2, 16_383)?],
+                ..WriteOptions::default()
+            },
+            vec![every_cell()]
         )
         .is_err()
     );

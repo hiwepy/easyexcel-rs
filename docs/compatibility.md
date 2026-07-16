@@ -43,7 +43,8 @@ This document is the release gate, not a marketing checklist. A row is marked
 | style annotations and borders | derive style metadata | planned |
 | formulas/images/comments/hyperlinks | rich `CellValue` variants | partial: XLSX write implemented |
 | `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |
-| loop merges and dynamic heads | writer metadata | planned |
+| `LoopMergeStrategy` | repeating data-row merge metadata | implemented |
+| dynamic and multi-level heads | writer metadata | planned |
 | template `fill` | template engine | planned |
 | CSV read/write | CSV engine | planned |
 | XLS read | calamine XLS engine | planned |
