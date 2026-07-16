@@ -85,6 +85,11 @@ fn default_options_and_helpers_are_deterministic() {
             need_head: true,
             freeze_head: false,
             freeze_panes: None,
+            include_column_indexes: None,
+            include_column_field_names: None,
+            exclude_column_indexes: Vec::new(),
+            exclude_column_field_names: Vec::new(),
+            order_by_include_column: false,
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");
@@ -122,6 +127,61 @@ fn columns_are_ordered_by_physical_index_order_and_schema_position() {
             (3, 3, "implicit")
         ]
     );
+
+    let by_index = selected_columns(
+        SCHEMA,
+        &WriteOptions {
+            include_column_indexes: Some(vec![2, 1]),
+            order_by_include_column: true,
+            ..WriteOptions::default()
+        },
+    );
+    assert_eq!(
+        by_index
+            .iter()
+            .map(|(_, _, column)| column.field)
+            .collect::<Vec<_>>(),
+        vec!["third", "first", "second"]
+    );
+    assert_eq!(
+        by_index
+            .iter()
+            .map(|(physical, _, _)| *physical)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
+
+    let by_name = selected_columns(
+        SCHEMA,
+        &WriteOptions {
+            include_column_field_names: Some(vec!["implicit".to_owned(), "first".to_owned()]),
+            order_by_include_column: true,
+            ..WriteOptions::default()
+        },
+    );
+    assert_eq!(
+        by_name
+            .iter()
+            .map(|(_, _, column)| column.field)
+            .collect::<Vec<_>>(),
+        vec!["implicit", "first"]
+    );
+
+    let excluded = selected_columns(
+        SCHEMA,
+        &WriteOptions {
+            exclude_column_indexes: vec![2],
+            exclude_column_field_names: vec!["second".to_owned()],
+            ..WriteOptions::default()
+        },
+    );
+    assert_eq!(
+        excluded
+            .iter()
+            .map(|(_, _, column)| column.field)
+            .collect::<Vec<_>>(),
+        vec!["first", "implicit"]
+    );
 }
 
 #[test]
@@ -136,6 +196,7 @@ fn writer_emits_headers_and_every_supported_cell_type() -> Result<()> {
             need_head: true,
             freeze_head: true,
             freeze_panes: None,
+            ..WriteOptions::default()
         },
         vec![every_cell()],
     )?;
@@ -179,6 +240,7 @@ fn constant_memory_writer_can_omit_headers_and_freeze_request() -> Result<()> {
             need_head: false,
             freeze_head: true,
             freeze_panes: None,
+            ..WriteOptions::default()
         },
         vec![every_cell(), every_cell()],
     )?;

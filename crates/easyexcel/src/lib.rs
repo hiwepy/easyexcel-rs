@@ -211,6 +211,47 @@ where
         self
     }
 
+    /// Includes only the supplied physical column indexes.
+    #[must_use]
+    pub fn include_column_indexes(mut self, indexes: impl IntoIterator<Item = usize>) -> Self {
+        self.options.include_column_indexes = Some(indexes.into_iter().collect());
+        self
+    }
+
+    /// Includes only the supplied Rust field names.
+    #[must_use]
+    pub fn include_column_field_names<S>(mut self, names: impl IntoIterator<Item = S>) -> Self
+    where
+        S: Into<String>,
+    {
+        self.options.include_column_field_names = Some(names.into_iter().map(Into::into).collect());
+        self
+    }
+
+    /// Excludes physical column indexes.
+    #[must_use]
+    pub fn exclude_column_indexes(mut self, indexes: impl IntoIterator<Item = usize>) -> Self {
+        self.options.exclude_column_indexes = indexes.into_iter().collect();
+        self
+    }
+
+    /// Excludes Rust field names.
+    #[must_use]
+    pub fn exclude_column_field_names<S>(mut self, names: impl IntoIterator<Item = S>) -> Self
+    where
+        S: Into<String>,
+    {
+        self.options.exclude_column_field_names = names.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Orders selected columns by the corresponding include list.
+    #[must_use]
+    pub const fn order_by_include_column(mut self, enabled: bool) -> Self {
+        self.options.order_by_include_column = enabled;
+        self
+    }
+
     /// Selects constant-memory output.
     #[must_use]
     pub const fn constant_memory(mut self, enabled: bool) -> Self {

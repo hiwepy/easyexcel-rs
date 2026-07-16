@@ -70,12 +70,28 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .need_head(false)
         .freeze_head(true)
         .freeze_panes(2, 1)
+        .include_column_indexes([2, 0])
+        .include_column_field_names(["value"])
+        .exclude_column_indexes([3])
+        .exclude_column_field_names(["ignored".to_owned()])
+        .order_by_include_column(true)
         .constant_memory(true);
     assert_eq!(write.path, PathBuf::from("output.xlsx"));
     assert_eq!(write.options.sheet_name, "Values");
     assert!(!write.options.need_head);
     assert!(write.options.freeze_head);
     assert_eq!(write.options.freeze_panes, Some((2, 1)));
+    assert_eq!(write.options.include_column_indexes, Some(vec![2, 0]));
+    assert_eq!(
+        write.options.include_column_field_names,
+        Some(vec!["value".to_owned()])
+    );
+    assert_eq!(write.options.exclude_column_indexes, vec![3]);
+    assert_eq!(
+        write.options.exclude_column_field_names,
+        vec!["ignored".to_owned()]
+    );
+    assert!(write.options.order_by_include_column);
     assert!(write.options.constant_memory);
 }
 

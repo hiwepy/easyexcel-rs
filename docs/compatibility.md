@@ -37,7 +37,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | streaming write | `do_write_iter(IntoIterator)` | implemented |
 | `ExcelWriter` multi-write lifecycle | `ExcelWriter` | planned |
 | `WriteHandler` lifecycle | `WriteHandler` | planned |
-| include/exclude columns | builder filters | planned |
+| include/exclude columns | builder filters | implemented |
 | default styles and annotations | style model | planned |
 | formulas/images/comments/hyperlinks | `CellValue` extensions | planned |
 | merges and dynamic heads | writer metadata | planned |

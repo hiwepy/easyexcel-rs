@@ -7,6 +7,7 @@ use rust_xlsxwriter::{Format, Workbook, Worksheet};
 
 /// XLSX write configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct WriteOptions {
     /// Worksheet name.
     pub sheet_name: String,
@@ -18,6 +19,16 @@ pub struct WriteOptions {
     pub freeze_head: bool,
     /// Explicit freeze pane position as `(row, column)`.
     pub freeze_panes: Option<(u32, u16)>,
+    /// Physical column indexes to include.
+    pub include_column_indexes: Option<Vec<usize>>,
+    /// Rust field names to include.
+    pub include_column_field_names: Option<Vec<String>>,
+    /// Physical column indexes to exclude.
+    pub exclude_column_indexes: Vec<usize>,
+    /// Rust field names to exclude.
+    pub exclude_column_field_names: Vec<String>,
+    /// Whether included columns follow the order of the include list.
+    pub order_by_include_column: bool,
 }
 
 impl Default for WriteOptions {
@@ -28,6 +39,11 @@ impl Default for WriteOptions {
             need_head: true,
             freeze_head: false,
             freeze_panes: None,
+            include_column_indexes: None,
+            include_column_field_names: None,
+            exclude_column_indexes: Vec::new(),
+            exclude_column_field_names: Vec::new(),
+            order_by_include_column: false,
         }
     }
 }
@@ -60,7 +76,7 @@ where
             .map_err(format_error)?;
     }
 
-    let columns = ordered_columns(T::schema());
+    let columns = selected_columns(T::schema(), options);
     let mut row_index = 0_u32;
     if options.need_head {
         write_headers(worksheet, &columns)?;
@@ -86,6 +102,53 @@ fn ordered_columns(schema: &'static [ExcelColumn]) -> Vec<(usize, usize, &'stati
     columns.sort_by_key(|(physical_index, schema_index, column)| {
         (*physical_index, column.order, *schema_index)
     });
+    columns
+}
+
+fn selected_columns(
+    schema: &'static [ExcelColumn],
+    options: &WriteOptions,
+) -> Vec<(usize, usize, &'static ExcelColumn)> {
+    let mut columns = ordered_columns(schema)
+        .into_iter()
+        .filter(|(physical_index, _, column)| {
+            let included_by_index = options
+                .include_column_indexes
+                .as_ref()
+                .is_some_and(|indexes| indexes.contains(physical_index));
+            let included_by_name = options
+                .include_column_field_names
+                .as_ref()
+                .is_some_and(|names| names.iter().any(|name| name == column.field));
+            let has_includes = options.include_column_indexes.is_some()
+                || options.include_column_field_names.is_some();
+            let excluded = options.exclude_column_indexes.contains(physical_index)
+                || options
+                    .exclude_column_field_names
+                    .iter()
+                    .any(|name| name == column.field);
+            (!has_includes || included_by_index || included_by_name) && !excluded
+        })
+        .collect::<Vec<_>>();
+
+    if options.order_by_include_column {
+        columns.sort_by_key(|(physical_index, _, column)| {
+            options
+                .include_column_indexes
+                .as_ref()
+                .and_then(|indexes| indexes.iter().position(|index| index == physical_index))
+                .or_else(|| {
+                    options
+                        .include_column_field_names
+                        .as_ref()
+                        .and_then(|names| names.iter().position(|name| name == column.field))
+                })
+                .unwrap_or(usize::MAX)
+        });
+        for (output_index, (physical_index, _, _)) in columns.iter_mut().enumerate() {
+            *physical_index = output_index;
+        }
+    }
     columns
 }
 
