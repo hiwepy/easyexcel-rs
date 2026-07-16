@@ -261,7 +261,7 @@ fn replace_collection_placeholders(
             FillDirection::Horizontal => expand_horizontal_cells(xml, wrapper, &shared_strings),
         };
         if let Some(expanded) = expanded {
-            entry.bytes = expanded.into_bytes();
+            entry.bytes = update_worksheet_dimension(&expanded).into_bytes();
             break;
         }
     }
@@ -308,24 +308,385 @@ fn expand_vertical_rows(
     shared_strings: &[String],
 ) -> Option<String> {
     let (start, end, row, _, _, _) = find_collection_row(xml, wrapper, shared_strings)?;
-    let mut rows = String::new();
-    for (offset, data) in wrapper.rows().iter().enumerate() {
-        let filled = fill_row_cells(
+    let first = fill_row_cells(
+        row,
+        wrapper.rows().first()?,
+        wrapper.name(),
+        shared_strings,
+        config.get_auto_style(),
+    );
+    if config.get_force_new_row() {
+        let template_row = row_index(row)?;
+        let mut rows = first;
+        for (offset, data) in wrapper.rows().iter().enumerate().skip(1) {
+            rows.push_str(&collection_only_row(
+                row,
+                data,
+                wrapper,
+                shared_strings,
+                config.get_auto_style(),
+                offset,
+            ));
+        }
+        let delta = wrapper.rows().len().saturating_sub(1);
+        let suffix = shift_rows(&xml[end..], delta);
+        let expanded = format!("{}{}{}", &xml[..start], rows, suffix);
+        return Some(shift_worksheet_metadata(&expanded, template_row + 1, delta));
+    }
+
+    let template_row = row_index(row)?;
+    let mut suffix = xml[end..].to_owned();
+    for (offset, data) in wrapper.rows().iter().enumerate().skip(1) {
+        let row = collection_only_row(
             row,
             data,
-            wrapper.name(),
+            wrapper,
             shared_strings,
             config.get_auto_style(),
+            offset,
         );
-        rows.push_str(&shift_row(&filled, offset, 0));
+        suffix = upsert_collection_row(&suffix, &row, template_row + offset);
     }
-    let shift = if config.get_force_new_row() {
-        wrapper.rows().len().saturating_sub(1)
-    } else {
-        0
+    Some(format!("{}{}{}", &xml[..start], first, suffix))
+}
+
+fn collection_only_row(
+    template_row: &str,
+    data: &TemplateData,
+    wrapper: &FillWrapper,
+    shared_strings: &[String],
+    auto_style: bool,
+    row_offset: usize,
+) -> String {
+    let Some(tag_end) = template_row.find('>') else {
+        return template_row.to_owned();
     };
-    let suffix = shift_rows(&xml[end..], shift);
-    Some(format!("{}{}{}", &xml[..start], rows, suffix))
+    let mut row = shift_row(&template_row[..=tag_end], row_offset, 0);
+    for (_, _, cell) in collection_cells(template_row, wrapper, shared_strings) {
+        let filled = fill_cell(cell, data, wrapper.name(), shared_strings, auto_style);
+        row.push_str(&shift_row(&filled, row_offset, 0));
+    }
+    row.push_str("</row>");
+    row
+}
+
+fn collection_cells<'a>(
+    row: &'a str,
+    wrapper: &FillWrapper,
+    shared_strings: &[String],
+) -> Vec<(usize, usize, &'a str)> {
+    let mut cells = Vec::new();
+    let mut offset = 0;
+    while let Some(relative_start) = row[offset..].find("<c") {
+        let start = offset + relative_start;
+        let Some(relative_end) = row[start..].find("</c>") else {
+            break;
+        };
+        let end = start + relative_end + 4;
+        let cell = &row[start..end];
+        if cell_value(cell, shared_strings)
+            .is_some_and(|value| contains_collection_marker(&value, wrapper))
+        {
+            cells.push((start, end, cell));
+        }
+        offset = end;
+    }
+    cells
+}
+
+fn upsert_collection_row(xml: &str, collection_row: &str, target_row: usize) -> String {
+    let mut offset = 0;
+    while let Some(relative_start) = xml[offset..].find("<row") {
+        let start = offset + relative_start;
+        let Some(relative_end) = xml[start..].find("</row>") else {
+            break;
+        };
+        let end = start + relative_end + 6;
+        let existing = &xml[start..end];
+        match row_index(existing) {
+            Some(row) if row == target_row => {
+                let merged = merge_collection_cells(existing, collection_row);
+                return format!("{}{}{}", &xml[..start], merged, &xml[end..]);
+            }
+            Some(row) if row > target_row => {
+                return format!("{}{}{}", &xml[..start], collection_row, &xml[start..]);
+            }
+            _ => offset = end,
+        }
+    }
+    if let Some(end) = xml.find("</sheetData>") {
+        return format!("{}{}{}", &xml[..end], collection_row, &xml[end..]);
+    }
+    format!("{xml}{collection_row}")
+}
+
+fn merge_collection_cells(existing_row: &str, collection_row: &str) -> String {
+    let mut merged = existing_row.to_owned();
+    for (_, _, cell) in all_cells(collection_row) {
+        let Some(reference) = attribute_value(cell, "r") else {
+            continue;
+        };
+        if let Some((start, end, _)) = all_cells(&merged)
+            .into_iter()
+            .find(|(_, _, existing)| attribute_value(existing, "r") == Some(reference))
+        {
+            merged.replace_range(start..end, cell);
+        } else if let Some(end) = merged.rfind("</row>") {
+            merged.insert_str(end, cell);
+        }
+    }
+    merged
+}
+
+fn all_cells(row: &str) -> Vec<(usize, usize, &str)> {
+    let mut cells = Vec::new();
+    let mut offset = 0;
+    while let Some(relative_start) = row[offset..].find("<c") {
+        let start = offset + relative_start;
+        let Some(relative_end) = row[start..].find("</c>") else {
+            break;
+        };
+        let end = start + relative_end + 4;
+        cells.push((start, end, &row[start..end]));
+        offset = end;
+    }
+    cells
+}
+
+fn row_index(row: &str) -> Option<usize> {
+    attribute_value(row, "r")?.parse().ok()
+}
+
+fn update_worksheet_dimension(xml: &str) -> String {
+    let mut bounds: Option<(usize, usize, usize, usize)> = None;
+    for (_, _, cell) in all_cells(xml) {
+        let Some(reference) = attribute_value(cell, "r") else {
+            continue;
+        };
+        let Some((column, row)) = parse_cell_reference(reference) else {
+            continue;
+        };
+        bounds = Some(bounds.map_or((column, row, column, row), |current| {
+            (
+                current.0.min(column),
+                current.1.min(row),
+                current.2.max(column),
+                current.3.max(row),
+            )
+        }));
+    }
+    let Some((first_column, first_row, last_column, last_row)) = bounds else {
+        return xml.to_owned();
+    };
+    let reference = format!(
+        "{}{}:{}{}",
+        column_name(first_column),
+        first_row,
+        column_name(last_column),
+        last_row
+    );
+    replace_tag_attribute(xml, "dimension", "ref", &reference)
+}
+
+fn shift_worksheet_metadata(xml: &str, threshold_row: usize, delta: usize) -> String {
+    if delta == 0 {
+        return xml.to_owned();
+    }
+    let mut shifted = xml.to_owned();
+    for (tag, attribute) in [
+        ("mergeCell", "ref"),
+        ("hyperlink", "ref"),
+        ("autoFilter", "ref"),
+        ("dataValidation", "sqref"),
+        ("conditionalFormatting", "sqref"),
+    ] {
+        shifted = shift_tag_references(&shifted, tag, attribute, threshold_row, delta);
+    }
+    shift_formula_elements(&shifted, threshold_row, delta)
+}
+
+fn shift_tag_references(
+    xml: &str,
+    tag: &str,
+    attribute: &str,
+    threshold_row: usize,
+    delta: usize,
+) -> String {
+    let mut output = String::new();
+    let mut offset = 0;
+    let marker = format!("<{tag}");
+    while let Some(relative_start) = xml[offset..].find(&marker) {
+        let start = offset + relative_start;
+        let Some(relative_end) = xml[start..].find('>') else {
+            break;
+        };
+        let end = start + relative_end + 1;
+        output.push_str(&xml[offset..start]);
+        let element = &xml[start..end];
+        let shifted = attribute_value(element, attribute).map_or_else(
+            || element.to_owned(),
+            |value| {
+                replace_attribute(
+                    element,
+                    attribute,
+                    &shift_reference_list(value, threshold_row, delta),
+                )
+            },
+        );
+        output.push_str(&shifted);
+        offset = end;
+    }
+    output.push_str(&xml[offset..]);
+    output
+}
+
+fn shift_reference_list(value: &str, threshold_row: usize, delta: usize) -> String {
+    value
+        .split_whitespace()
+        .map(|range| {
+            range
+                .split(':')
+                .map(|reference| shift_a1_reference(reference, threshold_row, delta))
+                .collect::<Vec<_>>()
+                .join(":")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn shift_formula_elements(xml: &str, threshold_row: usize, delta: usize) -> String {
+    let mut output = String::new();
+    let mut offset = 0;
+    while let Some(relative_start) = xml[offset..].find("<f") {
+        let start = offset + relative_start;
+        let Some(open_end) = xml[start..].find('>') else {
+            break;
+        };
+        let content_start = start + open_end + 1;
+        let Some(relative_end) = xml[content_start..].find("</f>") else {
+            break;
+        };
+        let content_end = content_start + relative_end;
+        output.push_str(&xml[offset..content_start]);
+        output.push_str(&shift_formula_references(
+            &xml[content_start..content_end],
+            threshold_row,
+            delta,
+        ));
+        offset = content_end;
+    }
+    output.push_str(&xml[offset..]);
+    output
+}
+
+fn shift_formula_references(formula: &str, threshold_row: usize, delta: usize) -> String {
+    let bytes = formula.as_bytes();
+    let mut output = String::new();
+    let mut offset = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'$' && !bytes[index].is_ascii_alphabetic() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        if bytes[index] == b'$' {
+            index += 1;
+        }
+        let column_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_alphabetic() {
+            index += 1;
+        }
+        let column_end = index;
+        if index < bytes.len() && bytes[index] == b'$' {
+            index += 1;
+        }
+        let row_start = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        let valid = column_end > column_start
+            && row_start < index
+            && column_end - column_start <= 3
+            && (start == 0 || !is_formula_identifier(bytes[start - 1]))
+            && (index == bytes.len()
+                || (!is_formula_identifier(bytes[index])
+                    && bytes[index] != b'!'
+                    && bytes[index] != b'('));
+        if valid {
+            output.push_str(&formula[offset..start]);
+            output.push_str(&shift_a1_reference(
+                &formula[start..index],
+                threshold_row,
+                delta,
+            ));
+            offset = index;
+        }
+    }
+    output.push_str(&formula[offset..]);
+    output
+}
+
+const fn is_formula_identifier(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn shift_a1_reference(reference: &str, threshold_row: usize, delta: usize) -> String {
+    let Some((column, row)) = parse_cell_reference(reference) else {
+        return reference.to_owned();
+    };
+    if row < threshold_row {
+        return reference.to_owned();
+    }
+    let absolute_column = reference.starts_with('$');
+    let row_marker = reference
+        .bytes()
+        .position(|byte| byte.is_ascii_digit())
+        .is_some_and(|index| index > 0 && reference.as_bytes()[index - 1] == b'$');
+    format!(
+        "{}{}{}{}",
+        if absolute_column { "$" } else { "" },
+        column_name(column),
+        if row_marker { "$" } else { "" },
+        row + delta
+    )
+}
+
+fn parse_cell_reference(reference: &str) -> Option<(usize, usize)> {
+    let normalized = reference.replace('$', "");
+    let split = normalized.bytes().position(|byte| byte.is_ascii_digit())?;
+    if split == 0
+        || !normalized[..split]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    let column = normalized[..split]
+        .bytes()
+        .try_fold(0_usize, |value, byte| {
+            value
+                .checked_mul(26)?
+                .checked_add(usize::from(byte.to_ascii_uppercase() - b'A' + 1))
+        })?;
+    if column > 16_384 {
+        return None;
+    }
+    let row = normalized[split..].parse::<usize>().ok()?;
+    (row > 0).then_some((column, row))
+}
+
+fn replace_tag_attribute(xml: &str, tag: &str, attribute: &str, value: &str) -> String {
+    let marker = format!("<{tag}");
+    let Some(start) = xml.find(&marker) else {
+        return xml.to_owned();
+    };
+    let Some(relative_end) = xml[start..].find('>') else {
+        return xml.to_owned();
+    };
+    let end = start + relative_end + 1;
+    let replaced = replace_attribute(&xml[start..end], attribute, value);
+    format!("{}{}{}", &xml[..start], replaced, &xml[end..])
 }
 
 fn expand_horizontal_cells(

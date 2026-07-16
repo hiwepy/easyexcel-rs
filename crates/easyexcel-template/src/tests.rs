@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
 use calamine::{Data, Reader, Xlsx, open_workbook};
-use rust_xlsxwriter::Workbook;
+use rust_xlsxwriter::{Format, Workbook};
 use tempfile::{TempDir, tempdir};
 
 use super::*;
@@ -358,6 +358,9 @@ fn expands_vertical_named_rows_and_shifts_footer() -> Result<()> {
     worksheet
         .write_string(1, 1, "Age {users.age}")
         .map_err(test_error)?;
+    worksheet
+        .write_string(1, 2, "Template static")
+        .map_err(test_error)?;
     worksheet.write_string(2, 0, "Footer").map_err(test_error)?;
     workbook.save(&template).map_err(test_error)?;
 
@@ -390,8 +393,66 @@ fn expands_vertical_named_rows_and_shifts_footer() -> Result<()> {
         range.get_value((3, 1)),
         Some(&Data::String("Age 40".to_owned()))
     );
+    assert_eq!(range.get_value((2, 2)), Some(&Data::Empty));
+    assert_eq!(range.get_value((3, 2)), Some(&Data::Empty));
     assert_eq!(
         range.get_value((4, 0)),
+        Some(&Data::String("Footer".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn default_vertical_fill_reuses_existing_rows_without_copying_static_cells() -> Result<()> {
+    let directory = tempdir()?;
+    let template = directory.path().join("reuse-template.xlsx");
+    let output = directory.path().join("reuse-output.xlsx");
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.write_string(0, 0, "Name").map_err(test_error)?;
+    worksheet
+        .write_string(1, 0, "{.name}")
+        .map_err(test_error)?;
+    worksheet
+        .write_string(1, 1, "Template static")
+        .map_err(test_error)?;
+    worksheet.write_string(2, 0, "old").map_err(test_error)?;
+    worksheet
+        .write_string(2, 1, "Preserve")
+        .map_err(test_error)?;
+    worksheet.write_string(3, 0, "Footer").map_err(test_error)?;
+    workbook.save(&template).map_err(test_error)?;
+
+    fill_xlsx_template_list(
+        &template,
+        &output,
+        &FillWrapper::new([
+            TemplateData::new().with("name", "Alice"),
+            TemplateData::new().with("name", "Bob"),
+        ]),
+        FillConfig::new(),
+    )?;
+
+    let mut workbook: Xlsx<_> = open_workbook(output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    assert_eq!(
+        range.get_value((1, 0)),
+        Some(&Data::String("Alice".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((1, 1)),
+        Some(&Data::String("Template static".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((2, 0)),
+        Some(&Data::String("Bob".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((2, 1)),
+        Some(&Data::String("Preserve".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((3, 0)),
         Some(&Data::String("Footer".to_owned()))
     );
     Ok(())
@@ -569,4 +630,196 @@ fn collection_coordinate_helpers_and_missing_input_are_deterministic() -> Result
         .is_err()
     );
     Ok(())
+}
+
+#[test]
+fn collection_row_merge_helpers_cover_missing_existing_and_inserted_rows() {
+    let data = TemplateData::new().with("name", "X");
+    let wrapper = FillWrapper::new([data.clone()]);
+    let marker = "<row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>{.name}</t></is></c></row>";
+    assert!(
+        expand_vertical_rows(marker, &FillWrapper::default(), FillConfig::new(), &[]).is_none()
+    );
+    assert!(
+        expand_vertical_rows(
+            "<row><c r=\"A1\" t=\"inlineStr\"><is><t>{.name}</t></is></c></row>",
+            &wrapper,
+            FillConfig::new(),
+            &[]
+        )
+        .is_none()
+    );
+    assert!(
+        expand_vertical_rows(
+            "<row><c r=\"A1\" t=\"inlineStr\"><is><t>{.name}</t></is></c></row>",
+            &wrapper,
+            FillConfig::new().force_new_row(true),
+            &[]
+        )
+        .is_none()
+    );
+    assert_eq!(
+        collection_only_row("<row", &data, &wrapper, &[], true, 1),
+        "<row"
+    );
+    assert!(collection_cells("<c", &wrapper, &[]).is_empty());
+
+    let inserted = "<row r=\"2\"><c r=\"A2\"></c></row>";
+    assert_eq!(
+        upsert_collection_row(
+            "<row r=\"3\"><c r=\"A3\"></c></row></sheetData>",
+            inserted,
+            2
+        ),
+        format!("{inserted}<row r=\"3\"><c r=\"A3\"></c></row></sheetData>")
+    );
+    assert_eq!(
+        upsert_collection_row(
+            "<row r=\"1\"><c r=\"A1\"></c></row></sheetData>",
+            inserted,
+            2
+        ),
+        format!("<row r=\"1\"><c r=\"A1\"></c></row>{inserted}</sheetData>")
+    );
+    assert_eq!(
+        upsert_collection_row("<row r=\"1\">broken", inserted, 2),
+        format!("<row r=\"1\">broken{inserted}")
+    );
+    assert_eq!(
+        upsert_collection_row("<row r=\"bad\"></row>", inserted, 2),
+        format!("<row r=\"bad\"></row>{inserted}")
+    );
+
+    assert_eq!(
+        merge_collection_cells("<row r=\"2\"></row>", "<row><c><v>1</v></c></row>"),
+        "<row r=\"2\"></row>"
+    );
+    assert_eq!(
+        merge_collection_cells(
+            "<row r=\"2\"><c r=\"A2\"></c></row>",
+            "<row r=\"2\"><c r=\"B2\"></c></row>"
+        ),
+        "<row r=\"2\"><c r=\"A2\"></c><c r=\"B2\"></c></row>"
+    );
+    assert_eq!(
+        merge_collection_cells(
+            "<row r=\"2\"><c r=\"A2\"></c>",
+            "<row r=\"2\"><c r=\"B2\"></c></row>"
+        ),
+        "<row r=\"2\"><c r=\"A2\"></c>"
+    );
+    assert!(all_cells("<c").is_empty());
+    assert_eq!(row_index("<row></row>"), None);
+    assert_eq!(row_index("<row r=\"bad\"></row>"), None);
+}
+
+#[test]
+fn worksheet_metadata_shifts_ranges_formulas_and_recomputes_dimension() {
+    let xml = concat!(
+        "<worksheet><dimension ref=\"A1:D3\"/><sheetData>",
+        "<row r=\"1\"><c r=\"A1\"></c></row>",
+        "<row r=\"4\"><c r=\"D4\"><f>SUM(A1:A3)+$B$3+Sheet1!A3+LOG10(A3)</f></c></row>",
+        "</sheetData><mergeCells><mergeCell ref=\"B3:C3\"/></mergeCells>",
+        "<hyperlinks><hyperlink ref=\"A3\"/></hyperlinks>",
+        "<autoFilter ref=\"A1:D3\"/>",
+        "<dataValidations><dataValidation sqref=\"A3 B1:B3\"/></dataValidations>",
+        "<conditionalFormatting sqref=\"C3:D3\"></conditionalFormatting></worksheet>"
+    );
+    let shifted = shift_worksheet_metadata(xml, 3, 1);
+    assert!(shifted.contains("mergeCell ref=\"B4:C4\""));
+    assert!(shifted.contains("hyperlink ref=\"A4\""));
+    assert!(shifted.contains("autoFilter ref=\"A1:D4\""));
+    assert!(shifted.contains("dataValidation sqref=\"A4 B1:B4\""));
+    assert!(shifted.contains("conditionalFormatting sqref=\"C4:D4\""));
+    assert!(shifted.contains("SUM(A1:A4)+$B$4+Sheet1!A4+LOG10(A4)"));
+
+    let dimension = update_worksheet_dimension(&shifted);
+    assert!(dimension.contains("dimension ref=\"A1:D4\""));
+    assert_eq!(shift_worksheet_metadata(xml, 3, 0), xml);
+    assert_eq!(update_worksheet_dimension("<worksheet/>"), "<worksheet/>");
+}
+
+#[test]
+fn force_new_row_pipeline_shifts_real_formula_merge_and_dimension_metadata() -> Result<()> {
+    let directory = tempdir()?;
+    let template = directory.path().join("metadata-template.xlsx");
+    let output = directory.path().join("metadata-output.xlsx");
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.write_string(0, 0, "Name").map_err(test_error)?;
+    worksheet
+        .write_string(1, 0, "{.name}")
+        .map_err(test_error)?;
+    worksheet
+        .merge_range(2, 1, 2, 2, "Footer", &Format::new())
+        .map_err(test_error)?;
+    worksheet.write_formula(2, 3, "=A3").map_err(test_error)?;
+    workbook.save(&template).map_err(test_error)?;
+
+    fill_xlsx_template_list(
+        &template,
+        &output,
+        &FillWrapper::new([
+            TemplateData::new().with("name", "A"),
+            TemplateData::new().with("name", "B"),
+            TemplateData::new().with("name", "C"),
+        ]),
+        FillConfig::new().force_new_row(true),
+    )?;
+
+    let entries = load_entries(&output)?;
+    let worksheet = entries
+        .iter()
+        .find(|entry| entry.name == "xl/worksheets/sheet1.xml")
+        .ok_or_else(|| ExcelError::Format("worksheet fixture is missing".to_owned()))?;
+    let xml = std::str::from_utf8(&worksheet.bytes).map_err(test_error)?;
+    assert!(xml.contains("dimension ref=\"A1:D5\""));
+    assert!(xml.contains("mergeCell ref=\"B5:C5\""));
+    assert!(xml.contains("<c r=\"D5\"><f>A5</f>"));
+    Ok(())
+}
+
+#[test]
+fn a1_reference_and_metadata_parsers_reject_malformed_inputs() {
+    assert_eq!(parse_cell_reference("$AA$12"), Some((27, 12)));
+    assert_eq!(parse_cell_reference("A"), None);
+    assert_eq!(parse_cell_reference("1"), None);
+    assert_eq!(parse_cell_reference("A0"), None);
+    assert_eq!(parse_cell_reference("A1x"), None);
+    assert_eq!(parse_cell_reference("XFE1"), None);
+    assert_eq!(parse_cell_reference("ZZZZZZZZZZZZZZZZZZZZ1"), None);
+    assert_eq!(shift_a1_reference("A2", 3, 2), "A2");
+    assert_eq!(shift_a1_reference("bad", 1, 2), "bad");
+    assert_eq!(shift_a1_reference("$A$3", 3, 2), "$A$5");
+    assert_eq!(shift_reference_list("A1:A3 C3", 3, 1), "A1:A4 C4");
+
+    assert_eq!(shift_formula_elements("<f", 1, 1), "<f");
+    assert_eq!(shift_formula_elements("<f>missing", 1, 1), "<f>missing");
+    assert_eq!(shift_formula_references("$", 1, 1), "$");
+    assert_eq!(shift_formula_references("A3_name+A3x", 1, 1), "A3_name+A3x");
+    assert_eq!(shift_formula_references("Sheet1!A3", 3, 1), "Sheet1!A4");
+    assert_eq!(shift_formula_references("LOG10(A3)", 3, 1), "LOG10(A4)");
+
+    assert_eq!(
+        shift_tag_references("<mergeCell", "mergeCell", "ref", 1, 1),
+        "<mergeCell"
+    );
+    assert_eq!(
+        shift_tag_references("<mergeCell/>", "mergeCell", "ref", 1, 1),
+        "<mergeCell/>"
+    );
+    assert_eq!(
+        replace_tag_attribute("<x/>", "dimension", "ref", "A1"),
+        "<x/>"
+    );
+    assert_eq!(
+        replace_tag_attribute("<dimension", "dimension", "ref", "A1"),
+        "<dimension"
+    );
+    assert_eq!(
+        update_worksheet_dimension(
+            "<worksheet><dimension ref=\"A1\"/><c></c><c r=\"bad\"></c></worksheet>"
+        ),
+        "<worksheet><dimension ref=\"A1\"/><c></c><c r=\"bad\"></c></worksheet>"
+    );
 }
