@@ -9,6 +9,7 @@ repository.workspace = true
 
 [dependencies]
 calamine.workspace = true
+csv.workspace = true
 easyexcel-core = { path = "../easyexcel-core" }
 
 [dev-dependencies]

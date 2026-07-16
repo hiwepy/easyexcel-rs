@@ -46,7 +46,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `LoopMergeStrategy` | repeating data-row merge metadata | implemented |
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
-| CSV read/write | CSV engine | planned |
+| CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, UTF-8 BOM, and case-insensitive `.csv` dispatch implemented; charset configuration and stateful multi-write remain |
 | XLS read | calamine XLS engine | planned |
 | password/encryption | encryption adapter | planned |
 | Axum/Actix adapters | `easyexcel-web` | planned |

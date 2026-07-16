@@ -263,6 +263,123 @@ fn sheet_selection_supports_first_index_name_all_and_missing_values() -> Result<
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn csv_read_uses_typed_lifecycle_single_sheet_selection_and_flexible_rows() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("fixture.csv");
+    fs::write(&path, b"\xEF\xBB\xBFValue,Extra\r\none,1\r\ntwo\r\n")?;
+    let mut probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_csv::<TestRow, _>(&path, &options(), &mut probe)?;
+    assert_eq!(
+        probe.rows,
+        vec![TestRow("one".to_owned()), TestRow("two".to_owned())]
+    );
+    assert_eq!(probe.heads[0].get("Value"), Some(&0));
+    assert_eq!(probe.after, vec![("Sheet1".to_owned(), 0, 2)]);
+
+    assert_eq!(csv_sheet_name(&SheetSelector::First)?, "Sheet1");
+    assert_eq!(csv_sheet_name(&SheetSelector::Index(0))?, "Sheet1");
+    assert_eq!(csv_sheet_name(&SheetSelector::All)?, "Sheet1");
+    assert_eq!(
+        csv_sheet_name(&SheetSelector::Name("Custom".to_owned()))?,
+        "Custom"
+    );
+    assert!(csv_sheet_name(&SheetSelector::Index(1)).is_err());
+    assert_eq!(csv_row_index(0)?, 0);
+    if usize::BITS > 32 {
+        assert!(csv_row_index(usize::try_from(u64::from(u32::MAX) + 1).unwrap()).is_err());
+    }
+
+    let invalid = directory.path().join("invalid.csv");
+    fs::write(&invalid, [0xff])?;
+    assert!(read_csv::<TestRow, _>(&invalid, &options(), &mut probe).is_err());
+    assert!(
+        read_csv::<TestRow, _>(
+            &path,
+            &ReadOptions {
+                sheet: SheetSelector::Index(1),
+                ..options()
+            },
+            &mut probe
+        )
+        .is_err()
+    );
+    let mut failing_head = Probe {
+        continue_reading: true,
+        fail_head: true,
+        ..Probe::default()
+    };
+    assert!(read_csv::<TestRow, _>(&path, &options(), &mut failing_head).is_err());
+    let record = csv::StringRecord::from(vec!["value"]);
+    let mut record_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_csv_records::<TestRow, _>(
+        &mut [Ok(record.clone())].into_iter(),
+        0,
+        "Sheet1",
+        &ReadOptions {
+            head_row_number: 0,
+            ..options()
+        },
+        &mut record_probe,
+    )?;
+    assert_eq!(record_probe.rows, vec![TestRow("value".to_owned())]);
+    read_csv_records::<TestRow, _>(
+        &mut [Ok(record.clone()), Ok(record.clone())].into_iter(),
+        0,
+        "Sheet1",
+        &ReadOptions {
+            head_row_number: 0,
+            ..options()
+        },
+        &mut record_probe,
+    )?;
+    assert_eq!(record_probe.rows.len(), 3);
+    if usize::BITS > 32 {
+        assert!(
+            read_csv_records::<TestRow, _>(
+                &mut [Ok(record.clone())].into_iter(),
+                usize::try_from(u64::from(u32::MAX) + 1).unwrap(),
+                "Sheet1",
+                &ReadOptions {
+                    head_row_number: 0,
+                    ..options()
+                },
+                &mut probe
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        read_csv_records::<TestRow, _>(
+            &mut [Ok(record.clone()), Ok(record)].into_iter(),
+            usize::MAX,
+            "Sheet1",
+            &ReadOptions {
+                head_row_number: 0,
+                ..options()
+            },
+            &mut probe
+        )
+        .is_err()
+    );
+    assert!(
+        read_csv::<TestRow, _>(
+            &directory.path().join("missing.csv"),
+            &options(),
+            &mut probe
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn row_processing_handles_headers_skips_data_and_listener_failures() -> Result<()> {
     let mut headers = Arc::new(HashMap::new());
     let mut probe = Probe {

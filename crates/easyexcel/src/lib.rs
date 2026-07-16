@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
-use easyexcel_reader::{ReadOptions, SheetSelector, read_xlsx};
+use easyexcel_reader::{ReadOptions, SheetSelector, read_csv, read_xlsx};
 pub use easyexcel_template::{
     FillConfig, FillDirection, FillWrapper, TemplateData, fill_xlsx_template,
     fill_xlsx_template_list,
@@ -14,13 +14,13 @@ pub use easyexcel_writer::{
     CellStyle, ExcelWriter, HorizontalAlignment, LoopMergeStrategy, MergeRange, VerticalAlignment,
     WriteSheet,
 };
-use easyexcel_writer::{WriteOptions, write_xlsx_with_handlers};
+use easyexcel_writer::{WriteOptions, write_csv_with_handlers, write_xlsx_with_handlers};
 
 /// Static factory matching Java `EasyExcel`'s entry point.
 pub struct EasyExcel;
 
 impl EasyExcel {
-    /// Starts an event-driven XLSX read.
+    /// Starts an event-driven XLSX or CSV read, selected from the path extension.
     pub fn read<T, L>(path: impl Into<PathBuf>, listener: L) -> ExcelReaderBuilder<T, L>
     where
         T: ExcelRow,
@@ -46,7 +46,7 @@ impl EasyExcel {
         }
     }
 
-    /// Starts a new XLSX write.
+    /// Starts a new XLSX or CSV write, selected from the path extension.
     pub fn write<T>(path: impl Into<PathBuf>) -> ExcelWriterBuilder<T>
     where
         T: ExcelRow,
@@ -167,7 +167,11 @@ where
     ///
     /// Returns a workbook, sheet-selection, conversion, or listener error.
     pub fn do_read(mut self) -> Result<()> {
-        read_xlsx::<T, L>(&self.path, &self.options, &mut self.listener)
+        if is_csv_path(&self.path) {
+            read_csv::<T, L>(&self.path, &self.options, &mut self.listener)
+        } else {
+            read_xlsx::<T, L>(&self.path, &self.options, &mut self.listener)
+        }
     }
 }
 
@@ -203,7 +207,11 @@ where
     /// Returns a workbook, sheet-selection, or row-conversion error.
     pub fn do_read_sync(self) -> Result<Vec<T>> {
         let mut listener = CollectListener(Vec::new());
-        read_xlsx::<T, _>(&self.path, &self.options, &mut listener)?;
+        if is_csv_path(&self.path) {
+            read_csv::<T, _>(&self.path, &self.options, &mut listener)?;
+        } else {
+            read_xlsx::<T, _>(&self.path, &self.options, &mut listener)?;
+        }
         Ok(listener.0)
     }
 }
@@ -392,12 +400,21 @@ where
     where
         I: IntoIterator<Item = T>,
     {
-        write_xlsx_with_handlers::<T, I>(
-            Path::new(&self.path),
-            &self.options,
-            rows,
-            &mut self.handlers,
-        )
+        if is_csv_path(&self.path) {
+            write_csv_with_handlers::<T, I>(
+                Path::new(&self.path),
+                &self.options,
+                rows,
+                &mut self.handlers,
+            )
+        } else {
+            write_xlsx_with_handlers::<T, I>(
+                Path::new(&self.path),
+                &self.options,
+                rows,
+                &mut self.handlers,
+            )
+        }
     }
 
     /// Alias emphasizing that the input is consumed incrementally.
@@ -411,6 +428,11 @@ where
     {
         self.do_write(rows)
     }
+}
+
+fn is_csv_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
 }
 
 #[cfg(test)]

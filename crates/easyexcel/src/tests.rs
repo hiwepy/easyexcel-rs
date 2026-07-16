@@ -138,6 +138,13 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
         .do_read_sync()?;
     assert_eq!(actual, rows);
 
+    let csv = directory.path().join("values.CSV");
+    EasyExcel::write::<Value>(&csv).do_write(rows.clone())?;
+    assert_eq!(EasyExcel::read_sync::<Value>(&csv).do_read_sync()?, rows);
+    EasyExcel::read::<Value, _>(&csv, Listener::default())
+        .sheet("CsvSheet")
+        .do_read()?;
+
     EasyExcel::read::<Value, _>(&path, Listener::default())
         .all_sheets()
         .do_read()?;
@@ -231,6 +238,11 @@ fn facade_propagates_read_sync_and_write_failures() {
     );
     assert!(
         EasyExcel::read_sync::<Value>(&missing)
+            .do_read_sync()
+            .is_err()
+    );
+    assert!(
+        EasyExcel::read_sync::<Value>("target/does-not-exist/easyexcel.csv")
             .do_read_sync()
             .is_err()
     );

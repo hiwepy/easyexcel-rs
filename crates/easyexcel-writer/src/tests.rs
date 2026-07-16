@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::fs::File;
-use std::io::Read as _;
+use std::io::{self, Read as _, Write};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -14,6 +14,48 @@ use super::*;
 
 fn test_error(error: impl std::fmt::Display) -> ExcelError {
     ExcelError::Format(error.to_string())
+}
+
+struct FaultyWrite {
+    fail_write_at: Option<usize>,
+    fail_flush: bool,
+    writes: usize,
+}
+
+impl FaultyWrite {
+    const fn writing(fail_at: usize) -> Self {
+        Self {
+            fail_write_at: Some(fail_at),
+            fail_flush: false,
+            writes: 0,
+        }
+    }
+
+    const fn flushing() -> Self {
+        Self {
+            fail_write_at: None,
+            fail_flush: true,
+            writes: 0,
+        }
+    }
+}
+
+impl Write for FaultyWrite {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let call = self.writes;
+        self.writes += 1;
+        if self.fail_write_at == Some(call) {
+            return Err(io::Error::other("injected CSV write failure"));
+        }
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.fail_flush {
+            return Err(io::Error::other("injected CSV flush failure"));
+        }
+        Ok(())
+    }
 }
 
 fn zip_entry(path: &Path, name: &str) -> Result<String> {
@@ -57,6 +99,24 @@ thread_local! {
 }
 
 const TEST_COLUMN: ExcelColumn = ExcelColumn::new("value", "Value", Some(0), 0, None);
+
+struct SparseRow;
+
+impl ExcelRow for SparseRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] =
+            &[ExcelColumn::new("value", "Value", Some(10_000), 0, None)];
+        COLUMNS
+    }
+
+    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+        Ok(Self)
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![CellValue::String("value".to_owned())])
+    }
+}
 
 impl ExcelRow for EveryCell {
     fn schema() -> &'static [ExcelColumn] {
@@ -1161,4 +1221,251 @@ fn conversion_configuration_column_and_save_failures_propagate() -> Result<()> {
         write_xlsx::<EveryCell, _>(directory.path(), &WriteOptions::default(), Vec::new()).is_err()
     );
     Ok(())
+}
+
+#[test]
+fn csv_writer_emits_bom_all_cell_values_and_handler_lifecycle() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("values.csv");
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![
+        Box::new(RecordingHandler {
+            order: 10,
+            events: Rc::clone(&events),
+        }),
+        Box::new(RecordingHandler {
+            order: -1,
+            events: Rc::clone(&events),
+        }),
+    ];
+    write_csv_with_handlers::<EveryCell, _>(
+        &path,
+        &WriteOptions::default(),
+        [every_cell()],
+        &mut handlers,
+    )?;
+    let bytes = std::fs::read(&path)?;
+    assert!(bytes.starts_with(b"\xEF\xBB\xBF"));
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .from_reader(bytes.as_slice());
+    let records = reader
+        .records()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(test_error)?;
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].get(0), Some(""));
+    assert_eq!(records[0].get(1), Some("true"));
+    assert_eq!(records[0].get(2), Some("header-error"));
+    assert_eq!(records[1].get(1), Some("transformed"));
+    assert_eq!(records[1].get(2), Some(""));
+    assert_eq!(records[1].get(3), Some("true"));
+    assert_eq!(records[1].get(13), Some(""));
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .any(|event| event == "10:after_workbook")
+    );
+    Ok(())
+}
+
+#[test]
+fn csv_writer_supports_dynamic_heads_no_head_and_configuration_failures() -> Result<()> {
+    let directory = tempdir()?;
+    let mut dynamic = (0..EveryCell::schema().len())
+        .map(|index| vec!["Group".to_owned(), format!("Column {index}")])
+        .collect::<Vec<_>>();
+    dynamic[0].pop();
+    write_csv_with_handlers::<EveryCell, _>(
+        &directory.path().join("dynamic.csv"),
+        &WriteOptions {
+            dynamic_head: Some(dynamic),
+            ..WriteOptions::default()
+        },
+        Vec::new(),
+        &mut [],
+    )?;
+    write_csv_with_handlers::<EveryCell, _>(
+        &directory.path().join("no-head.csv"),
+        &WriteOptions {
+            need_head: false,
+            ..WriteOptions::default()
+        },
+        [every_cell()],
+        &mut [],
+    )?;
+    assert!(
+        write_csv_with_handlers::<EveryCell, _>(
+            &directory.path().join("bad-head.csv"),
+            &WriteOptions {
+                dynamic_head: Some(vec![vec!["Only one".to_owned()]]),
+                ..WriteOptions::default()
+            },
+            Vec::new(),
+            &mut []
+        )
+        .is_err()
+    );
+    assert!(
+        write_csv_with_handlers::<EveryCell, _>(
+            &directory.path().join("empty-head.csv"),
+            &WriteOptions {
+                dynamic_head: Some(vec![Vec::new(); EveryCell::schema().len()]),
+                ..WriteOptions::default()
+            },
+            Vec::new(),
+            &mut []
+        )
+        .is_err()
+    );
+    assert!(
+        write_csv_with_handlers::<EveryCell, _>(
+            &directory.path().join("conversion.csv"),
+            &WriteOptions::default(),
+            [EveryCell {
+                cells: Vec::new(),
+                fail: true
+            }],
+            &mut []
+        )
+        .is_err()
+    );
+    assert!(
+        write_csv_with_handlers::<EveryCell, _>(
+            directory.path(),
+            &WriteOptions::default(),
+            Vec::new(),
+            &mut []
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn csv_writer_propagates_every_handler_failure() -> Result<()> {
+    let directory = tempdir()?;
+    for stage in [
+        FailureStage::BeforeWorkbook,
+        FailureStage::BeforeSheet,
+        FailureStage::BeforeHeadRow,
+        FailureStage::BeforeHeadCell,
+        FailureStage::AfterHeadCell,
+        FailureStage::AfterHeadRow,
+        FailureStage::BeforeDataRow,
+        FailureStage::BeforeDataCell,
+        FailureStage::AfterDataCell,
+        FailureStage::AfterDataRow,
+        FailureStage::AfterSheet,
+        FailureStage::AfterWorkbook,
+    ] {
+        let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(FailingHandler(stage))];
+        assert!(
+            write_csv_with_handlers::<EveryCell, _>(
+                &directory
+                    .path()
+                    .join(format!("failure-{}.csv", stage as u8)),
+                &WriteOptions::default(),
+                [every_cell()],
+                &mut handlers
+            )
+            .is_err()
+        );
+    }
+    let mut dynamic_handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(FailingHandler(FailureStage::BeforeHeadRow))];
+    assert!(
+        write_csv_with_handlers::<EveryCell, _>(
+            &directory.path().join("dynamic-handler-failure.csv"),
+            &WriteOptions {
+                dynamic_head: Some(vec![vec!["Head".to_owned()]; EveryCell::schema().len()]),
+                ..WriteOptions::default()
+            },
+            Vec::new(),
+            &mut dynamic_handlers
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn csv_writer_propagates_io_faults_and_column_overflow() {
+    let write_errors = (0..64)
+        .filter(|fail_at| {
+            write_csv_to::<EveryCell, _>(
+                Path::new("fault.csv"),
+                Box::new(FaultyWrite::writing(*fail_at)),
+                &WriteOptions::default(),
+                [every_cell()],
+                &mut [],
+            )
+            .is_err()
+        })
+        .count();
+    assert!(write_errors > 0);
+    assert!(
+        write_csv_to::<EveryCell, _>(
+            Path::new("fault.csv"),
+            Box::new(FaultyWrite::flushing()),
+            &WriteOptions::default(),
+            [every_cell()],
+            &mut []
+        )
+        .is_err()
+    );
+    for (options, rows) in [
+        (WriteOptions::default(), Vec::<SparseRow>::new()),
+        (
+            WriteOptions {
+                dynamic_head: Some(vec![vec!["Dynamic".to_owned()]]),
+                ..WriteOptions::default()
+            },
+            Vec::<SparseRow>::new(),
+        ),
+        (
+            WriteOptions {
+                need_head: false,
+                ..WriteOptions::default()
+            },
+            vec![SparseRow],
+        ),
+    ] {
+        assert!(
+            write_csv_to::<SparseRow, _>(
+                Path::new("record-fault.csv"),
+                Box::new(FaultyWrite::writing(1)),
+                &options,
+                rows,
+                &mut [],
+            )
+            .is_err()
+        );
+    }
+
+    USE_WIDE_SCHEMA.with(|wide| wide.set(true));
+    let wide_result = write_csv_to::<EveryCell, _>(
+        Path::new("wide.csv"),
+        Box::new(Vec::<u8>::new()),
+        &WriteOptions::default(),
+        [every_cell()],
+        &mut [],
+    );
+    USE_WIDE_SCHEMA.with(|wide| wide.set(false));
+    assert!(wide_result.is_err());
+    USE_WIDE_SCHEMA.with(|wide| wide.set(true));
+    let wide_data_result = write_csv_to::<EveryCell, _>(
+        Path::new("wide-data.csv"),
+        Box::new(Vec::<u8>::new()),
+        &WriteOptions {
+            need_head: false,
+            ..WriteOptions::default()
+        },
+        [every_cell()],
+        &mut [],
+    );
+    USE_WIDE_SCHEMA.with(|wide| wide.set(false));
+    assert!(wide_data_result.is_err());
+    assert!(csv_record(&[]).is_empty());
 }

@@ -29,6 +29,11 @@ EasyExcel::read::<User, _>("users.xlsx", listener)
 # }
 ```
 
+The same read and write builders automatically select the CSV engine for a
+`.csv` path. Typed mapping, listeners, column filters, and write handlers keep
+the same lifecycle; CSV output is UTF-8 with a BOM by default for Excel
+compatibility.
+
 Scalar placeholders in an existing workbook can be filled without rebuilding
 its OOXML package:
 

@@ -1,6 +1,8 @@
 //! XLSX writer backed by `rust_xlsxwriter`.
 
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
@@ -530,6 +532,221 @@ where
     write_sheet_to_workbook::<T, I>(&mut workbook, options, rows, handlers)?;
     workbook.save(path).map_err(format_error)?;
     after_workbook(handlers, &workbook_context)?;
+    Ok(())
+}
+
+/// Writes typed rows to CSV while preserving the `EasyExcel` handler lifecycle.
+///
+/// UTF-8 BOM output matches Java `EasyExcel`'s default CSV behavior.
+///
+/// # Errors
+///
+/// Returns a conversion, handler, CSV-format, or I/O error.
+pub fn write_csv_with_handlers<T, I>(
+    path: &Path,
+    options: &WriteOptions,
+    rows: I,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()>
+where
+    T: ExcelRow,
+    I: IntoIterator<Item = T>,
+{
+    let file = File::create(path)?;
+    write_csv_to::<T, I>(path, Box::new(file), options, rows, handlers)
+}
+
+fn write_csv_to<T, I>(
+    path: &Path,
+    output: Box<dyn Write>,
+    options: &WriteOptions,
+    rows: I,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()>
+where
+    T: ExcelRow,
+    I: IntoIterator<Item = T>,
+{
+    let columns = selected_columns(T::schema(), options);
+    let mut rows = rows.into_iter().map(|row| row.to_row());
+    write_csv_records(path, output, options, &columns, &mut rows, handlers)
+}
+
+fn write_csv_records(
+    path: &Path,
+    mut output: Box<dyn Write>,
+    options: &WriteOptions,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    rows: &mut dyn Iterator<Item = Result<Vec<CellValue>>>,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()> {
+    sort_handlers(handlers);
+    let workbook_context = WriteWorkbookContext::new(path);
+    before_workbook(handlers, &workbook_context)?;
+    let sheet_context = WriteSheetContext::new(&options.sheet_name);
+    before_sheet(handlers, &sheet_context)?;
+
+    output.write_all(b"\xEF\xBB\xBF")?;
+    let mut writer = csv::WriterBuilder::new().from_writer(output);
+    let head_rows = dynamic_head_rows(options)?;
+    let mut row_index = 0_u32;
+    if options.need_head {
+        if let Some(head) = &options.dynamic_head {
+            if head.len() != columns.len() {
+                return Err(ExcelError::Format(format!(
+                    "dynamic head column count {} does not match selected column count {}",
+                    head.len(),
+                    columns.len()
+                )));
+            }
+            for level in 0..head_rows {
+                #[allow(clippy::cast_possible_truncation)]
+                let level = level as usize;
+                let labels = head
+                    .iter()
+                    .map(|path| path.get(level).cloned().unwrap_or_default())
+                    .collect::<Vec<_>>();
+                let record =
+                    csv_header_record(row_index, columns, &labels, &options.sheet_name, handlers)?;
+                writer.write_record(record).map_err(format_error)?;
+                row_index += 1;
+            }
+        } else {
+            let labels = columns
+                .iter()
+                .map(|(_, _, column)| column.name.to_owned())
+                .collect::<Vec<_>>();
+            let record =
+                csv_header_record(row_index, columns, &labels, &options.sheet_name, handlers)?;
+            writer.write_record(record).map_err(format_error)?;
+            row_index = 1;
+        }
+    }
+    for cells in rows {
+        let record = csv_data_record(row_index, columns, &cells?, &options.sheet_name, handlers)?;
+        writer.write_record(record).map_err(format_error)?;
+        row_index += 1;
+    }
+    writer.flush()?;
+    after_sheet(handlers, &sheet_context)?;
+    after_workbook(handlers, &workbook_context)
+}
+
+fn csv_header_record(
+    row_index: u32,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    labels: &[String],
+    sheet_name: &str,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<Vec<String>> {
+    let row_context = WriteRowContext {
+        sheet_name: sheet_name.to_owned(),
+        row_index,
+        is_head: true,
+    };
+    before_csv_row(handlers, &row_context)?;
+    let mut record = csv_record(columns);
+    for ((physical_index, _, column), label) in columns.iter().zip(labels) {
+        let column_index = to_column(*physical_index)?;
+        let mut context = WriteCellContext {
+            sheet_name: sheet_name.to_owned(),
+            row_index,
+            column_index,
+            field: Some(column.field),
+            is_head: true,
+            value: CellValue::String(label.clone()),
+            skip: false,
+        };
+        before_csv_cell(handlers, &mut context)?;
+        if !context.skip {
+            record[*physical_index] = context.value.as_text();
+        }
+        after_csv_cell(handlers, &context)?;
+    }
+    after_csv_row(handlers, &row_context)?;
+    Ok(record)
+}
+
+fn csv_data_record(
+    row_index: u32,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    cells: &[CellValue],
+    sheet_name: &str,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<Vec<String>> {
+    let row_context = WriteRowContext {
+        sheet_name: sheet_name.to_owned(),
+        row_index,
+        is_head: false,
+    };
+    before_csv_row(handlers, &row_context)?;
+    let mut record = csv_record(columns);
+    for (physical_index, schema_index, metadata) in columns {
+        let column_index = to_column(*physical_index)?;
+        let mut context = WriteCellContext {
+            sheet_name: sheet_name.to_owned(),
+            row_index,
+            column_index,
+            field: Some(metadata.field),
+            is_head: false,
+            value: cells
+                .get(*schema_index)
+                .unwrap_or(&CellValue::Empty)
+                .clone(),
+            skip: false,
+        };
+        before_csv_cell(handlers, &mut context)?;
+        if !context.skip {
+            record[*physical_index] = context.value.as_text();
+        }
+        after_csv_cell(handlers, &context)?;
+    }
+    after_csv_row(handlers, &row_context)?;
+    Ok(record)
+}
+
+fn csv_record(columns: &[(usize, usize, &'static ExcelColumn)]) -> Vec<String> {
+    vec![
+        String::new();
+        columns
+            .iter()
+            .map(|(physical_index, _, _)| physical_index + 1)
+            .max()
+            .unwrap_or(0)
+    ]
+}
+
+fn before_csv_row(handlers: &mut [Box<dyn WriteHandler>], context: &WriteRowContext) -> Result<()> {
+    for handler in handlers.iter_mut() {
+        handler.before_row(context)?;
+    }
+    Ok(())
+}
+
+fn after_csv_row(handlers: &mut [Box<dyn WriteHandler>], context: &WriteRowContext) -> Result<()> {
+    for handler in handlers.iter_mut() {
+        handler.after_row(context)?;
+    }
+    Ok(())
+}
+
+fn before_csv_cell(
+    handlers: &mut [Box<dyn WriteHandler>],
+    context: &mut WriteCellContext,
+) -> Result<()> {
+    for handler in handlers.iter_mut() {
+        handler.before_cell(context)?;
+    }
+    Ok(())
+}
+
+fn after_csv_cell(
+    handlers: &mut [Box<dyn WriteHandler>],
+    context: &WriteCellContext,
+) -> Result<()> {
+    for handler in handlers.iter_mut() {
+        handler.after_cell(context)?;
+    }
     Ok(())
 }
 
