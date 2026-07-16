@@ -434,6 +434,123 @@ fn constant_memory_writer_can_omit_headers_and_freeze_request() -> Result<()> {
 }
 
 #[test]
+fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("multi.xlsx");
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(RecordingHandler {
+        order: 5,
+        events: Rc::clone(&events),
+    })];
+    let first = WriteSheet::<EveryCell>::new("Users").freeze_head(true);
+    let second = WriteSheet::<EveryCell>::new("Archive")
+        .need_head(false)
+        .constant_memory(true);
+    assert_eq!(first.options().sheet_name, "Users");
+    assert!(first.options().freeze_head);
+    assert!(!second.options().need_head);
+    assert!(second.options().constant_memory);
+
+    let mut writer = ExcelWriter::with_handlers(&path, handlers);
+    assert!(!writer.is_finished());
+    writer
+        .write(vec![every_cell()], &first)?
+        .write(vec![every_cell(), every_cell()], &second)?;
+    writer.finish()?;
+    assert!(writer.is_finished());
+    writer.finish()?;
+    let Err(error) = writer.write(vec![every_cell()], &first) else {
+        panic!("finished writer must reject data");
+    };
+    assert!(error.to_string().contains("already finished"));
+
+    let actual = events.borrow();
+    assert_eq!(
+        actual
+            .iter()
+            .filter(|event| event.contains("before_workbook"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        actual
+            .iter()
+            .filter(|event| event.contains("before_sheet"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        actual
+            .iter()
+            .filter(|event| event.contains("after_sheet"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        actual
+            .iter()
+            .filter(|event| event.contains("after_workbook"))
+            .count(),
+        1
+    );
+    drop(actual);
+
+    let mut workbook: Xlsx<_> = open_workbook(path).map_err(test_error)?;
+    assert_eq!(workbook.sheet_names(), vec!["Users", "Archive"]);
+    let users = workbook.worksheet_range("Users").map_err(test_error)?;
+    assert_eq!(
+        users.get_value((1, 1)),
+        Some(&Data::String("text".to_owned()))
+    );
+    let archive = workbook.worksheet_range("Archive").map_err(test_error)?;
+    assert_eq!(
+        archive.get_value((0, 1)),
+        Some(&Data::String("text".to_owned()))
+    );
+    assert_eq!(
+        archive.get_value((1, 1)),
+        Some(&Data::String("text".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn stateful_writer_propagates_start_sheet_and_finish_failures() -> Result<()> {
+    let directory = tempdir()?;
+    let sheet = WriteSheet::<EveryCell>::new("Values");
+
+    let handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(FailingHandler(FailureStage::BeforeWorkbook))];
+    let mut rejected = ExcelWriter::with_handlers(directory.path().join("rejected.xlsx"), handlers);
+    assert!(rejected.write(Vec::new(), &sheet).is_err());
+
+    let handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(FailingHandler(FailureStage::BeforeWorkbook))];
+    let mut rejected_finish =
+        ExcelWriter::with_handlers(directory.path().join("rejected-finish.xlsx"), handlers);
+    assert!(rejected_finish.finish().is_err());
+
+    let handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(FailingHandler(FailureStage::AfterWorkbook))];
+    let mut rejected_after =
+        ExcelWriter::with_handlers(directory.path().join("rejected-after.xlsx"), handlers);
+    rejected_after.write(Vec::new(), &sheet)?;
+    assert!(rejected_after.finish().is_err());
+
+    let mut duplicate = ExcelWriter::new(directory.path().join("duplicate.xlsx"));
+    duplicate.write(Vec::new(), &sheet)?;
+    assert!(duplicate.write(Vec::new(), &sheet).is_err());
+
+    let invalid = WriteSheet::<EveryCell>::new("bad/name");
+    let mut invalid_sheet = ExcelWriter::new(directory.path().join("invalid.xlsx"));
+    assert!(invalid_sheet.write(Vec::new(), &invalid).is_err());
+
+    let mut invalid_output = ExcelWriter::new(directory.path());
+    assert!(invalid_output.finish().is_err());
+    Ok(())
+}
+
+#[test]
 fn ordered_handlers_observe_transform_and_skip_the_full_lifecycle() -> Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("handled.xlsx");

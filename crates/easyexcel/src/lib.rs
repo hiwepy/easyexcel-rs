@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
 use easyexcel_reader::{ReadOptions, SheetSelector, read_xlsx};
+pub use easyexcel_writer::{ExcelWriter, WriteSheet};
 use easyexcel_writer::{WriteOptions, write_xlsx_with_handlers};
 
 /// Static factory matching Java `EasyExcel`'s entry point.
@@ -49,6 +50,15 @@ impl EasyExcel {
             handlers: Vec::new(),
             marker: PhantomData,
         }
+    }
+
+    /// Creates typed worksheet metadata for a stateful [`ExcelWriter`].
+    #[must_use]
+    pub fn writer_sheet<T>(name: impl Into<String>) -> WriteSheet<T>
+    where
+        T: ExcelRow,
+    {
+        WriteSheet::new(name)
     }
 }
 
@@ -259,6 +269,12 @@ where
     pub fn register_write_handler(mut self, handler: impl WriteHandler + 'static) -> Self {
         self.handlers.push(Box::new(handler));
         self
+    }
+
+    /// Builds a stateful writer for multiple `.write(rows, &sheet)` calls.
+    #[must_use]
+    pub fn build(self) -> ExcelWriter {
+        ExcelWriter::with_handlers(self.path, self.handlers)
     }
 
     /// Selects constant-memory output.

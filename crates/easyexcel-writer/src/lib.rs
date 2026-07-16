@@ -1,6 +1,8 @@
 //! XLSX writer backed by `rust_xlsxwriter`.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::marker::PhantomData;
+use std::path::{Path, PathBuf};
 
 use easyexcel_core::{
     CellValue, ExcelColumn, ExcelError, ExcelRow, Result, WriteCellContext, WriteHandler,
@@ -51,6 +53,156 @@ impl Default for WriteOptions {
     }
 }
 
+/// Typed worksheet metadata used by [`ExcelWriter`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteSheet<T> {
+    options: WriteOptions,
+    marker: PhantomData<T>,
+}
+
+impl<T> WriteSheet<T> {
+    /// Creates worksheet metadata with the supplied name.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            options: WriteOptions {
+                sheet_name: name.into(),
+                ..WriteOptions::default()
+            },
+            marker: PhantomData,
+        }
+    }
+
+    /// Returns the effective write options.
+    #[must_use]
+    pub const fn options(&self) -> &WriteOptions {
+        &self.options
+    }
+
+    /// Enables or disables headers for this sheet.
+    #[must_use]
+    pub const fn need_head(mut self, enabled: bool) -> Self {
+        self.options.need_head = enabled;
+        self
+    }
+
+    /// Enables or disables constant-memory output for this sheet.
+    #[must_use]
+    pub const fn constant_memory(mut self, enabled: bool) -> Self {
+        self.options.constant_memory = enabled;
+        self
+    }
+
+    /// Freezes the header row for this sheet.
+    #[must_use]
+    pub const fn freeze_head(mut self, enabled: bool) -> Self {
+        self.options.freeze_head = enabled;
+        self
+    }
+}
+
+/// Stateful multi-sheet XLSX writer matching Java `ExcelWriter`'s lifecycle.
+pub struct ExcelWriter {
+    path: PathBuf,
+    workbook: Workbook,
+    handlers: Vec<Box<dyn WriteHandler>>,
+    sheet_names: HashSet<String>,
+    started: bool,
+    finished: bool,
+}
+
+impl ExcelWriter {
+    /// Creates a multi-sheet writer without handlers.
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self::with_handlers(path, Vec::new())
+    }
+
+    /// Creates a multi-sheet writer with owned lifecycle handlers.
+    #[must_use]
+    pub fn with_handlers(path: impl Into<PathBuf>, handlers: Vec<Box<dyn WriteHandler>>) -> Self {
+        Self {
+            path: path.into(),
+            workbook: Workbook::new(),
+            handlers,
+            sheet_names: HashSet::new(),
+            started: false,
+            finished: false,
+        }
+    }
+
+    /// Writes a batch to a worksheet. Multiple calls may target different sheets.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the writer is finished, a handler fails, or data cannot be written.
+    pub fn write<T, I>(&mut self, rows: I, sheet: &WriteSheet<T>) -> Result<&mut Self>
+    where
+        T: ExcelRow,
+        I: IntoIterator<Item = T>,
+    {
+        if self.finished {
+            return Err(ExcelError::Unsupported(
+                "writer already finished".to_owned(),
+            ));
+        }
+        self.start()?;
+        let sheet_name = sheet.options().sheet_name.clone();
+        if !self.sheet_names.insert(sheet_name.clone()) {
+            return Err(ExcelError::Format(format!(
+                "duplicate worksheet name: {sheet_name}"
+            )));
+        }
+        let result = write_sheet_to_workbook::<T, I>(
+            &mut self.workbook,
+            sheet.options(),
+            rows,
+            &mut self.handlers,
+        );
+        match result {
+            Ok(()) => Ok(self),
+            Err(error) => {
+                self.sheet_names.remove(&sheet_name);
+                Err(error)
+            }
+        }
+    }
+
+    /// Saves and closes the writer. Repeated calls are no-ops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an output or handler error.
+    pub fn finish(&mut self) -> Result<()> {
+        if self.finished {
+            return Ok(());
+        }
+        self.start()?;
+        self.workbook.save(&self.path).map_err(format_error)?;
+        let context = WriteWorkbookContext::new(&self.path);
+        after_workbook(&mut self.handlers, &context)?;
+        self.finished = true;
+        Ok(())
+    }
+
+    /// Returns whether [`Self::finish`] completed successfully.
+    #[must_use]
+    pub const fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn start(&mut self) -> Result<()> {
+        if self.started {
+            return Ok(());
+        }
+        sort_handlers(&mut self.handlers);
+        let context = WriteWorkbookContext::new(&self.path);
+        before_workbook(&mut self.handlers, &context)?;
+        self.started = true;
+        Ok(())
+    }
+}
+
 /// Writes typed rows to a new XLSX file.
 ///
 /// # Errors
@@ -84,6 +236,22 @@ where
     before_workbook(handlers, &workbook_context)?;
 
     let mut workbook = Workbook::new();
+    write_sheet_to_workbook::<T, I>(&mut workbook, options, rows, handlers)?;
+    workbook.save(path).map_err(format_error)?;
+    after_workbook(handlers, &workbook_context)?;
+    Ok(())
+}
+
+fn write_sheet_to_workbook<T, I>(
+    workbook: &mut Workbook,
+    options: &WriteOptions,
+    rows: I,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()>
+where
+    T: ExcelRow,
+    I: IntoIterator<Item = T>,
+{
     let worksheet = if options.constant_memory {
         workbook.add_worksheet_with_constant_memory()
     } else {
@@ -123,8 +291,6 @@ where
         row_index += 1;
     }
     after_sheet(handlers, &sheet_context)?;
-    workbook.save(path).map_err(format_error)?;
-    after_workbook(handlers, &workbook_context)?;
     Ok(())
 }
 

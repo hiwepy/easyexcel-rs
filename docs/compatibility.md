@@ -35,7 +35,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | freeze panes | `freeze_head` / `freeze_panes` | implemented |
 | `doWrite(Collection)` | `do_write(IntoIterator)` | implemented |
 | streaming write | `do_write_iter(IntoIterator)` | implemented |
-| `ExcelWriter` multi-write lifecycle | `ExcelWriter` | planned |
+| `ExcelWriter` multi-write lifecycle | `ExcelWriter::write` / `finish` | implemented |
 | `WriteHandler` lifecycle | ordered `WriteHandler` callbacks | implemented |
 | include/exclude columns | builder filters | implemented |
 | default styles and annotations | style model | planned |

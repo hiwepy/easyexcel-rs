@@ -132,6 +132,32 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
             .len(),
         2
     );
+
+    let multi = directory.path().join("multi.xlsx");
+    let first = EasyExcel::writer_sheet::<Value>("First").freeze_head(true);
+    let second = EasyExcel::writer_sheet::<Value>("Second")
+        .need_head(false)
+        .constant_memory(true);
+    let mut writer = EasyExcel::write::<Value>(&multi)
+        .register_write_handler(NoopWriteHandler)
+        .build();
+    writer
+        .write(vec![Value("first".to_owned())], &first)?
+        .write(vec![Value("second".to_owned())], &second)?;
+    writer.finish()?;
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&multi)
+            .sheet("First")
+            .do_read_sync()?,
+        vec![Value("first".to_owned())]
+    );
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&multi)
+            .sheet("Second")
+            .head_row_number(0)
+            .do_read_sync()?,
+        vec![Value("second".to_owned())]
+    );
     Ok(())
 }
 
