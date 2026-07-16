@@ -82,6 +82,9 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .merge_cells(MergeRange::new(0, 0, 0, 1))
         .auto_width()
         .column_width(0, 24)
+        .head_style(CellStyle::new().italic(true))
+        .content_style(CellStyle::new().bold(true))
+        .content_styles([CellStyle::new().wrap_text(true)])
         .register_write_handler(NoopWriteHandler)
         .constant_memory(true);
     assert_eq!(write.path, PathBuf::from("output.xlsx"));
@@ -106,6 +109,9 @@ fn factories_and_builder_options_match_java_style_chaining() {
     );
     assert!(write.options.auto_width);
     assert_eq!(write.options.column_widths, vec![(0, 24)]);
+    assert!(write.options.head_style.italic);
+    assert_eq!(write.options.content_styles.len(), 1);
+    assert!(write.options.content_styles[0].wrap_text);
     assert_eq!(write.handlers.len(), 1);
     assert!(write.options.constant_memory);
 }

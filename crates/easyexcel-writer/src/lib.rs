@@ -8,7 +8,135 @@ use easyexcel_core::{
     CellValue, ExcelColumn, ExcelError, ExcelRow, Result, WriteCellContext, WriteHandler,
     WriteRowContext, WriteSheetContext, WriteWorkbookContext,
 };
-use rust_xlsxwriter::{Format, Image, Note, Workbook, Worksheet};
+use rust_xlsxwriter::{Format, FormatAlign, FormatPattern, Image, Note, Workbook, Worksheet};
+
+/// Horizontal cell alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HorizontalAlignment {
+    /// Excel's type-dependent default.
+    General,
+    /// Left aligned.
+    Left,
+    /// Centered.
+    Center,
+    /// Right aligned.
+    Right,
+    /// Repeats content across the cell.
+    Fill,
+    /// Justified.
+    Justify,
+    /// Centered across adjacent cells.
+    CenterAcross,
+}
+
+/// Vertical cell alignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalAlignment {
+    /// Top aligned.
+    Top,
+    /// Vertically centered.
+    Center,
+    /// Bottom aligned.
+    Bottom,
+    /// Vertically justified.
+    Justify,
+    /// Vertically distributed.
+    Distributed,
+}
+
+/// Backend-neutral write style for headers or content rows.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CellStyle {
+    /// Bold font.
+    pub bold: bool,
+    /// Italic font.
+    pub italic: bool,
+    /// RGB font color, for example `0xFF0000`.
+    pub font_color: Option<u32>,
+    /// Solid RGB background color.
+    pub background_color: Option<u32>,
+    /// Horizontal alignment.
+    pub horizontal_alignment: Option<HorizontalAlignment>,
+    /// Vertical alignment.
+    pub vertical_alignment: Option<VerticalAlignment>,
+    /// Wrap cell text.
+    pub wrap_text: bool,
+    /// Excel number format string.
+    pub number_format: Option<String>,
+}
+
+impl CellStyle {
+    /// Creates an empty style.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            bold: false,
+            italic: false,
+            font_color: None,
+            background_color: None,
+            horizontal_alignment: None,
+            vertical_alignment: None,
+            wrap_text: false,
+            number_format: None,
+        }
+    }
+
+    /// Sets bold font rendering.
+    #[must_use]
+    pub const fn bold(mut self, enabled: bool) -> Self {
+        self.bold = enabled;
+        self
+    }
+
+    /// Sets italic font rendering.
+    #[must_use]
+    pub const fn italic(mut self, enabled: bool) -> Self {
+        self.italic = enabled;
+        self
+    }
+
+    /// Sets the RGB font color.
+    #[must_use]
+    pub const fn font_color(mut self, color: u32) -> Self {
+        self.font_color = Some(color);
+        self
+    }
+
+    /// Sets a solid RGB background color.
+    #[must_use]
+    pub const fn background_color(mut self, color: u32) -> Self {
+        self.background_color = Some(color);
+        self
+    }
+
+    /// Sets horizontal alignment.
+    #[must_use]
+    pub const fn horizontal_alignment(mut self, alignment: HorizontalAlignment) -> Self {
+        self.horizontal_alignment = Some(alignment);
+        self
+    }
+
+    /// Sets vertical alignment.
+    #[must_use]
+    pub const fn vertical_alignment(mut self, alignment: VerticalAlignment) -> Self {
+        self.vertical_alignment = Some(alignment);
+        self
+    }
+
+    /// Enables or disables text wrapping.
+    #[must_use]
+    pub const fn wrap_text(mut self, enabled: bool) -> Self {
+        self.wrap_text = enabled;
+        self
+    }
+
+    /// Sets an Excel number format string.
+    #[must_use]
+    pub fn number_format(mut self, format: impl Into<String>) -> Self {
+        self.number_format = Some(format.into());
+        self
+    }
+}
 
 /// One absolute merged-cell range using zero-based inclusive coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +194,10 @@ pub struct WriteOptions {
     pub auto_width: bool,
     /// Explicit column widths in Excel character units.
     pub column_widths: Vec<(u16, u16)>,
+    /// Style applied to header cells.
+    pub head_style: CellStyle,
+    /// Content styles cycled by relative data-row index.
+    pub content_styles: Vec<CellStyle>,
 }
 
 impl Default for WriteOptions {
@@ -84,6 +216,8 @@ impl Default for WriteOptions {
             merge_ranges: Vec::new(),
             auto_width: false,
             column_widths: Vec::new(),
+            head_style: CellStyle::new().bold(true),
+            content_styles: Vec::new(),
         }
     }
 }
@@ -153,6 +287,27 @@ impl<T> WriteSheet<T> {
     #[must_use]
     pub fn column_width(mut self, column: u16, width: u16) -> Self {
         self.options.column_widths.push((column, width));
+        self
+    }
+
+    /// Replaces the header style.
+    #[must_use]
+    pub fn head_style(mut self, style: CellStyle) -> Self {
+        self.options.head_style = style;
+        self
+    }
+
+    /// Uses one style for every content row.
+    #[must_use]
+    pub fn content_style(mut self, style: CellStyle) -> Self {
+        self.options.content_styles = vec![style];
+        self
+    }
+
+    /// Cycles the supplied styles across content rows.
+    #[must_use]
+    pub fn content_styles(mut self, styles: impl IntoIterator<Item = CellStyle>) -> Self {
+        self.options.content_styles = styles.into_iter().collect();
         self
     }
 }
@@ -348,17 +503,26 @@ where
     let columns = selected_columns(T::schema(), options);
     let mut row_index = 0_u32;
     if options.need_head {
-        write_headers_with_handlers(worksheet, &columns, &options.sheet_name, handlers)?;
+        write_headers_with_handlers(
+            worksheet,
+            &columns,
+            &options.sheet_name,
+            &options.head_style,
+            handlers,
+        )?;
         row_index = 1;
     }
-    for row in rows {
+    for (data_index, row) in rows.into_iter().enumerate() {
         let cells = row.to_row()?;
+        let style = (!options.content_styles.is_empty())
+            .then(|| &options.content_styles[data_index % options.content_styles.len()]);
         write_data_row_with_handlers(
             worksheet,
             row_index,
             &columns,
             &cells,
             &options.sheet_name,
+            style,
             handlers,
         )?;
         row_index += 1;
@@ -475,16 +639,17 @@ fn write_headers(
     worksheet: &mut Worksheet,
     columns: &[(usize, usize, &'static ExcelColumn)],
 ) -> Result<()> {
-    write_headers_with_handlers(worksheet, columns, "", &mut [])
+    write_headers_with_handlers(worksheet, columns, "", &CellStyle::default(), &mut [])
 }
 
 fn write_headers_with_handlers(
     worksheet: &mut Worksheet,
     columns: &[(usize, usize, &'static ExcelColumn)],
     sheet_name: &str,
+    style: &CellStyle,
     handlers: &mut [Box<dyn WriteHandler>],
 ) -> Result<()> {
-    let format = Format::new().set_bold();
+    let format = cell_format(Some(style));
     let row_context = WriteRowContext {
         sheet_name: sheet_name.to_owned(),
         row_index: 0,
@@ -514,7 +679,14 @@ fn write_headers_with_handlers(
                         .write_string_with_format(0, context.column_index, value, &format)
                         .map_err(format_error)?;
                 }
-                value => write_cell(worksheet, 0, context.column_index, column, value)?,
+                value => write_cell(
+                    worksheet,
+                    0,
+                    context.column_index,
+                    column,
+                    value,
+                    Some(style),
+                )?,
             }
         }
         for handler in handlers.iter_mut() {
@@ -534,7 +706,7 @@ fn write_data_row(
     columns: &[(usize, usize, &'static ExcelColumn)],
     cells: &[CellValue],
 ) -> Result<()> {
-    write_data_row_with_handlers(worksheet, row_index, columns, cells, "", &mut [])
+    write_data_row_with_handlers(worksheet, row_index, columns, cells, "", None, &mut [])
 }
 
 fn write_data_row_with_handlers(
@@ -543,6 +715,7 @@ fn write_data_row_with_handlers(
     columns: &[(usize, usize, &'static ExcelColumn)],
     cells: &[CellValue],
     sheet_name: &str,
+    style: Option<&CellStyle>,
     handlers: &mut [Box<dyn WriteHandler>],
 ) -> Result<()> {
     let row_context = WriteRowContext {
@@ -575,6 +748,7 @@ fn write_data_row_with_handlers(
                 context.column_index,
                 metadata,
                 &context.value,
+                style,
             )?;
         }
         for handler in handlers.iter_mut() {
@@ -593,36 +767,44 @@ fn write_cell(
     column: u16,
     metadata: &ExcelColumn,
     value: &CellValue,
+    style: Option<&CellStyle>,
 ) -> Result<()> {
+    let format = cell_format(style);
     match value {
-        CellValue::Empty => {}
+        CellValue::Empty => {
+            worksheet
+                .write_blank(row_index, column, &format)
+                .map_err(format_error)?;
+        }
         CellValue::String(value) | CellValue::Error(value) => {
             worksheet
-                .write_string(row_index, column, value)
+                .write_string_with_format(row_index, column, value, &format)
                 .map_err(format_error)?;
         }
         CellValue::Bool(value) => {
             worksheet
-                .write_boolean(row_index, column, *value)
+                .write_boolean_with_format(row_index, column, *value, &format)
                 .map_err(format_error)?;
         }
         CellValue::Int(value) => {
-            write_integer(worksheet, row_index, column, *value)?;
+            write_integer(worksheet, row_index, column, *value, &format)?;
         }
         CellValue::Float(value) => {
             worksheet
-                .write_number(row_index, column, *value)
+                .write_number_with_format(row_index, column, *value, &format)
                 .map_err(format_error)?;
         }
         CellValue::Date(value) => {
-            let format =
-                Format::new().set_num_format(excel_date_format(metadata.format, "yyyy-mm-dd"));
+            let format = format
+                .clone()
+                .set_num_format(excel_date_format(metadata.format, "yyyy-mm-dd"));
             worksheet
                 .write_datetime_with_format(row_index, column, *value, &format)
                 .map_err(format_error)?;
         }
         CellValue::DateTime(value) => {
-            let format = Format::new()
+            let format = format
+                .clone()
                 .set_num_format(excel_date_format(metadata.format, "yyyy-mm-dd hh:mm:ss"));
             worksheet
                 .write_datetime_with_format(row_index, column, *value, &format)
@@ -630,16 +812,16 @@ fn write_cell(
         }
         CellValue::Formula(value) => {
             worksheet
-                .write_formula(row_index, column, value.as_str())
+                .write_formula_with_format(row_index, column, value.as_str(), &format)
                 .map_err(format_error)?;
         }
         CellValue::Hyperlink { url, text } => {
             worksheet
-                .write_url_with_text(row_index, column, url.as_str(), text)
+                .write_url_with_options(row_index, column, url.as_str(), text, "", Some(&format))
                 .map_err(format_error)?;
         }
         CellValue::Comment { value, text } => {
-            write_cell(worksheet, row_index, column, metadata, value)?;
+            write_cell(worksheet, row_index, column, metadata, value, style)?;
             worksheet
                 .insert_note(row_index, column, &Note::new(text))
                 .map_err(format_error)?;
@@ -663,17 +845,79 @@ fn image_from_buffer(bytes: &[u8]) -> Result<Image> {
     Image::new_from_buffer(bytes).map_err(format_error)
 }
 
-fn write_integer(worksheet: &mut Worksheet, row: u32, column: u16, value: i64) -> Result<()> {
+fn cell_format(style: Option<&CellStyle>) -> Format {
+    let Some(style) = style else {
+        return Format::new();
+    };
+    let mut format = Format::new();
+    if style.bold {
+        format = format.set_bold();
+    }
+    if style.italic {
+        format = format.set_italic();
+    }
+    if let Some(color) = style.font_color {
+        format = format.set_font_color(color);
+    }
+    if let Some(color) = style.background_color {
+        format = format
+            .set_background_color(color)
+            .set_pattern(FormatPattern::Solid);
+    }
+    if let Some(alignment) = style.horizontal_alignment {
+        format = format.set_align(horizontal_format_align(alignment));
+    }
+    if let Some(alignment) = style.vertical_alignment {
+        format = format.set_align(vertical_format_align(alignment));
+    }
+    if style.wrap_text {
+        format = format.set_text_wrap();
+    }
+    if let Some(number_format) = &style.number_format {
+        format = format.set_num_format(number_format);
+    }
+    format
+}
+
+const fn horizontal_format_align(alignment: HorizontalAlignment) -> FormatAlign {
+    match alignment {
+        HorizontalAlignment::General => FormatAlign::General,
+        HorizontalAlignment::Left => FormatAlign::Left,
+        HorizontalAlignment::Center => FormatAlign::Center,
+        HorizontalAlignment::Right => FormatAlign::Right,
+        HorizontalAlignment::Fill => FormatAlign::Fill,
+        HorizontalAlignment::Justify => FormatAlign::Justify,
+        HorizontalAlignment::CenterAcross => FormatAlign::CenterAcross,
+    }
+}
+
+const fn vertical_format_align(alignment: VerticalAlignment) -> FormatAlign {
+    match alignment {
+        VerticalAlignment::Top => FormatAlign::Top,
+        VerticalAlignment::Center => FormatAlign::VerticalCenter,
+        VerticalAlignment::Bottom => FormatAlign::Bottom,
+        VerticalAlignment::Justify => FormatAlign::VerticalJustify,
+        VerticalAlignment::Distributed => FormatAlign::VerticalDistributed,
+    }
+}
+
+fn write_integer(
+    worksheet: &mut Worksheet,
+    row: u32,
+    column: u16,
+    value: i64,
+    format: &Format,
+) -> Result<()> {
     const MAX_EXACT_EXCEL_INTEGER: u64 = 9_007_199_254_740_991;
     if value.unsigned_abs() <= MAX_EXACT_EXCEL_INTEGER {
         #[allow(clippy::cast_precision_loss)]
         let number = value as f64;
         worksheet
-            .write_number(row, column, number)
+            .write_number_with_format(row, column, number, format)
             .map_err(format_error)?;
     } else {
         worksheet
-            .write_string(row, column, value.to_string())
+            .write_string_with_format(row, column, value.to_string(), format)
             .map_err(format_error)?;
     }
     Ok(())

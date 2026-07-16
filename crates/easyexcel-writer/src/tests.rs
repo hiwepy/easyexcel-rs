@@ -38,6 +38,14 @@ fn zip_names(path: &Path) -> Result<Vec<String>> {
         .collect::<Result<Vec<_>>>()
 }
 
+fn cell_style_id(sheet_xml: &str, cell: &str) -> Option<String> {
+    let marker = format!("<c r=\"{cell}\" s=\"");
+    sheet_xml
+        .split_once(&marker)
+        .and_then(|(_, value)| value.split_once('"'))
+        .map(|(style, _)| style.to_owned())
+}
+
 #[derive(Clone)]
 struct EveryCell {
     cells: Vec<CellValue>,
@@ -320,6 +328,8 @@ fn default_options_and_helpers_are_deterministic() {
             merge_ranges: Vec::new(),
             auto_width: false,
             column_widths: Vec::new(),
+            head_style: CellStyle::new().bold(true),
+            content_styles: Vec::new(),
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");
@@ -334,6 +344,74 @@ fn default_options_and_helpers_are_deterministic() {
         format_error("broken").to_string(),
         "excel format error: broken"
     );
+}
+
+#[test]
+fn style_model_maps_every_alignment_and_cycles_content_rows() -> Result<()> {
+    for (alignment, expected) in [
+        (HorizontalAlignment::General, FormatAlign::General),
+        (HorizontalAlignment::Left, FormatAlign::Left),
+        (HorizontalAlignment::Center, FormatAlign::Center),
+        (HorizontalAlignment::Right, FormatAlign::Right),
+        (HorizontalAlignment::Fill, FormatAlign::Fill),
+        (HorizontalAlignment::Justify, FormatAlign::Justify),
+        (HorizontalAlignment::CenterAcross, FormatAlign::CenterAcross),
+    ] {
+        assert_eq!(horizontal_format_align(alignment), expected);
+    }
+    for (alignment, expected) in [
+        (VerticalAlignment::Top, FormatAlign::Top),
+        (VerticalAlignment::Center, FormatAlign::VerticalCenter),
+        (VerticalAlignment::Bottom, FormatAlign::Bottom),
+        (VerticalAlignment::Justify, FormatAlign::VerticalJustify),
+        (
+            VerticalAlignment::Distributed,
+            FormatAlign::VerticalDistributed,
+        ),
+    ] {
+        assert_eq!(vertical_format_align(alignment), expected);
+    }
+
+    let head_style = CellStyle::new()
+        .bold(true)
+        .italic(true)
+        .font_color(0x00ff_0000)
+        .background_color(0x0000_ff00)
+        .horizontal_alignment(HorizontalAlignment::Center)
+        .vertical_alignment(VerticalAlignment::Center)
+        .wrap_text(true)
+        .number_format("0.00");
+    let content_styles = vec![
+        CellStyle::new().font_color(0x0000_00ff),
+        CellStyle::new().font_color(0x00ff_0000),
+    ];
+    let directory = tempdir()?;
+    let path = directory.path().join("styles.xlsx");
+    write_xlsx::<EveryCell, _>(
+        &path,
+        &WriteOptions {
+            head_style,
+            content_styles,
+            ..WriteOptions::default()
+        },
+        vec![every_cell(), every_cell()],
+    )?;
+
+    let styles = zip_entry(&path, "xl/styles.xml")?;
+    assert!(styles.contains("<b/>"));
+    assert!(styles.contains("<i/>"));
+    assert!(styles.contains("rgb=\"FFFF0000\""));
+    assert!(styles.contains("rgb=\"FF00FF00\""));
+    assert!(styles.contains("formatCode=\"0.00\""));
+    assert!(styles.contains("horizontal=\"center\""));
+    assert!(styles.contains("vertical=\"center\""));
+    assert!(styles.contains("wrapText=\"1\""));
+    let sheet = zip_entry(&path, "xl/worksheets/sheet1.xml")?;
+    assert_ne!(
+        cell_style_id(&sheet, "A2").expect("first content style"),
+        cell_style_id(&sheet, "A3").expect("second content style")
+    );
+    Ok(())
 }
 
 #[test]
@@ -521,7 +599,10 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
         .freeze_head(true)
         .merge_cells(MergeRange::new(0, 0, 0, 1))
         .auto_width(true)
-        .column_width(0, 20);
+        .column_width(0, 20)
+        .head_style(CellStyle::new().italic(true))
+        .content_style(CellStyle::new().bold(true))
+        .content_styles([CellStyle::new().wrap_text(true)]);
     let second = WriteSheet::<EveryCell>::new("Archive")
         .need_head(false)
         .constant_memory(true);
@@ -529,6 +610,9 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
     assert!(first.options().freeze_head);
     assert!(first.options().auto_width);
     assert_eq!(first.options().column_widths, vec![(0, 20)]);
+    assert!(first.options().head_style.italic);
+    assert_eq!(first.options().content_styles.len(), 1);
+    assert!(first.options().content_styles[0].wrap_text);
     assert!(!second.options().need_head);
     assert!(second.options().constant_memory);
 
@@ -717,6 +801,7 @@ fn every_handler_failure_stage_is_propagated() -> Result<()> {
             worksheet,
             &selected_columns(EveryCell::schema(), &WriteOptions::default()),
             "Sheet1",
+            &CellStyle::default(),
             &mut handlers,
         )
         .is_err()
@@ -856,6 +941,18 @@ fn conversion_configuration_column_and_save_failures_propagate() -> Result<()> {
             .is_err()
         );
     }
+    assert!(
+        write_data_row(
+            worksheet,
+            0,
+            &[(0, 0, &*metadata)],
+            &[CellValue::Comment {
+                value: Box::new(CellValue::String("value".to_owned())),
+                text: "x".repeat(32_768),
+            }]
+        )
+        .is_err()
+    );
     assert!(
         write_xlsx::<EveryCell, _>(
             &directory.path().join("bad-sheet.xlsx"),

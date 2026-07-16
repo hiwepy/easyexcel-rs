@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
 use easyexcel_reader::{ReadOptions, SheetSelector, read_xlsx};
-pub use easyexcel_writer::{ExcelWriter, MergeRange, WriteSheet};
+pub use easyexcel_writer::{
+    CellStyle, ExcelWriter, HorizontalAlignment, MergeRange, VerticalAlignment, WriteSheet,
+};
 use easyexcel_writer::{WriteOptions, write_xlsx_with_handlers};
 
 /// Static factory matching Java `EasyExcel`'s entry point.
@@ -282,6 +284,27 @@ where
     #[must_use]
     pub fn column_width(mut self, column: u16, width: u16) -> Self {
         self.options.column_widths.push((column, width));
+        self
+    }
+
+    /// Replaces the default bold header style.
+    #[must_use]
+    pub fn head_style(mut self, style: CellStyle) -> Self {
+        self.options.head_style = style;
+        self
+    }
+
+    /// Applies one style to every content row.
+    #[must_use]
+    pub fn content_style(mut self, style: CellStyle) -> Self {
+        self.options.content_styles = vec![style];
+        self
+    }
+
+    /// Cycles the supplied styles across content rows.
+    #[must_use]
+    pub fn content_styles(mut self, styles: impl IntoIterator<Item = CellStyle>) -> Self {
+        self.options.content_styles = styles.into_iter().collect();
         self
     }
 

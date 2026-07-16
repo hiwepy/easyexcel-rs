@@ -39,7 +39,8 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `WriteHandler` lifecycle | ordered `WriteHandler` callbacks | implemented |
 | include/exclude columns | builder filters | implemented |
 | column width / auto width | `column_width` / `auto_width` | implemented |
-| default styles and annotations | style model | planned |
+| `HorizontalCellStyleStrategy` | header and cycling content `CellStyle` | implemented |
+| style annotations and borders | derive style metadata | planned |
 | formulas/images/comments/hyperlinks | rich `CellValue` variants | partial: XLSX write implemented |
 | `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |
 | loop merges and dynamic heads | writer metadata | planned |
