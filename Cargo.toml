@@ -17,9 +17,11 @@ license = "Apache-2.0"
 repository = "https://github.com/hiwepy/easyexcel-rs"
 
 [workspace.dependencies]
+base64 = "0.22.1"
 calamine = { version = "0.36.0", features = ["chrono"] }
 chrono = { version = "0.4.41", default-features = false, features = ["std"] }
 csv = "1.4.0"
+flate2 = "1.1.9"
 proc-macro-crate = "3.4.0"
 proc-macro2 = "1.0.103"
 quote = "1.0.40"

@@ -931,6 +931,14 @@ fn stateful_writer_propagates_start_sheet_and_finish_failures() -> Result<()> {
 
     let mut invalid_output = ExcelWriter::new(directory.path());
     assert!(invalid_output.finish().is_err());
+
+    let mut csv = ExcelWriter::new(directory.path().join("stateful.CSV"));
+    assert!(matches!(
+        csv.write(Vec::new(), &sheet),
+        Err(ExcelError::Unsupported(_))
+    ));
+    let mut xls = ExcelWriter::new(directory.path().join("stateful.XLS"));
+    assert!(matches!(xls.finish(), Err(ExcelError::Unsupported(_))));
     Ok(())
 }
 

@@ -47,7 +47,8 @@ This document is the release gate, not a marketing checklist. A row is marked
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
 | CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, UTF-8 BOM, and case-insensitive `.csv` dispatch implemented; charset configuration and stateful multi-write remain |
-| XLS read | calamine XLS engine | planned |
+| XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
+| XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | password/encryption | encryption adapter | planned |
 | Axum/Actix adapters | `easyexcel-web` | planned |
 

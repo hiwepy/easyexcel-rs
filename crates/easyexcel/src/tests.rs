@@ -48,6 +48,8 @@ fn sheet_selector_inputs_map_indices_borrowed_and_owned_names() {
         "Owned".to_owned().into_sheet_selector(),
         SheetSelector::Name("Owned".to_owned())
     );
+    assert!(is_xls_path(Path::new("legacy.XLS")));
+    assert!(!is_xls_path(Path::new("modern.xlsx")));
 }
 
 #[test]
@@ -247,10 +249,24 @@ fn facade_propagates_read_sync_and_write_failures() {
             .is_err()
     );
     assert!(
+        EasyExcel::read::<Value, _>("target/does-not-exist/easyexcel.xls", Listener::default())
+            .do_read()
+            .is_err()
+    );
+    assert!(
+        EasyExcel::read_sync::<Value>("target/does-not-exist/easyexcel.xls")
+            .do_read_sync()
+            .is_err()
+    );
+    assert!(
         EasyExcel::write::<Value>("target/does-not-exist/output.xlsx")
             .do_write(Vec::new())
             .is_err()
     );
+    assert!(matches!(
+        EasyExcel::write::<Value>("output.xls").do_write(Vec::new()),
+        Err(ExcelError::Unsupported(_))
+    ));
 }
 
 #[test]

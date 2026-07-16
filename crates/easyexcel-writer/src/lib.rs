@@ -488,11 +488,24 @@ impl ExcelWriter {
         if self.started {
             return Ok(());
         }
+        validate_stateful_backend(&self.path)?;
         sort_handlers(&mut self.handlers);
         let context = WriteWorkbookContext::new(&self.path);
         before_workbook(&mut self.handlers, &context)?;
         self.started = true;
         Ok(())
+    }
+}
+
+fn validate_stateful_backend(path: &Path) -> Result<()> {
+    match path.extension().and_then(std::ffi::OsStr::to_str) {
+        Some(extension) if extension.eq_ignore_ascii_case("csv") => Err(ExcelError::Unsupported(
+            "stateful multi-write is not supported for CSV".to_owned(),
+        )),
+        Some(extension) if extension.eq_ignore_ascii_case("xls") => Err(ExcelError::Unsupported(
+            "legacy XLS writing is not supported".to_owned(),
+        )),
+        _ => Ok(()),
     }
 }
 

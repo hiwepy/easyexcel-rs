@@ -34,6 +34,11 @@ The same read and write builders automatically select the CSV engine for a
 the same lifecycle; CSV output is UTF-8 with a BOM by default for Excel
 compatibility.
 
+Legacy `.xls` files use the same typed read builders and listener lifecycle.
+The binary worksheet is materialized by Calamine before dispatch; writing
+`.xls` returns an explicit unsupported-operation error instead of emitting an
+XLSX package with the wrong extension.
+
 Scalar placeholders in an existing workbook can be filled without rebuilding
 its OOXML package:
 

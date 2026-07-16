@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
-use easyexcel_reader::{ReadOptions, SheetSelector, read_csv, read_xlsx};
+use easyexcel_reader::{ReadOptions, SheetSelector, read_csv, read_xls, read_xlsx};
 pub use easyexcel_template::{
     FillConfig, FillDirection, FillWrapper, TemplateData, fill_xlsx_template,
     fill_xlsx_template_list,
@@ -20,7 +20,7 @@ use easyexcel_writer::{WriteOptions, write_csv_with_handlers, write_xlsx_with_ha
 pub struct EasyExcel;
 
 impl EasyExcel {
-    /// Starts an event-driven XLSX or CSV read, selected from the path extension.
+    /// Starts an event-driven XLSX, XLS, or CSV read selected from the path extension.
     pub fn read<T, L>(path: impl Into<PathBuf>, listener: L) -> ExcelReaderBuilder<T, L>
     where
         T: ExcelRow,
@@ -169,6 +169,8 @@ where
     pub fn do_read(mut self) -> Result<()> {
         if is_csv_path(&self.path) {
             read_csv::<T, L>(&self.path, &self.options, &mut self.listener)
+        } else if is_xls_path(&self.path) {
+            read_xls::<T, L>(&self.path, &self.options, &mut self.listener)
         } else {
             read_xlsx::<T, L>(&self.path, &self.options, &mut self.listener)
         }
@@ -209,6 +211,8 @@ where
         let mut listener = CollectListener(Vec::new());
         if is_csv_path(&self.path) {
             read_csv::<T, _>(&self.path, &self.options, &mut listener)?;
+        } else if is_xls_path(&self.path) {
+            read_xls::<T, _>(&self.path, &self.options, &mut listener)?;
         } else {
             read_xlsx::<T, _>(&self.path, &self.options, &mut listener)?;
         }
@@ -407,6 +411,10 @@ where
                 rows,
                 &mut self.handlers,
             )
+        } else if is_xls_path(&self.path) {
+            Err(ExcelError::Unsupported(
+                "legacy XLS writing is not supported".to_owned(),
+            ))
         } else {
             write_xlsx_with_handlers::<T, I>(
                 Path::new(&self.path),
@@ -433,6 +441,11 @@ where
 fn is_csv_path(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("csv"))
+}
+
+fn is_xls_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("xls"))
 }
 
 #[cfg(test)]

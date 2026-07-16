@@ -3,8 +3,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::sync::Arc;
 
+use base64::Engine;
 use calamine::{CellErrorType, ExcelDateTime, ExcelDateTimeType};
 use easyexcel_core::{ExcelColumn, IntoExcelCell};
+use flate2::read::GzDecoder;
 use rust_xlsxwriter::Workbook;
 use tempfile::{TempDir, tempdir};
 use zip::write::SimpleFileOptions;
@@ -213,9 +215,14 @@ fn calamine_values_map_to_every_core_cell_variant() {
     ];
     for (input, expected) in cases {
         assert_eq!(from_calamine(&input), expected);
+        assert_eq!(from_data(&Data::from(input)), expected);
     }
     assert!(matches!(
         from_calamine(&DataRef::DateTime(datetime)),
+        CellValue::DateTime(_)
+    ));
+    assert!(matches!(
+        from_data(&Data::DateTime(datetime)),
         CellValue::DateTime(_)
     ));
 }
@@ -234,6 +241,141 @@ fn helpers_preserve_diagnostics_and_xlsx_column_limits() {
         format_error("broken").to_string(),
         "excel format error: broken"
     );
+}
+
+#[test]
+fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<()> {
+    let mut range = Range::new((2, 1), (3, 1));
+    range.set_value((2, 1), Data::String("Value".to_owned()));
+    range.set_value((3, 1), Data::String("one".to_owned()));
+    let mut probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_range(
+        &range,
+        2,
+        "Legacy",
+        &ReadOptions {
+            head_row_number: 3,
+            ..options()
+        },
+        &mut TypedRowConsumer::<TestRow> {
+            listener: &mut probe,
+        },
+    )?;
+    assert_eq!(probe.heads[0].get("Value"), Some(&1));
+    assert_eq!(probe.rows, vec![TestRow(String::new())]);
+    assert_eq!(probe.after, vec![("Legacy".to_owned(), 2, 3)]);
+
+    read_range(
+        &Range::empty(),
+        3,
+        "Empty",
+        &options(),
+        &mut TypedRowConsumer::<TestRow> {
+            listener: &mut probe,
+        },
+    )?;
+    assert_eq!(probe.after.last(), Some(&("Empty".to_owned(), 3, 0)));
+
+    let invalid_column = Range::new((0, u32::from(u16::MAX) + 1), (0, u32::from(u16::MAX) + 1));
+    assert!(
+        read_range(
+            &invalid_column,
+            0,
+            "Invalid",
+            &options(),
+            &mut TypedRowConsumer::<TestRow> {
+                listener: &mut probe,
+            },
+        )
+        .is_err()
+    );
+
+    let mut failing_head = Probe {
+        continue_reading: true,
+        fail_head: true,
+        ..Probe::default()
+    };
+    assert!(
+        read_range(
+            &range,
+            0,
+            "Legacy",
+            &ReadOptions {
+                head_row_number: 3,
+                ..options()
+            },
+            &mut TypedRowConsumer::<TestRow> {
+                listener: &mut failing_head,
+            },
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn reads_java_easyexcel_legacy_multisheet_fixture() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("java-multiplesheets.xls");
+    let compressed = base64::engine::general_purpose::STANDARD
+        .decode(include_str!("fixtures/java-multiplesheets.xls.gz.b64").trim())
+        .map_err(test_error)?;
+    let mut decoder = GzDecoder::new(compressed.as_slice());
+    let mut workbook = Vec::new();
+    decoder.read_to_end(&mut workbook)?;
+    fs::write(&path, workbook)?;
+    let mut probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_xls::<TestRow, _>(
+        &path,
+        &ReadOptions {
+            sheet: SheetSelector::All,
+            ..options()
+        },
+        &mut probe,
+    )?;
+    assert_eq!(
+        probe.rows,
+        (1..=6)
+            .map(|index| TestRow(format!("表{index}数据")))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        probe.after,
+        (0..6)
+            .map(|index| (format!("Sheet{}", index + 1), index, 1))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(probe.heads.len(), 6);
+    for (index, head) in probe.heads.iter().enumerate() {
+        assert_eq!(head.get(&format!("表{}头", index + 1)), Some(&0));
+    }
+    assert!(
+        read_xls::<TestRow, _>(
+            &path,
+            &ReadOptions {
+                sheet: SheetSelector::Index(99),
+                ..options()
+            },
+            &mut probe,
+        )
+        .is_err()
+    );
+    let mut failing_head = Probe {
+        continue_reading: true,
+        fail_head: true,
+        ..Probe::default()
+    };
+    assert!(read_xls::<TestRow, _>(&path, &options(), &mut failing_head).is_err());
+    let invalid = directory.path().join("invalid.xls");
+    fs::write(&invalid, b"not an XLS workbook")?;
+    assert!(read_xls::<TestRow, _>(&invalid, &options(), &mut probe).is_err());
+    Ok(())
 }
 
 #[test]
@@ -259,6 +401,23 @@ fn sheet_selection_supports_first_index_name_all_and_missing_values() -> Result<
     assert!(selected_sheet_names(&workbook, &SheetSelector::Index(2)).is_err());
     assert!(selected_sheet_names(&workbook, &SheetSelector::Name("Missing".to_owned())).is_err());
     assert!(select_sheet_names(Vec::new(), &SheetSelector::First).is_err());
+
+    let legacy = || {
+        vec![
+            ("First".to_owned(), Range::empty()),
+            ("Second".to_owned(), Range::empty()),
+        ]
+    };
+    let first = select_xls_sheets(legacy(), &SheetSelector::First)?;
+    assert_eq!((first[0].0, first[0].1.as_str()), (0, "First"));
+    let second = select_xls_sheets(legacy(), &SheetSelector::Index(1))?;
+    assert_eq!((second[0].0, second[0].1.as_str()), (1, "Second"));
+    let named = select_xls_sheets(legacy(), &SheetSelector::Name("Second".to_owned()))?;
+    assert_eq!((named[0].0, named[0].1.as_str()), (1, "Second"));
+    assert_eq!(select_xls_sheets(legacy(), &SheetSelector::All)?.len(), 2);
+    assert!(select_xls_sheets(legacy(), &SheetSelector::Index(2)).is_err());
+    assert!(select_xls_sheets(legacy(), &SheetSelector::Name("Missing".to_owned())).is_err());
+    assert!(select_xls_sheets(Vec::new(), &SheetSelector::First).is_err());
     Ok(())
 }
 

@@ -1,10 +1,10 @@
-//! Streaming XLSX reader backed by Calamine's cell stream.
+//! XLSX, XLS, and CSV readers backed by Calamine and the Rust CSV engine.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use calamine::{DataRef, Reader, Xlsx, open_workbook};
+use calamine::{Data, DataRef, Range, Reader, Xls, Xlsx, open_workbook};
 use easyexcel_core::{
     AnalysisContext, CellValue, ErrorAction, ExcelError, ExcelRow, ReadListener, Result, RowData,
 };
@@ -23,7 +23,7 @@ pub enum SheetSelector {
     All,
 }
 
-/// XLSX read configuration.
+/// Workbook read configuration shared by XLSX, XLS, and CSV engines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadOptions {
     /// Sheet selection.
@@ -59,6 +59,28 @@ where
     for (sheet_no, sheet_name) in names {
         let mut consumer = TypedRowConsumer::<T> { listener };
         read_sheet(&mut workbook, sheet_no, &sheet_name, options, &mut consumer)?;
+    }
+    Ok(())
+}
+
+/// Reads selected legacy XLS sheets through the typed listener lifecycle.
+///
+/// Calamine materializes each XLS worksheet before row dispatch because the
+/// binary BIFF format does not expose the XLSX cell-stream API.
+///
+/// # Errors
+///
+/// Returns an I/O, workbook-format, sheet-selection, conversion, or listener error.
+pub fn read_xls<T, L>(path: &Path, options: &ReadOptions, listener: &mut L) -> Result<()>
+where
+    T: ExcelRow,
+    L: ReadListener<T>,
+{
+    let mut workbook: Xls<_> = open_workbook(path).map_err(format_error)?;
+    let sheets = select_xls_sheets(workbook.worksheets(), &options.sheet)?;
+    for (sheet_no, sheet_name, range) in sheets {
+        let mut consumer = TypedRowConsumer::<T> { listener };
+        read_range(&range, sheet_no, &sheet_name, options, &mut consumer)?;
     }
     Ok(())
 }
@@ -208,6 +230,35 @@ fn select_sheet_names(
     }
 }
 
+fn select_xls_sheets(
+    sheets: Vec<(String, Range<Data>)>,
+    selector: &SheetSelector,
+) -> Result<Vec<(usize, String, Range<Data>)>> {
+    match selector {
+        SheetSelector::First => sheets
+            .into_iter()
+            .next()
+            .map(|(name, range)| vec![(0, name, range)])
+            .ok_or_else(|| ExcelError::SheetNotFound("0".to_owned())),
+        SheetSelector::Index(index) => sheets
+            .into_iter()
+            .nth(*index)
+            .map(|(name, range)| vec![(*index, name, range)])
+            .ok_or_else(|| ExcelError::SheetNotFound(index.to_string())),
+        SheetSelector::Name(name) => sheets
+            .into_iter()
+            .enumerate()
+            .find(|(_, (candidate, _))| candidate == name)
+            .map(|(index, (_, range))| vec![(index, name.clone(), range)])
+            .ok_or_else(|| ExcelError::SheetNotFound(name.clone())),
+        SheetSelector::All => Ok(sheets
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, range))| (index, name, range))
+            .collect()),
+    }
+}
+
 fn read_sheet<RS>(
     workbook: &mut Xlsx<RS>,
     sheet_no: usize,
@@ -257,6 +308,37 @@ where
     }
 
     let final_row = current_index.unwrap_or_default();
+    consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))
+}
+
+fn read_range(
+    range: &Range<Data>,
+    sheet_no: usize,
+    sheet_name: &str,
+    options: &ReadOptions,
+    consumer: &mut dyn RowConsumer,
+) -> Result<()> {
+    let mut headers = Arc::new(HashMap::new());
+    let Some((start_row, start_column)) = range.start() else {
+        return consumer.after(&AnalysisContext::new(sheet_name, sheet_no, 0));
+    };
+    let start_column = to_column_index(start_column)?;
+    let mut row_index = start_row;
+    let mut final_row = start_row;
+    for row in range.rows() {
+        final_row = row_index;
+        let mut cells = vec![CellValue::Empty; start_column];
+        cells.extend(row.iter().map(from_data));
+        consumer.process(
+            sheet_no,
+            sheet_name,
+            row_index,
+            cells,
+            options,
+            &mut headers,
+        )?;
+        row_index = row_index.saturating_add(1);
+    }
     consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))
 }
 
@@ -329,6 +411,28 @@ fn from_calamine(value: &DataRef<'_>) -> CellValue {
     }
 }
 
+fn from_data(value: &Data) -> CellValue {
+    match value {
+        Data::Empty => CellValue::Empty,
+        Data::String(value) | Data::DateTimeIso(value) | Data::DurationIso(value) => {
+            CellValue::String(value.clone())
+        }
+        Data::Bool(value) => CellValue::Bool(*value),
+        Data::Int(value) => CellValue::Int(*value),
+        Data::Float(value) => CellValue::Float(*value),
+        Data::DateTime(value) => {
+            if value.is_datetime() {
+                value
+                    .as_datetime()
+                    .map_or(CellValue::Float(value.as_f64()), CellValue::DateTime)
+            } else {
+                CellValue::Float(value.as_f64())
+            }
+        }
+        Data::Error(value) => CellValue::Error(format!("{value:?}")),
+    }
+}
+
 fn format_error(error: impl std::fmt::Display) -> ExcelError {
     ExcelError::Format(error.to_string())
 }
@@ -336,7 +440,7 @@ fn format_error(error: impl std::fmt::Display) -> ExcelError {
 fn to_column_index(column: u32) -> Result<usize> {
     u16::try_from(column)
         .map(usize::from)
-        .map_err(|_| ExcelError::Format("column index exceeds XLSX limit".to_owned()))
+        .map_err(|_| ExcelError::Format("column index exceeds spreadsheet limit".to_owned()))
 }
 
 #[cfg(test)]
