@@ -316,6 +316,22 @@ where
         self
     }
 
+    /// Replaces derived headers with dynamic multi-level head paths.
+    #[must_use]
+    pub fn head<S, P>(mut self, paths: impl IntoIterator<Item = P>) -> Self
+    where
+        S: Into<String>,
+        P: IntoIterator<Item = S>,
+    {
+        self.options.dynamic_head = Some(
+            paths
+                .into_iter()
+                .map(|path| path.into_iter().map(Into::into).collect())
+                .collect(),
+        );
+        self
+    }
+
     /// Registers a write lifecycle handler. Handlers execute by ascending order.
     #[must_use]
     pub fn register_write_handler(mut self, handler: impl WriteHandler + 'static) -> Self {

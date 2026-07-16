@@ -44,7 +44,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | formulas/images/comments/hyperlinks | rich `CellValue` variants | partial: XLSX write implemented |
 | `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |
 | `LoopMergeStrategy` | repeating data-row merge metadata | implemented |
-| dynamic and multi-level heads | writer metadata | planned |
+| dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | template engine | planned |
 | CSV read/write | CSV engine | planned |
 | XLS read | calamine XLS engine | planned |

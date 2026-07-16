@@ -251,6 +251,8 @@ pub struct WriteOptions {
     pub content_styles: Vec<CellStyle>,
     /// Repeating merge strategies applied to data rows.
     pub loop_merges: Vec<LoopMergeStrategy>,
+    /// Optional dynamic multi-level head paths, one path per selected column.
+    pub dynamic_head: Option<Vec<Vec<String>>>,
 }
 
 impl Default for WriteOptions {
@@ -272,6 +274,7 @@ impl Default for WriteOptions {
             head_style: CellStyle::new().bold(true),
             content_styles: Vec::new(),
             loop_merges: Vec::new(),
+            dynamic_head: None,
         }
     }
 }
@@ -369,6 +372,22 @@ impl<T> WriteSheet<T> {
     #[must_use]
     pub fn loop_merge(mut self, strategy: LoopMergeStrategy) -> Self {
         self.options.loop_merges.push(strategy);
+        self
+    }
+
+    /// Replaces the derived headers with dynamic multi-level head paths.
+    #[must_use]
+    pub fn head<S, P>(mut self, paths: impl IntoIterator<Item = P>) -> Self
+    where
+        S: Into<String>,
+        P: IntoIterator<Item = S>,
+    {
+        self.options.dynamic_head = Some(
+            paths
+                .into_iter()
+                .map(|path| path.into_iter().map(Into::into).collect())
+                .collect(),
+        );
         self
     }
 }
@@ -549,9 +568,10 @@ where
             )
             .map_err(format_error)?;
     }
+    let head_rows = dynamic_head_rows(options)?;
     let freeze_panes = options
         .freeze_panes
-        .or_else(|| (options.freeze_head && options.need_head).then_some((1, 0)));
+        .or_else(|| (options.freeze_head && options.need_head).then_some((head_rows, 0)));
     if let Some((row, column)) = freeze_panes {
         worksheet
             .set_freeze_panes(row, column)
@@ -564,14 +584,25 @@ where
     let columns = selected_columns(T::schema(), options);
     let mut row_index = 0_u32;
     if options.need_head {
-        write_headers_with_handlers(
-            worksheet,
-            &columns,
-            &options.sheet_name,
-            &options.head_style,
-            handlers,
-        )?;
-        row_index = 1;
+        if let Some(head) = &options.dynamic_head {
+            write_dynamic_headers_with_handlers(
+                worksheet,
+                &columns,
+                head,
+                &options.sheet_name,
+                &options.head_style,
+                handlers,
+            )?;
+        } else {
+            write_headers_with_handlers(
+                worksheet,
+                &columns,
+                &options.sheet_name,
+                &options.head_style,
+                handlers,
+            )?;
+        }
+        row_index = head_rows;
     }
     for (data_index, row) in rows.into_iter().enumerate() {
         let cells = row.to_row()?;
@@ -729,6 +760,26 @@ fn selected_columns(
     columns
 }
 
+fn dynamic_head_rows(options: &WriteOptions) -> Result<u32> {
+    if !options.need_head {
+        return Ok(0);
+    }
+    let Some(head) = &options.dynamic_head else {
+        return Ok(1);
+    };
+    if head.is_empty() || head.iter().any(Vec::is_empty) {
+        return Err(ExcelError::Format(
+            "dynamic head must contain at least one non-empty path".to_owned(),
+        ));
+    }
+    let levels = head.iter().map(Vec::len).max().unwrap_or(0);
+    head_level_to_row(levels)
+}
+
+fn head_level_to_row(level: usize) -> Result<u32> {
+    u32::try_from(level).map_err(|_| ExcelError::Format("dynamic head is too deep".to_owned()))
+}
+
 #[cfg(test)]
 fn write_headers(
     worksheet: &mut Worksheet,
@@ -744,24 +795,70 @@ fn write_headers_with_handlers(
     style: &CellStyle,
     handlers: &mut [Box<dyn WriteHandler>],
 ) -> Result<()> {
+    let labels = columns
+        .iter()
+        .map(|(_, _, column)| column.name.to_owned())
+        .collect::<Vec<_>>();
+    write_header_row_with_handlers(worksheet, 0, columns, &labels, sheet_name, style, handlers)
+}
+
+fn write_dynamic_headers_with_handlers(
+    worksheet: &mut Worksheet,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    head: &[Vec<String>],
+    sheet_name: &str,
+    style: &CellStyle,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()> {
+    if head.len() != columns.len() {
+        return Err(ExcelError::Format(format!(
+            "dynamic head column count {} does not match selected column count {}",
+            head.len(),
+            columns.len()
+        )));
+    }
+    let levels = head.iter().map(Vec::len).max().unwrap_or(0);
+    for level in 0..levels {
+        #[allow(clippy::cast_possible_truncation)]
+        let row_index = level as u32;
+        let labels = head
+            .iter()
+            .map(|path| path.get(level).cloned().unwrap_or_default())
+            .collect::<Vec<_>>();
+        write_header_row_with_handlers(
+            worksheet, row_index, columns, &labels, sheet_name, style, handlers,
+        )?;
+    }
+    merge_dynamic_head_groups(worksheet, columns, head, style)
+}
+
+fn write_header_row_with_handlers(
+    worksheet: &mut Worksheet,
+    row_index: u32,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    labels: &[String],
+    sheet_name: &str,
+    style: &CellStyle,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()> {
     let format = cell_format(Some(style));
     let row_context = WriteRowContext {
         sheet_name: sheet_name.to_owned(),
-        row_index: 0,
+        row_index,
         is_head: true,
     };
     for handler in handlers.iter_mut() {
         handler.before_row(&row_context)?;
     }
-    for (physical_index, _, column) in columns {
+    for ((physical_index, _, column), label) in columns.iter().zip(labels) {
         let column_index = to_column(*physical_index)?;
         let mut context = WriteCellContext {
             sheet_name: sheet_name.to_owned(),
-            row_index: 0,
+            row_index,
             column_index,
             field: Some(column.field),
             is_head: true,
-            value: CellValue::String(column.name.to_owned()),
+            value: CellValue::String(label.clone()),
             skip: false,
         };
         for handler in handlers.iter_mut() {
@@ -771,12 +868,12 @@ fn write_headers_with_handlers(
             match &context.value {
                 CellValue::String(value) | CellValue::Error(value) => {
                     worksheet
-                        .write_string_with_format(0, context.column_index, value, &format)
+                        .write_string_with_format(row_index, context.column_index, value, &format)
                         .map_err(format_error)?;
                 }
                 value => write_cell(
                     worksheet,
-                    0,
+                    row_index,
                     context.column_index,
                     column,
                     value,
@@ -792,6 +889,58 @@ fn write_headers_with_handlers(
         handler.after_row(&row_context)?;
     }
     Ok(())
+}
+
+fn merge_dynamic_head_groups(
+    worksheet: &mut Worksheet,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    head: &[Vec<String>],
+    style: &CellStyle,
+) -> Result<()> {
+    let levels = head.iter().map(Vec::len).max().unwrap_or(0);
+    let format = cell_format(Some(style));
+    for level in 0..levels {
+        #[allow(clippy::cast_possible_truncation)]
+        let row_index = level as u32;
+        let mut start = 0;
+        while start < head.len() {
+            let mut end = start;
+            while end + 1 < head.len()
+                && columns[end].0.checked_add(1) == Some(columns[end + 1].0)
+                && same_dynamic_head_group(head, start, end + 1, level)
+            {
+                end += 1;
+            }
+            let label = head[start].get(level).map_or("", String::as_str);
+            if end > start && !label.is_empty() {
+                worksheet
+                    .merge_range(
+                        row_index,
+                        to_column(columns[start].0)?,
+                        row_index,
+                        to_column(columns[end].0)?,
+                        label,
+                        &format,
+                    )
+                    .map_err(format_error)?;
+            }
+            start = end + 1;
+        }
+    }
+    Ok(())
+}
+
+fn same_dynamic_head_group(
+    head: &[Vec<String>],
+    first: usize,
+    second: usize,
+    level: usize,
+) -> bool {
+    head[first].get(level) == head[second].get(level)
+        && head[first]
+            .iter()
+            .take(level)
+            .eq(head[second].iter().take(level))
 }
 
 #[cfg(test)]

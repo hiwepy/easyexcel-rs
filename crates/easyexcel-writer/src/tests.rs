@@ -56,6 +56,8 @@ thread_local! {
     static USE_WIDE_SCHEMA: Cell<bool> = const { Cell::new(false) };
 }
 
+const TEST_COLUMN: ExcelColumn = ExcelColumn::new("value", "Value", Some(0), 0, None);
+
 impl ExcelRow for EveryCell {
     fn schema() -> &'static [ExcelColumn] {
         const COLUMNS: &[ExcelColumn] = &[
@@ -331,6 +333,7 @@ fn default_options_and_helpers_are_deterministic() {
             head_style: CellStyle::new().bold(true),
             content_styles: Vec::new(),
             loop_merges: Vec::new(),
+            dynamic_head: None,
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");
@@ -352,6 +355,14 @@ fn default_options_and_helpers_are_deterministic() {
     assert_eq!(strategy.each_rows(), 2);
     assert_eq!(strategy.column_extend(), 3);
     assert_eq!(strategy.column_index(), 4);
+    let dynamic = WriteSheet::<EveryCell>::new("Dynamic").head([["User", "Name"], ["User", "Age"]]);
+    assert_eq!(
+        dynamic.options().dynamic_head,
+        Some(vec![
+            vec!["User".to_owned(), "Name".to_owned()],
+            vec!["User".to_owned(), "Age".to_owned()],
+        ])
+    );
 }
 
 #[test]
@@ -419,6 +430,135 @@ fn style_model_maps_every_alignment_and_cycles_content_rows() -> Result<()> {
         cell_style_id(&sheet, "A2").expect("first content style"),
         cell_style_id(&sheet, "A3").expect("second content style")
     );
+    Ok(())
+}
+
+#[test]
+fn dynamic_multi_level_head_merges_parents_and_offsets_data_rows() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("dynamic-head.xlsx");
+    let options = WriteOptions {
+        sheet_name: "Dynamic".to_owned(),
+        include_column_indexes: Some(vec![0, 1, 2]),
+        dynamic_head: Some(vec![
+            vec!["User".to_owned(), "Empty".to_owned()],
+            vec!["User".to_owned(), "String".to_owned()],
+            vec!["Meta".to_owned()],
+        ]),
+        freeze_head: true,
+        ..WriteOptions::default()
+    };
+    assert_eq!(dynamic_head_rows(&options)?, 2);
+    write_xlsx::<EveryCell, _>(&path, &options, vec![every_cell()])?;
+
+    let mut workbook: Xlsx<_> = open_workbook(&path).map_err(test_error)?;
+    let range = workbook.worksheet_range("Dynamic").map_err(test_error)?;
+    assert_eq!(
+        range.get_value((0, 0)),
+        Some(&Data::String("User".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((1, 1)),
+        Some(&Data::String("String".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((2, 1)),
+        Some(&Data::String("text".to_owned()))
+    );
+    assert_eq!(
+        workbook
+            .merge_cells_by_sheet_name("Dynamic")
+            .map_err(test_error)?,
+        vec![Dimensions::new((0, 0), (0, 1))]
+    );
+    Ok(())
+}
+
+#[test]
+fn dynamic_head_validation_and_backend_failures_are_typed() -> Result<()> {
+    let directory = tempdir()?;
+    assert_eq!(head_level_to_row(0)?, 0);
+    assert!(head_level_to_row(usize::MAX).is_err());
+    assert_eq!(
+        dynamic_head_rows(&WriteOptions {
+            need_head: false,
+            dynamic_head: Some(Vec::new()),
+            ..WriteOptions::default()
+        })?,
+        0
+    );
+    assert!(
+        dynamic_head_rows(&WriteOptions {
+            dynamic_head: Some(Vec::new()),
+            ..WriteOptions::default()
+        })
+        .is_err()
+    );
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("empty-head.xlsx"),
+            &WriteOptions {
+                dynamic_head: Some(Vec::new()),
+                ..WriteOptions::default()
+            },
+            Vec::new()
+        )
+        .is_err()
+    );
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("mismatched-head.xlsx"),
+            &WriteOptions {
+                include_column_indexes: Some(vec![0, 1]),
+                dynamic_head: Some(vec![vec!["Only one".to_owned()]]),
+                ..WriteOptions::default()
+            },
+            Vec::new()
+        )
+        .is_err()
+    );
+    USE_WIDE_SCHEMA.with(|wide| wide.set(true));
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("wide-dynamic-head.xlsx"),
+            &WriteOptions {
+                dynamic_head: Some(vec![vec!["Wide".to_owned()]]),
+                ..WriteOptions::default()
+            },
+            Vec::new()
+        )
+        .is_err()
+    );
+    USE_WIDE_SCHEMA.with(|wide| wide.set(false));
+
+    let head = vec![vec!["Group".to_owned()], vec!["Group".to_owned()]];
+    for columns in [
+        vec![(65_536, 0, &TEST_COLUMN), (65_537, 0, &TEST_COLUMN)],
+        vec![(65_535, 0, &TEST_COLUMN), (65_536, 0, &TEST_COLUMN)],
+        vec![(16_383, 0, &TEST_COLUMN), (16_384, 0, &TEST_COLUMN)],
+    ] {
+        let mut raw = Workbook::new();
+        let worksheet = raw.add_worksheet();
+        assert!(
+            merge_dynamic_head_groups(worksheet, &columns, &head, &CellStyle::default()).is_err()
+        );
+    }
+    assert!(
+        dynamic_head_rows(&WriteOptions {
+            dynamic_head: Some(vec![Vec::new()]),
+            ..WriteOptions::default()
+        })
+        .is_err()
+    );
+    assert!(!same_dynamic_head_group(
+        &[
+            vec!["A".to_owned(), "X".to_owned()],
+            vec!["B".to_owned(), "X".to_owned()]
+        ],
+        0,
+        1,
+        1
+    ));
     Ok(())
 }
 
