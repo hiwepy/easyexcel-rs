@@ -62,6 +62,10 @@ pub struct WriteOptions {
     pub order_by_include_column: bool,
     /// Absolute ranges merged before row data is written.
     pub merge_ranges: Vec<MergeRange>,
+    /// Whether used columns are auto-fitted after writing.
+    pub auto_width: bool,
+    /// Explicit column widths in Excel character units.
+    pub column_widths: Vec<(u16, u16)>,
 }
 
 impl Default for WriteOptions {
@@ -78,6 +82,8 @@ impl Default for WriteOptions {
             exclude_column_field_names: Vec::new(),
             order_by_include_column: false,
             merge_ranges: Vec::new(),
+            auto_width: false,
+            column_widths: Vec::new(),
         }
     }
 }
@@ -133,6 +139,20 @@ impl<T> WriteSheet<T> {
     #[must_use]
     pub fn merge_cells(mut self, range: MergeRange) -> Self {
         self.options.merge_ranges.push(range);
+        self
+    }
+
+    /// Enables or disables automatic width calculation.
+    #[must_use]
+    pub const fn auto_width(mut self, enabled: bool) -> Self {
+        self.options.auto_width = enabled;
+        self
+    }
+
+    /// Sets an explicit width for a zero-based physical column.
+    #[must_use]
+    pub fn column_width(mut self, column: u16, width: u16) -> Self {
+        self.options.column_widths.push((column, width));
         self
     }
 }
@@ -296,6 +316,11 @@ where
     worksheet
         .set_name(&options.sheet_name)
         .map_err(format_error)?;
+    for (column, width) in &options.column_widths {
+        worksheet
+            .set_column_width(*column, *width)
+            .map_err(format_error)?;
+    }
     for range in &options.merge_ranges {
         worksheet
             .merge_range(
@@ -339,6 +364,9 @@ where
         row_index += 1;
     }
     after_sheet(handlers, &sheet_context)?;
+    if options.auto_width {
+        worksheet.autofit();
+    }
     Ok(())
 }
 

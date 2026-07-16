@@ -38,6 +38,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `ExcelWriter` multi-write lifecycle | `ExcelWriter::write` / `finish` | implemented |
 | `WriteHandler` lifecycle | ordered `WriteHandler` callbacks | implemented |
 | include/exclude columns | builder filters | implemented |
+| column width / auto width | `column_width` / `auto_width` | implemented |
 | default styles and annotations | style model | planned |
 | formulas/images/comments/hyperlinks | `CellValue` extensions | planned |
 | `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |

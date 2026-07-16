@@ -271,6 +271,20 @@ where
         self
     }
 
+    /// Enables automatic width calculation for used columns.
+    #[must_use]
+    pub const fn auto_width(mut self) -> Self {
+        self.options.auto_width = true;
+        self
+    }
+
+    /// Sets an explicit width for a zero-based physical column.
+    #[must_use]
+    pub fn column_width(mut self, column: u16, width: u16) -> Self {
+        self.options.column_widths.push((column, width));
+        self
+    }
+
     /// Registers a write lifecycle handler. Handlers execute by ascending order.
     #[must_use]
     pub fn register_write_handler(mut self, handler: impl WriteHandler + 'static) -> Self {

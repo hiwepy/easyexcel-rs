@@ -267,6 +267,8 @@ fn default_options_and_helpers_are_deterministic() {
             exclude_column_field_names: Vec::new(),
             order_by_include_column: false,
             merge_ranges: Vec::new(),
+            auto_width: false,
+            column_widths: Vec::new(),
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");
@@ -445,12 +447,16 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
     })];
     let first = WriteSheet::<EveryCell>::new("Users")
         .freeze_head(true)
-        .merge_cells(MergeRange::new(0, 0, 0, 1));
+        .merge_cells(MergeRange::new(0, 0, 0, 1))
+        .auto_width(true)
+        .column_width(0, 20);
     let second = WriteSheet::<EveryCell>::new("Archive")
         .need_head(false)
         .constant_memory(true);
     assert_eq!(first.options().sheet_name, "Users");
     assert!(first.options().freeze_head);
+    assert!(first.options().auto_width);
+    assert_eq!(first.options().column_widths, vec![(0, 20)]);
     assert!(!second.options().need_head);
     assert!(second.options().constant_memory);
 
@@ -762,6 +768,17 @@ fn conversion_configuration_column_and_save_failures_propagate() -> Result<()> {
             &directory.path().join("bad-merge.xlsx"),
             &WriteOptions {
                 merge_ranges: vec![MergeRange::new(0, 0, 0, 0)],
+                ..WriteOptions::default()
+            },
+            Vec::new()
+        )
+        .is_err()
+    );
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("bad-width.xlsx"),
+            &WriteOptions {
+                column_widths: vec![(u16::MAX, 20)],
                 ..WriteOptions::default()
             },
             Vec::new()

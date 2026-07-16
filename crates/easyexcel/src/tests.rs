@@ -80,6 +80,8 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .exclude_column_field_names(["ignored".to_owned()])
         .order_by_include_column(true)
         .merge_cells(MergeRange::new(0, 0, 0, 1))
+        .auto_width()
+        .column_width(0, 24)
         .register_write_handler(NoopWriteHandler)
         .constant_memory(true);
     assert_eq!(write.path, PathBuf::from("output.xlsx"));
@@ -102,6 +104,8 @@ fn factories_and_builder_options_match_java_style_chaining() {
         write.options.merge_ranges,
         vec![MergeRange::new(0, 0, 0, 1)]
     );
+    assert!(write.options.auto_width);
+    assert_eq!(write.options.column_widths, vec![(0, 24)]);
     assert_eq!(write.handlers.len(), 1);
     assert!(write.options.constant_memory);
 }
