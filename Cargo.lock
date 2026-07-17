@@ -305,6 +305,7 @@ dependencies = [
  "easyexcel-template",
  "easyexcel-writer",
  "tempfile",
+ "zip 7.2.0",
 ]
 
 [[package]]
@@ -314,6 +315,7 @@ dependencies = [
  "bigdecimal",
  "chrono",
  "num-bigint",
+ "tempfile",
  "thiserror",
 ]
 

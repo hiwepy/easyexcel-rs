@@ -38,7 +38,8 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `@ExcelProperty` | `#[excel(name, index, order, format)]` | implemented |
 | `@ExcelIgnore` | `#[excel(ignore)]` | implemented |
 | `@ExcelIgnoreUnannotated` | `#[excel(ignore_unannotated)]` | implemented |
-| built-in scalar converters | `FromExcelCell` / `IntoExcelCell` | partial: strings, booleans, signed/unsigned integers, Java-compatible `BigInteger` (`BigInt`), floats, `BigDecimal`, `Option<T>`, `NaiveDate`, and `NaiveDateTime` are implemented; Java URL/image and remaining temporal converter inventory remains |
+| built-in scalar converters | `FromExcelCell` / `IntoExcelCell` | implemented: strings, booleans, signed/unsigned integers, Java-compatible `BigInteger` (`BigInt`), floats, `BigDecimal`, `Option<T>`, `NaiveDate`, and `NaiveDateTime` cover Java's registered scalar and temporal converter inventory |
+| default image write converters | `IntoExcelCell` for `Vec<u8>`, `Box<[u8]>`, `[u8; N]`, and `PathBuf`; `StringImageConverter` | partial: Java `byte[]`, `Byte[]`, `File`, and explicit `StringImageConverter` usage generate real drawing/media parts; stream and URL sources plus multi-image anchor metadata remain |
 | custom `Converter<T>` / `registerConverter` | `#[excel(converter = Type)]` / `register_converter::<T, _>(value)` + converter contexts | implemented: read dispatch uses Rust target type plus Excel cell type; write dispatch uses the Rust type; later registrations override earlier ones, sheet registrations override workbook registrations, and field annotations have highest priority across event/sync read and one-shot/stateful XLSX/CSV write paths |
 | `EasyExcel.write(file, head)` | `EasyExcel::write::<T>(file)` | implemented |
 | `sheet(Integer/String)` | `sheet_index(index)` / `sheet(name)` | implemented |
@@ -53,13 +54,13 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `@ColumnWidth` / `@HeadRowHeight` / `@ContentRowHeight` | `#[excel(column_width, head_row_height, content_row_height)]` | implemented: field width overrides type width; explicit builder width overrides annotations |
 | `HorizontalCellStyleStrategy` | header and cycling content `CellStyle` | implemented |
 | `@HeadStyle` / `@ContentStyle` / `@HeadFontStyle` / `@ContentFontStyle` | `#[excel(head_style(...), content_style(...), head_font_style(...), content_font_style(...))]` | partial: XLSX cell/font metadata, field-over-type replacement, independent cell/font inheritance, explicit-style precedence, POI indexed colors `0..=64`, RGB extensions, built-in/custom data formats, and official Java annotation color expectations are verified; custom HSSF palettes and XLS writing remain |
-| formulas/images/comments/hyperlinks | formula metadata, `CellExtra`, and rich write values | partial: XLSX formula and comment/hyperlink/merge reads plus XLSX rich writes implemented; image reads remain |
+| formulas/images/comments/hyperlinks | formula metadata, `CellExtra`, and rich write values | partial: XLSX formula and comment/hyperlink/merge reads plus XLSX formula, single-image, comment, and hyperlink writes are implemented; Java `WriteCellData.imageDataList` multi-image anchors remain |
 | `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |
 | `LoopMergeStrategy` | repeating data-row merge metadata | implemented |
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
 | CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, stateful same-sheet multi-write, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; JVM-only charset providers remain |
-| XLSX SAX read lifecycle | `quick-xml` OOXML cell parser + typed/dynamic row dispatcher | partial: worksheet cells and shared strings are streamed; memory/disk/automatic shared-string caches, every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, 15-significant-digit numbers, built-in/custom display formats, exact decimals, 1900/1904 dates, cached formula results plus `FormulaData`, error text, comment/hyperlink/merged-cell extras, typed and no-model rows, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; image extraction remains |
+| XLSX SAX read lifecycle | `quick-xml` OOXML cell parser + typed/dynamic row dispatcher | implemented: worksheet cells and shared strings are streamed; memory/disk/automatic shared-string caches, every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, 15-significant-digit numbers, built-in/custom display formats, exact decimals, 1900/1904 dates, cached formula results plus `FormulaData`, error text, comment/hyperlink/merged-cell extras, typed and no-model rows, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
@@ -134,8 +135,9 @@ The parser selects its shared-string backend from the uncompressed
 stores indexed UTF-8 strings in a vector; `Disk` stores bytes in a temporary
 file and retains only offsets and lengths in memory; `Auto` chooses between
 them. Both explicit modes are exercised against the same shared-string,
-formula, number, and date fixture. Image extraction remains outside the current
-`XlsxSaxAnalyser` compatibility boundary.
+formula, number, and date fixture. Java's `XlsxSaxAnalyser` does not map drawing
+images back into model fields, so image extraction is not part of this
+compatibility boundary.
 
 ## Million-row benchmark
 

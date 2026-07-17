@@ -13,5 +13,8 @@ chrono.workspace = true
 num-bigint.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

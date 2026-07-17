@@ -279,6 +279,13 @@ expression remains available separately through `RowData::formula()` and
 `ReadConverterContext::formula()`, mirroring Java `ReadCellData.formulaData`
 without changing ordinary scalar conversion.
 
+Java's default image write converters map naturally to Rust field types:
+`Vec<u8>`, `Box<[u8]>`, fixed byte arrays, and `PathBuf` write real XLSX
+drawing/media parts. String paths can opt in explicitly with
+`#[excel(converter = easyexcel::StringImageConverter)]`, matching Java's
+annotation-selected `StringImageConverter`; unreadable files return an error
+instead of writing a path as cell text.
+
 Java `extraRead` maps to `.extra_read(CellExtraType::...)`. Enable `Comment`,
 `Hyperlink`, or `Merge` on an XLSX reader and implement `ReadListener::extra`
 to receive a `CellExtra` with optional text and zero-based first/last row and

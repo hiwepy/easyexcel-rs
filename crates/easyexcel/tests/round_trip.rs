@@ -1,6 +1,9 @@
 //! End-to-end compatibility tests for the public facade.
 
 use std::cell::RefCell;
+use std::fs::File;
+use std::io::Read;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use chrono::NaiveDate;
@@ -10,6 +13,7 @@ use easyexcel::{
     VerticalAlignment, WriteConverterContext,
 };
 use tempfile::tempdir;
+use zip::ZipArchive;
 
 #[derive(Debug, Clone, PartialEq, ExcelRow)]
 struct User {
@@ -21,6 +25,20 @@ struct User {
     registered_on: NaiveDate,
     #[excel(ignore)]
     transient: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
+struct ImageConverterRow {
+    #[excel(name = "Primitive bytes", index = 0)]
+    primitive_bytes: Vec<u8>,
+    #[excel(name = "Boxed bytes", index = 1)]
+    boxed_bytes: Box<[u8]>,
+    #[excel(name = "Fixed bytes", index = 2)]
+    fixed_bytes: [u8; 70],
+    #[excel(name = "File", index = 3)]
+    file: PathBuf,
+    #[excel(name = "String file", index = 4, converter = easyexcel::StringImageConverter)]
+    string_file: String,
 }
 
 #[derive(Default)]
@@ -311,6 +329,46 @@ fn public_writer_accepts_every_supported_cell_variant() -> Result<()> {
     let directory = tempdir()?;
     EasyExcel::write::<EveryPublicCell>(directory.path().join("every-cell.xlsx"))
         .do_write([EveryPublicCell])?;
+    Ok(())
+}
+
+#[test]
+fn derive_uses_java_style_byte_array_and_file_image_converters() -> Result<()> {
+    let directory = tempdir()?;
+    let image_path = directory.path().join("source.png");
+    let bytes = tiny_png();
+    std::fs::write(&image_path, &bytes)?;
+    let fixed_bytes: [u8; 70] = bytes.clone().try_into().expect("70-byte PNG fixture");
+    let workbook_path = directory.path().join("image-converters.xlsx");
+
+    EasyExcel::write::<ImageConverterRow>(&workbook_path).do_write([ImageConverterRow {
+        primitive_bytes: bytes.clone(),
+        boxed_bytes: bytes.clone().into_boxed_slice(),
+        fixed_bytes,
+        file: image_path.clone(),
+        string_file: image_path.to_string_lossy().into_owned(),
+    }])?;
+
+    let mut archive = ZipArchive::new(File::open(&workbook_path)?)
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    let media_entries = (0..archive.len())
+        .map(|index| {
+            archive
+                .by_index(index)
+                .map(|entry| entry.name().to_owned())
+                .map_err(|error| ExcelError::Format(error.to_string()))
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|name| name.starts_with("xl/media/"))
+        .count();
+    assert_eq!(media_entries, 1);
+    let mut drawing_xml = String::new();
+    archive
+        .by_name("xl/drawings/drawing1.xml")
+        .map_err(|error| ExcelError::Format(error.to_string()))?
+        .read_to_string(&mut drawing_xml)?;
+    assert_eq!(drawing_xml.matches("<xdr:twoCellAnchor").count(), 5);
     Ok(())
 }
 

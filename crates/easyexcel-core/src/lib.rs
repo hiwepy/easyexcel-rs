@@ -1207,6 +1207,24 @@ pub trait Converter<T> {
     }
 }
 
+/// Java `StringImageConverter` equivalent for fields containing an image file path.
+///
+/// Use it with `#[excel(converter = StringImageConverter)]`. The file is read
+/// during row conversion; missing or unreadable files return an I/O error.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StringImageConverter;
+
+impl Converter<String> for StringImageConverter {
+    fn convert_to_excel_data(
+        &self,
+        context: &WriteConverterContext<'_, String>,
+    ) -> Result<CellValue> {
+        std::fs::read(context.value())
+            .map(CellValue::Image)
+            .map_err(Into::into)
+    }
+}
+
 trait ErasedConverter: Send + Sync {
     fn target_type_id(&self) -> TypeId;
     fn target_type_name(&self) -> &'static str;
@@ -1747,6 +1765,62 @@ impl FromExcelCell for NaiveDateTime {
 impl IntoExcelCell for NaiveDateTime {
     fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
         Ok(CellValue::DateTime(*self))
+    }
+}
+
+impl FromExcelCell for Vec<u8> {
+    fn from_excel_cell(value: Option<&CellValue>, context: &ConvertContext) -> Result<Self> {
+        let value = value.unwrap_or(&CellValue::Empty);
+        match value {
+            CellValue::Image(bytes) => Ok(bytes.clone()),
+            other => Err(context.invalid(other, "Vec<u8>")),
+        }
+    }
+}
+
+impl IntoExcelCell for Vec<u8> {
+    fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
+        Ok(CellValue::Image(self.clone()))
+    }
+}
+
+impl FromExcelCell for Box<[u8]> {
+    fn from_excel_cell(value: Option<&CellValue>, context: &ConvertContext) -> Result<Self> {
+        Vec::<u8>::from_excel_cell(value, context).map(Vec::into_boxed_slice)
+    }
+}
+
+impl IntoExcelCell for Box<[u8]> {
+    fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
+        Ok(CellValue::Image(self.to_vec()))
+    }
+}
+
+impl<const N: usize> FromExcelCell for [u8; N] {
+    fn from_excel_cell(value: Option<&CellValue>, context: &ConvertContext) -> Result<Self> {
+        Vec::<u8>::from_excel_cell(value, context)?
+            .try_into()
+            .map_err(|_| context.invalid(value.unwrap_or(&CellValue::Empty), "[u8; N]"))
+    }
+}
+
+impl<const N: usize> IntoExcelCell for [u8; N] {
+    fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
+        Ok(CellValue::Image(self.to_vec()))
+    }
+}
+
+impl FromExcelCell for PathBuf {
+    fn from_excel_cell(value: Option<&CellValue>, context: &ConvertContext) -> Result<Self> {
+        String::from_excel_cell(value, context).map(Self::from)
+    }
+}
+
+impl IntoExcelCell for PathBuf {
+    fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
+        std::fs::read(self)
+            .map(CellValue::Image)
+            .map_err(Into::into)
     }
 }
 

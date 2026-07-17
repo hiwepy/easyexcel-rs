@@ -106,6 +106,77 @@ fn cell_values_expose_converter_dispatch_types() {
 }
 
 #[test]
+fn image_converters_match_java_byte_array_and_file_write_semantics() -> Result<()> {
+    let conversion = context(None);
+    let bytes = vec![0x89, b'P', b'N', b'G'];
+    let image = CellValue::Image(bytes.clone());
+
+    assert_eq!(
+        Vec::<u8>::from_excel_cell(Some(&image), &conversion)?,
+        bytes
+    );
+    assert!(Vec::<u8>::from_excel_cell(Some(&CellValue::Empty), &conversion).is_err());
+    assert_eq!(bytes.to_excel_cell(&conversion)?, image);
+
+    let boxed = bytes.clone().into_boxed_slice();
+    assert_eq!(
+        Box::<[u8]>::from_excel_cell(Some(&image), &conversion)?,
+        boxed
+    );
+    assert_eq!(boxed.to_excel_cell(&conversion)?, image);
+
+    let fixed = <[u8; 4]>::from_excel_cell(Some(&image), &conversion)?;
+    assert_eq!(fixed, [0x89, b'P', b'N', b'G']);
+    assert_eq!(fixed.to_excel_cell(&conversion)?, image);
+    let short_image = CellValue::Image(vec![1, 2, 3]);
+    assert_eq!(
+        <[u8; 3]>::from_excel_cell(Some(&short_image), &conversion)?,
+        [1, 2, 3]
+    );
+    assert!(<[u8; 3]>::from_excel_cell(Some(&image), &conversion).is_err());
+    assert!(<[u8; 4]>::from_excel_cell(Some(&short_image), &conversion).is_err());
+    assert!(<[u8; 4]>::from_excel_cell(Some(&CellValue::Empty), &conversion).is_err());
+
+    let path = PathBuf::from_excel_cell(
+        Some(&CellValue::String("images/logo.png".to_owned())),
+        &conversion,
+    )?;
+    assert_eq!(path, PathBuf::from("images/logo.png"));
+
+    let directory = tempfile::tempdir()?;
+    let image_path = directory.path().join("logo.png");
+    std::fs::write(&image_path, &bytes)?;
+    assert_eq!(image_path.to_excel_cell(&conversion)?, image);
+    assert!(
+        directory
+            .path()
+            .join("missing.png")
+            .to_excel_cell(&conversion)
+            .is_err()
+    );
+
+    let column = ExcelColumn::new("image", "Image", Some(0), 0, None);
+    let path = image_path.to_string_lossy().into_owned();
+    let write_context = WriteConverterContext::new(&path, &column, &conversion);
+    assert_eq!(
+        StringImageConverter.convert_to_excel_data(&write_context)?,
+        image
+    );
+    let missing = directory
+        .path()
+        .join("missing.png")
+        .to_string_lossy()
+        .into_owned();
+    let write_context = WriteConverterContext::new(&missing, &column, &conversion);
+    assert!(
+        StringImageConverter
+            .convert_to_excel_data(&write_context)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn row_data_resolves_index_before_header_name() {
     let explicit = ExcelColumn::new("first", "Header", Some(1), 3, Some("0")).with_column_width(24);
     let named = ExcelColumn::new("second", "Header", None, i32::MAX, None);
