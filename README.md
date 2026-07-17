@@ -92,9 +92,9 @@ EasyExcel::write::<StyledUser>("styled-users.xlsx")
 # }
 ```
 
-Annotation colors use `0x00RRGGBB` RGB values. This is the Rust backend-neutral
-representation; Java EasyExcel's indexed-color `short` values are not accepted
-as equivalent numeric inputs.
+Style color values `0..=64` use Java EasyExcel's Apache POI indexed palette;
+larger integers use `0xRRGGBB` RGB. Likewise, `data_format = 14` selects a Java
+built-in format index, while `data_format = "0.00"` uses a custom Excel format.
 
 The same read and write builders automatically select the CSV engine for a
 `.csv` path. Typed mapping, listeners, column filters, and write handlers keep

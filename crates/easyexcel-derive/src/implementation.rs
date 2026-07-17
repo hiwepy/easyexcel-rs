@@ -415,7 +415,7 @@ fn parse_cell_style(
             .path
             .get_ident()
             .ok_or_else(|| property.error("style property must be an identifier"))?;
-        if let Some(assignment) = parse_cell_style_scalar(&property, name)? {
+        if let Some(assignment) = parse_cell_style_scalar(&property, name, crate_path)? {
             assignments.push(assignment);
             return Ok(());
         }
@@ -475,6 +475,7 @@ fn parse_cell_style(
 fn parse_cell_style_scalar(
     property: &ParseNestedMeta<'_>,
     name: &syn::Ident,
+    crate_path: &proc_macro2::TokenStream,
 ) -> syn::Result<Option<proc_macro2::TokenStream>> {
     let field = format_ident!("{name}");
     let assignment = match name.to_string().as_str() {
@@ -489,7 +490,9 @@ fn parse_cell_style_scalar(
         | "fill_background_color"
         | "fill_foreground_color" => {
             let value = parse_integer::<u32>(property)?;
-            quote!(style.#field = ::core::option::Option::Some(#value);)
+            quote!(style.#field = ::core::option::Option::Some(
+                #crate_path::ExcelColor::java_or_rgb(#value)
+            );)
         }
         "rotation" => {
             let value = parse_integer::<i16>(property)?;
@@ -500,8 +503,26 @@ fn parse_cell_style_scalar(
             quote!(style.indent = ::core::option::Option::Some(#value);)
         }
         "data_format" => {
-            let value: LitStr = property.value()?.parse()?;
-            quote!(style.data_format = ::core::option::Option::Some(#value);)
+            let value: Lit = property.value()?.parse()?;
+            match value {
+                Lit::Str(value) => quote!(style.data_format = ::core::option::Option::Some(
+                    #crate_path::ExcelDataFormat::Custom(#value)
+                );),
+                Lit::Int(value) => {
+                    value
+                        .base10_parse::<u8>()
+                        .map_err(|error| syn::Error::new_spanned(&value, error))?;
+                    quote!(style.data_format = ::core::option::Option::Some(
+                        #crate_path::ExcelDataFormat::Builtin(#value)
+                    );)
+                }
+                value => {
+                    return Err(syn::Error::new_spanned(
+                        value,
+                        "data format must be a built-in index or custom format string",
+                    ));
+                }
+            }
         }
         _ => return Ok(None),
     };
@@ -553,7 +574,9 @@ fn parse_font_style(
             }
             "color" => {
                 let value = parse_integer::<u32>(&property)?;
-                assignments.push(quote!(style.color = ::core::option::Option::Some(#value);));
+                assignments.push(quote!(style.color = ::core::option::Option::Some(
+                    #crate_path::ExcelColor::java_or_rgb(#value)
+                );));
             }
             "charset" => {
                 let value = parse_integer::<u8>(&property)?;

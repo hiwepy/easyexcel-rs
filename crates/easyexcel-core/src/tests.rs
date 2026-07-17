@@ -88,10 +88,15 @@ fn row_data_resolves_index_before_header_name() {
     assert_eq!(explicit.column_width, Some(24));
     assert_eq!(named.column_width, None);
     assert_eq!(ExcelWriteMetadata::default(), ExcelWriteMetadata::new());
+    assert_eq!(ExcelColor::java_or_rgb(10), ExcelColor::Indexed(10));
+    assert_eq!(
+        ExcelColor::java_or_rgb(0x00ff_0000),
+        ExcelColor::Rgb(0x00ff_0000)
+    );
     let cell_style = ExcelCellStyle {
         horizontal_alignment: Some(ExcelHorizontalAlignment::Center),
         fill_pattern: Some(ExcelFillPattern::Solid),
-        fill_foreground_color: Some(0x00ff_0000),
+        fill_foreground_color: Some(ExcelColor::Rgb(0x00ff_0000)),
         ..ExcelCellStyle::new()
     };
     let font_style = ExcelFontStyle {

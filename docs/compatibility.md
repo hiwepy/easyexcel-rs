@@ -41,7 +41,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | column width / auto width | `column_width` / `auto_width` | implemented |
 | `@ColumnWidth` / `@HeadRowHeight` / `@ContentRowHeight` | `#[excel(column_width, head_row_height, content_row_height)]` | implemented: field width overrides type width; explicit builder width overrides annotations |
 | `HorizontalCellStyleStrategy` | header and cycling content `CellStyle` | implemented |
-| `@HeadStyle` / `@ContentStyle` / `@HeadFontStyle` / `@ContentFontStyle` | `#[excel(head_style(...), content_style(...), head_font_style(...), content_font_style(...))]` | partial: XLSX cell/font metadata, field-over-type replacement, independent cell/font inheritance, explicit-style precedence, and OOXML verification implemented; Rust attributes use RGB colors while Java indexed-color numeric compatibility and Java fixture parity remain |
+| `@HeadStyle` / `@ContentStyle` / `@HeadFontStyle` / `@ContentFontStyle` | `#[excel(head_style(...), content_style(...), head_font_style(...), content_font_style(...))]` | partial: XLSX cell/font metadata, field-over-type replacement, independent cell/font inheritance, explicit-style precedence, POI indexed colors `0..=64`, RGB extensions, built-in/custom data formats, and official Java annotation color expectations are verified; custom HSSF palettes and XLS writing remain |
 | formulas/images/comments/hyperlinks | rich `CellValue` variants | partial: XLSX write implemented |
 | `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |
 | `LoopMergeStrategy` | repeating data-row merge metadata | implemented |

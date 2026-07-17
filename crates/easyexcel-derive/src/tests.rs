@@ -127,7 +127,7 @@ fn style_options_parse_java_equivalents_and_reject_invalid_values() {
                 shrink_to_fit = true,
                 data_format = "0.00"
             ),
-            content_style(wrapped = false),
+            content_style(wrapped = false, data_format = 14, fill_foreground_color = 10),
             head_font_style(
                 font_name = "Arial",
                 font_height_in_points = 12.5,
@@ -163,7 +163,9 @@ fn style_options_parse_java_equivalents_and_reject_invalid_values() {
         "head_style(indent)",
         "head_style(indent = \"deep\")",
         "head_style(data_format)",
-        "head_style(data_format = 1)",
+        "head_style(data_format = true)",
+        "head_style(data_format = crate::FORMAT)",
+        "head_style(data_format = 256)",
         "head_style(fill_foreground_color)",
         "head_style(fill_foreground_color = \"red\")",
         "head_style(horizontal_alignment)",

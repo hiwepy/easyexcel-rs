@@ -228,21 +228,23 @@ impl ExcelRow for StyledAnnotationRow {
     fn schema() -> &'static [ExcelColumn] {
         const FIELD_HEAD_STYLE: ExcelCellStyle = ExcelCellStyle {
             fill_pattern: Some(ExcelFillPattern::Solid),
-            fill_foreground_color: Some(0x0000_00ff),
+            fill_foreground_color: Some(ExcelColor::Indexed(14)),
             horizontal_alignment: Some(ExcelHorizontalAlignment::Left),
             ..ExcelCellStyle::new()
         };
         const FIELD_HEAD_FONT: ExcelFontStyle = ExcelFontStyle {
-            font_height_in_points: Some(20.0),
+            font_height_in_points: Some(40.0),
+            color: Some(ExcelColor::Indexed(51)),
             ..ExcelFontStyle::new()
         };
         const FIELD_CONTENT_STYLE: ExcelCellStyle = ExcelCellStyle {
-            border_bottom: Some(ExcelBorderStyle::Double),
+            fill_pattern: Some(ExcelFillPattern::Solid),
+            fill_foreground_color: Some(ExcelColor::Indexed(40)),
             ..ExcelCellStyle::new()
         };
         const FIELD_CONTENT_FONT: ExcelFontStyle = ExcelFontStyle {
-            italic: Some(false),
-            bold: Some(true),
+            font_height_in_points: Some(50.0),
+            color: Some(ExcelColor::Indexed(12)),
             ..ExcelFontStyle::new()
         };
         const COLUMNS: &[ExcelColumn] = &[
@@ -259,23 +261,25 @@ impl ExcelRow for StyledAnnotationRow {
     fn write_metadata() -> &'static ExcelWriteMetadata {
         const HEAD_STYLE: ExcelCellStyle = ExcelCellStyle {
             fill_pattern: Some(ExcelFillPattern::Solid),
-            fill_foreground_color: Some(0x00ff_0000),
+            fill_foreground_color: Some(ExcelColor::Indexed(10)),
             horizontal_alignment: Some(ExcelHorizontalAlignment::Center),
             ..ExcelCellStyle::new()
         };
         const CONTENT_STYLE: ExcelCellStyle = ExcelCellStyle {
             border_bottom: Some(ExcelBorderStyle::Thin),
             fill_pattern: Some(ExcelFillPattern::Solid),
-            fill_foreground_color: Some(0x00ff_ff00),
+            fill_foreground_color: Some(ExcelColor::Indexed(17)),
             ..ExcelCellStyle::new()
         };
         const HEAD_FONT: ExcelFontStyle = ExcelFontStyle {
             bold: Some(false),
-            color: Some(0x00ff_0000),
+            font_height_in_points: Some(20.0),
+            color: Some(ExcelColor::Indexed(15)),
             ..ExcelFontStyle::new()
         };
         const CONTENT_FONT: ExcelFontStyle = ExcelFontStyle {
-            italic: Some(true),
+            font_height_in_points: Some(30.0),
+            color: Some(ExcelColor::Indexed(22)),
             ..ExcelFontStyle::new()
         };
         const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new()
@@ -812,6 +816,19 @@ fn style_model_maps_every_alignment_and_cycles_content_rows() -> Result<()> {
     ] {
         assert_eq!(annotation_font_script(script), expected);
     }
+    assert_eq!(
+        annotation_color(ExcelColor::Rgb(0x0012_3456)),
+        Color::RGB(0x0012_3456)
+    );
+    for index in 0..=65 {
+        let _ = annotation_color(ExcelColor::Indexed(index));
+    }
+    assert_eq!(
+        annotation_color(ExcelColor::Indexed(10)),
+        Color::RGB(0x00ff_0000)
+    );
+    assert_eq!(annotation_color(ExcelColor::Indexed(64)), Color::Automatic);
+    assert_eq!(annotation_color(ExcelColor::Indexed(65)), Color::Default);
 
     let annotation_cell = ExcelCellStyle {
         hidden: Some(true),
@@ -826,18 +843,28 @@ fn style_model_maps_every_alignment_and_cycles_content_rows() -> Result<()> {
         border_right: Some(ExcelBorderStyle::Medium),
         border_top: Some(ExcelBorderStyle::Dashed),
         border_bottom: Some(ExcelBorderStyle::Double),
-        left_border_color: Some(0x0011_2233),
-        right_border_color: Some(0x0022_3344),
-        top_border_color: Some(0x0033_4455),
-        bottom_border_color: Some(0x0044_5566),
+        left_border_color: Some(ExcelColor::Rgb(0x0011_2233)),
+        right_border_color: Some(ExcelColor::Rgb(0x0022_3344)),
+        top_border_color: Some(ExcelColor::Rgb(0x0033_4455)),
+        bottom_border_color: Some(ExcelColor::Rgb(0x0044_5566)),
         fill_pattern: Some(ExcelFillPattern::Solid),
-        fill_background_color: Some(0x0055_6677),
-        fill_foreground_color: Some(0x0066_7788),
+        fill_background_color: Some(ExcelColor::Rgb(0x0055_6677)),
+        fill_foreground_color: Some(ExcelColor::Rgb(0x0066_7788)),
         shrink_to_fit: Some(true),
-        data_format: Some("0.00"),
+        data_format: Some(ExcelDataFormat::Custom("0.00")),
     };
     assert_ne!(
         apply_annotation_cell_style(Format::new(), annotation_cell),
+        Format::new()
+    );
+    assert_ne!(
+        apply_annotation_cell_style(
+            Format::new(),
+            ExcelCellStyle {
+                data_format: Some(ExcelDataFormat::Builtin(14)),
+                ..ExcelCellStyle::new()
+            }
+        ),
         Format::new()
     );
     let disabled_cell = ExcelCellStyle {
@@ -855,7 +882,7 @@ fn style_model_maps_every_alignment_and_cycles_content_rows() -> Result<()> {
         font_height_in_points: Some(12.5),
         italic: Some(true),
         strikeout: Some(true),
-        color: Some(0x0077_8899),
+        color: Some(ExcelColor::Rgb(0x0077_8899)),
         type_offset: Some(ExcelFontScript::Superscript),
         underline: Some(ExcelUnderline::DoubleAccounting),
         charset: Some(1),
@@ -954,15 +981,40 @@ fn annotation_styles_apply_field_type_and_builder_precedence() -> Result<()> {
 
     let styles = zip_entry(&path, "xl/styles.xml")?;
     assert!(styles.contains("rgb=\"FF00FF00\""));
-    assert!(styles.contains("rgb=\"FF0000FF\""));
     assert!(styles.contains("rgb=\"FFFF0000\""));
-    assert!(styles.contains("rgb=\"FFFFFF00\""));
-    assert!(styles.contains("<sz val=\"20\"/>"));
+    assert!(styles.contains("rgb=\"FF00CCFF\""));
+    assert!(styles.contains("rgb=\"FF008000\""));
+    assert!(styles.contains("rgb=\"FF0000FF\""));
+    assert!(styles.contains("rgb=\"FFC0C0C0\""));
+    assert!(styles.contains("<sz val=\"50\"/>"));
     assert!(styles.contains("style=\"thin\""));
 
     let sheet = zip_entry(&path, "xl/worksheets/sheet1.xml")?;
     assert_ne!(cell_style_id(&sheet, "A1"), cell_style_id(&sheet, "B1"));
     assert_ne!(cell_style_id(&sheet, "A2"), cell_style_id(&sheet, "B2"));
+
+    let java_path = directory.path().join("java-indexed-annotation-styles.xlsx");
+    write_xlsx::<StyledAnnotationRow, _>(
+        &java_path,
+        &WriteOptions::default(),
+        vec![StyledAnnotationRow],
+    )?;
+    let java_styles = zip_entry(&java_path, "xl/styles.xml")?;
+    for expected in [
+        "rgb=\"FFFF00FF\"",
+        "rgb=\"FFFFCC00\"",
+        "rgb=\"FF00CCFF\"",
+        "rgb=\"FF0000FF\"",
+        "rgb=\"FFFF0000\"",
+        "rgb=\"FF00FFFF\"",
+        "rgb=\"FF008000\"",
+        "rgb=\"FFC0C0C0\"",
+    ] {
+        assert!(java_styles.contains(expected), "missing {expected}");
+    }
+    for expected in [20, 30, 40, 50] {
+        assert!(java_styles.contains(&format!("<sz val=\"{expected}\"/>")));
+    }
     Ok(())
 }
 

@@ -259,6 +259,36 @@ pub enum ExcelFontScript {
     Subscript,
 }
 
+/// A color supplied by Java-compatible palette index or by explicit RGB value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcelColor {
+    /// A Java EasyExcel/Apache POI indexed palette color.
+    Indexed(u8),
+    /// A backend-neutral RGB color in `0xRRGGBB` form.
+    Rgb(u32),
+}
+
+impl ExcelColor {
+    /// Interprets Java palette indexes `0..=64` as indexed colors and larger values as RGB.
+    #[must_use]
+    pub const fn java_or_rgb(value: u32) -> Self {
+        if value <= 64 {
+            Self::Indexed(value.to_le_bytes()[0])
+        } else {
+            Self::Rgb(value)
+        }
+    }
+}
+
+/// A Java built-in number-format index or a custom Excel format string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcelDataFormat {
+    /// A Java EasyExcel/Apache POI built-in format index.
+    Builtin(u8),
+    /// A custom Excel number-format string.
+    Custom(&'static str),
+}
+
 /// Cell-style properties generated from `HeadStyle` or `ContentStyle` equivalents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ExcelCellStyle {
@@ -286,24 +316,24 @@ pub struct ExcelCellStyle {
     pub border_top: Option<ExcelBorderStyle>,
     /// Bottom border style.
     pub border_bottom: Option<ExcelBorderStyle>,
-    /// Left border RGB color.
-    pub left_border_color: Option<u32>,
-    /// Right border RGB color.
-    pub right_border_color: Option<u32>,
-    /// Top border RGB color.
-    pub top_border_color: Option<u32>,
-    /// Bottom border RGB color.
-    pub bottom_border_color: Option<u32>,
+    /// Left border indexed or RGB color.
+    pub left_border_color: Option<ExcelColor>,
+    /// Right border indexed or RGB color.
+    pub right_border_color: Option<ExcelColor>,
+    /// Top border indexed or RGB color.
+    pub top_border_color: Option<ExcelColor>,
+    /// Bottom border indexed or RGB color.
+    pub bottom_border_color: Option<ExcelColor>,
     /// Fill pattern.
     pub fill_pattern: Option<ExcelFillPattern>,
-    /// Fill background RGB color.
-    pub fill_background_color: Option<u32>,
-    /// Fill foreground RGB color.
-    pub fill_foreground_color: Option<u32>,
+    /// Fill background indexed or RGB color.
+    pub fill_background_color: Option<ExcelColor>,
+    /// Fill foreground indexed or RGB color.
+    pub fill_foreground_color: Option<ExcelColor>,
     /// Whether text shrinks to fit the cell.
     pub shrink_to_fit: Option<bool>,
-    /// Custom Excel number format string.
-    pub data_format: Option<&'static str>,
+    /// Built-in or custom Excel number format.
+    pub data_format: Option<ExcelDataFormat>,
 }
 
 impl ExcelCellStyle {
@@ -347,8 +377,8 @@ pub struct ExcelFontStyle {
     pub italic: Option<bool>,
     /// Strike-through rendering.
     pub strikeout: Option<bool>,
-    /// Font RGB color.
-    pub color: Option<u32>,
+    /// Font indexed or RGB color.
+    pub color: Option<ExcelColor>,
     /// Superscript or subscript positioning.
     pub type_offset: Option<ExcelFontScript>,
     /// Underline rendering.

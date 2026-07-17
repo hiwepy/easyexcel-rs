@@ -7,16 +7,17 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use easyexcel_core::{
-    CellValue, CsvCharset, ExcelBorderStyle, ExcelCellStyle, ExcelColumn, ExcelError,
-    ExcelFillPattern, ExcelFontScript, ExcelFontStyle, ExcelHorizontalAlignment, ExcelRow,
-    ExcelUnderline, ExcelVerticalAlignment, ExcelWriteMetadata, Result, WriteCellContext,
-    WriteHandler, WriteRowContext, WriteSheetContext, WriteWorkbookContext,
+    CellValue, CsvCharset, ExcelBorderStyle, ExcelCellStyle, ExcelColor, ExcelColumn,
+    ExcelDataFormat, ExcelError, ExcelFillPattern, ExcelFontScript, ExcelFontStyle,
+    ExcelHorizontalAlignment, ExcelRow, ExcelUnderline, ExcelVerticalAlignment, ExcelWriteMetadata,
+    Result, WriteCellContext, WriteHandler, WriteRowContext, WriteSheetContext,
+    WriteWorkbookContext,
 };
 use encoding_rs::{CoderResult, Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use ms_offcrypto_writer::Ecma376AgileWriter;
 use rust_xlsxwriter::{
-    Format, FormatAlign, FormatBorder, FormatPattern, FormatScript, FormatUnderline, Image, Note,
-    Workbook, Worksheet,
+    Color, Format, FormatAlign, FormatBorder, FormatPattern, FormatScript, FormatUnderline, Image,
+    Note, Workbook, Worksheet,
 };
 
 /// Horizontal cell alignment.
@@ -2114,25 +2115,25 @@ fn apply_annotation_cell_style(mut format: Format, style: ExcelCellStyle) -> For
         format = format.set_border_bottom(annotation_border_style(border));
     }
     if let Some(color) = style.left_border_color {
-        format = format.set_border_left_color(color);
+        format = format.set_border_left_color(annotation_color(color));
     }
     if let Some(color) = style.right_border_color {
-        format = format.set_border_right_color(color);
+        format = format.set_border_right_color(annotation_color(color));
     }
     if let Some(color) = style.top_border_color {
-        format = format.set_border_top_color(color);
+        format = format.set_border_top_color(annotation_color(color));
     }
     if let Some(color) = style.bottom_border_color {
-        format = format.set_border_bottom_color(color);
+        format = format.set_border_bottom_color(annotation_color(color));
     }
     if let Some(pattern) = style.fill_pattern {
         format = format.set_pattern(annotation_fill_pattern(pattern));
     }
     if let Some(color) = style.fill_background_color {
-        format = format.set_background_color(color);
+        format = format.set_background_color(annotation_color(color));
     }
     if let Some(color) = style.fill_foreground_color {
-        format = format.set_foreground_color(color);
+        format = format.set_foreground_color(annotation_color(color));
     }
     if let Some(shrink) = style.shrink_to_fit {
         format = if shrink {
@@ -2142,7 +2143,10 @@ fn apply_annotation_cell_style(mut format: Format, style: ExcelCellStyle) -> For
         };
     }
     if let Some(data_format) = style.data_format {
-        format = format.set_num_format(data_format);
+        format = match data_format {
+            ExcelDataFormat::Builtin(index) => format.set_num_format_index(index),
+            ExcelDataFormat::Custom(value) => format.set_num_format(value),
+        };
     }
     format
 }
@@ -2169,7 +2173,7 @@ fn apply_annotation_font_style(mut format: Format, style: ExcelFontStyle) -> For
         };
     }
     if let Some(color) = style.color {
-        format = format.set_font_color(color);
+        format = format.set_font_color(annotation_color(color));
     }
     if let Some(script) = style.type_offset {
         format = format.set_font_script(annotation_font_script(script));
@@ -2188,6 +2192,68 @@ fn apply_annotation_font_style(mut format: Format, style: ExcelFontStyle) -> For
         };
     }
     format
+}
+
+fn annotation_color(color: ExcelColor) -> Color {
+    match color {
+        ExcelColor::Rgb(value) => Color::RGB(value),
+        ExcelColor::Indexed(64) => Color::Automatic,
+        ExcelColor::Indexed(index) => indexed_color(index),
+    }
+}
+
+fn indexed_color(index: u8) -> Color {
+    let rgb = match index {
+        0 | 8 => 0x0000_0000,
+        1 | 9 => 0x00ff_ffff,
+        2 | 10 => 0x00ff_0000,
+        3 | 11 => 0x0000_ff00,
+        4 | 12 | 39 => 0x0000_00ff,
+        5 | 13 | 34 => 0x00ff_ff00,
+        6 | 14 | 33 => 0x00ff_00ff,
+        7 | 15 | 35 => 0x0000_ffff,
+        16 | 37 => 0x0080_0000,
+        17 => 0x0000_8000,
+        18 | 32 => 0x0000_0080,
+        19 => 0x0080_8000,
+        20 | 36 => 0x0080_0080,
+        21 | 38 => 0x0000_8080,
+        22 => 0x00c0_c0c0,
+        23 => 0x0080_8080,
+        24 => 0x0099_99ff,
+        25 => 0x007f_0000,
+        26 => 0x00ff_ffcc,
+        27 | 41 => 0x00cc_ffff,
+        28 => 0x0066_0066,
+        29 => 0x00ff_8080,
+        30 => 0x0000_66cc,
+        31 => 0x00cc_ccff,
+        40 => 0x0000_ccff,
+        42 => 0x00cc_ffcc,
+        43 => 0x00ff_ff99,
+        44 => 0x0099_ccff,
+        45 => 0x00ff_99cc,
+        46 => 0x00cc_99ff,
+        47 => 0x00ff_cc99,
+        48 => 0x0033_66ff,
+        49 => 0x0033_cccc,
+        50 => 0x0099_cc00,
+        51 => 0x00ff_cc00,
+        52 => 0x00ff_9900,
+        53 => 0x00ff_6600,
+        54 => 0x0066_6699,
+        55 => 0x0096_9696,
+        56 => 0x0000_3366,
+        57 => 0x0033_9966,
+        58 => 0x0000_3300,
+        59 => 0x0033_3300,
+        60 => 0x0099_3300,
+        61 => 0x0099_3366,
+        62 => 0x0033_3399,
+        63 => 0x0033_3333,
+        _ => return Color::Default,
+    };
+    Color::RGB(rgb)
 }
 
 const fn annotation_horizontal_format_align(alignment: ExcelHorizontalAlignment) -> FormatAlign {
