@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io;
+use std::io::{self, Cursor, Read, Write};
+use std::net::TcpListener;
 use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 use chrono::{NaiveDate, NaiveDateTime};
 
@@ -173,6 +176,104 @@ fn image_converters_match_java_byte_array_and_file_write_semantics() -> Result<(
             .convert_to_excel_data(&write_context)
             .is_err()
     );
+    Ok(())
+}
+
+struct FailingImageReader;
+
+impl Read for FailingImageReader {
+    fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+        Err(io::Error::other("injected image stream failure"))
+    }
+}
+
+fn serve_image_once(
+    status: &str,
+    body: Vec<u8>,
+    declared_length: usize,
+) -> (Url, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test image server");
+    let address = listener.local_addr().expect("test image server address");
+    let status = status.to_owned();
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept image request");
+        let mut request = [0_u8; 1024];
+        let _ = stream.read(&mut request).expect("read image request");
+        write!(
+            stream,
+            "HTTP/1.1 {status}\r\nContent-Length: {declared_length}\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write image response head");
+        stream.write_all(&body).expect("write image response body");
+    });
+    (
+        Url::parse(&format!("http://{address}/logo.png")).expect("valid local image URL"),
+        handle,
+    )
+}
+
+#[test]
+fn input_stream_and_url_converters_match_java_ownership_and_timeout_semantics() -> Result<()> {
+    let conversion = context(None);
+    let bytes = vec![0x89, b'P', b'N', b'G'];
+    let stream = ImageInputStream::from(Cursor::new(bytes.clone()));
+    assert_eq!(
+        stream.to_excel_cell(&conversion)?,
+        CellValue::Image(bytes.clone())
+    );
+    assert_eq!(
+        stream.to_excel_cell(&conversion)?,
+        CellValue::Image(Vec::new())
+    );
+    assert_eq!(stream.into_inner().position(), bytes.len() as u64);
+    assert!(
+        ImageInputStream::new(FailingImageReader)
+            .to_excel_cell(&conversion)
+            .is_err()
+    );
+    let converter_stream = ImageInputStream::new(Cursor::new(bytes.clone()));
+    let stream_column = ExcelColumn::new("stream", "Stream", Some(0), 0, None);
+    let stream_context = WriteConverterContext::new(&converter_stream, &stream_column, &conversion);
+    assert_eq!(
+        InputStreamImageConverter.convert_to_excel_data(&stream_context)?,
+        CellValue::Image(bytes.clone())
+    );
+
+    let defaults = UrlImageConverter::default();
+    assert_eq!(
+        defaults.connect_timeout(),
+        UrlImageConverter::DEFAULT_CONNECT_TIMEOUT
+    );
+    assert_eq!(
+        defaults.read_timeout(),
+        UrlImageConverter::DEFAULT_READ_TIMEOUT
+    );
+    let custom = UrlImageConverter::new(Duration::from_secs(2), Duration::from_secs(3));
+    assert_eq!(custom.connect_timeout(), Duration::from_secs(2));
+    assert_eq!(custom.read_timeout(), Duration::from_secs(3));
+    let (url, server) = serve_image_once("200 OK", bytes.clone(), bytes.len());
+    assert_eq!(
+        url.to_excel_cell(&conversion)?,
+        CellValue::Image(bytes.clone())
+    );
+    server.join().expect("image server joins");
+
+    let (url, server) = serve_image_once("200 OK", bytes.clone(), bytes.len());
+    let column = ExcelColumn::new("image", "Image", Some(0), 0, None);
+    let write_context = WriteConverterContext::new(&url, &column, &conversion);
+    assert_eq!(
+        custom.convert_to_excel_data(&write_context)?,
+        CellValue::Image(bytes.clone())
+    );
+    server.join().expect("image server joins");
+
+    let (url, server) = serve_image_once("404 Not Found", Vec::new(), 0);
+    assert!(url.to_excel_cell(&conversion).is_err());
+    server.join().expect("image server joins");
+
+    let (url, server) = serve_image_once("200 OK", bytes.clone(), bytes.len() + 1);
+    assert!(url.to_excel_cell(&conversion).is_err());
+    server.join().expect("image server joins");
     Ok(())
 }
 

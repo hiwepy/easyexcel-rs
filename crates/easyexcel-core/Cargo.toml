@@ -12,6 +12,8 @@ bigdecimal.workspace = true
 chrono.workspace = true
 num-bigint.workspace = true
 thiserror.workspace = true
+ureq.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

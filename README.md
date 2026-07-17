@@ -281,7 +281,10 @@ without changing ordinary scalar conversion.
 
 Java's default image write converters map naturally to Rust field types:
 `Vec<u8>`, `Box<[u8]>`, fixed byte arrays, and `PathBuf` write real XLSX
-drawing/media parts. String paths can opt in explicitly with
+drawing/media parts. `ImageInputStream<R>` consumes the remaining bytes from a
+caller-owned `Read` value without closing it, while the re-exported `Url` type
+downloads HTTP/HTTPS image bytes with Java's one-second connect and five-second
+read defaults. String paths can opt in explicitly with
 `#[excel(converter = easyexcel::StringImageConverter)]`, matching Java's
 annotation-selected `StringImageConverter`; unreadable files return an error
 instead of writing a path as cell text.

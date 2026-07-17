@@ -1,11 +1,14 @@
 //! Core data model and extension points for `easyexcel-rs`.
 
 use std::any::{Any, TypeId, type_name};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Arbitrary-precision decimal type used for Java `BigDecimal`-compatible cells.
 pub use bigdecimal::BigDecimal;
@@ -14,6 +17,8 @@ use chrono::{NaiveDate, NaiveDateTime};
 /// Arbitrary-precision integer type used for Java `BigInteger`-compatible fields.
 pub use num_bigint::BigInt;
 use thiserror::Error;
+/// Parsed URL type accepted by the default Java-compatible URL image converter.
+pub use url::Url;
 
 /// The result type used by all easyexcel crates.
 pub type Result<T> = std::result::Result<T, ExcelError>;
@@ -1223,6 +1228,138 @@ impl Converter<String> for StringImageConverter {
             .map(CellValue::Image)
             .map_err(Into::into)
     }
+}
+
+/// Java `InputStreamImageConverter` equivalent for a stateful Rust [`Read`] source.
+///
+/// Conversion consumes the bytes remaining in the reader and deliberately does
+/// not close or replace it, matching Java `EasyExcel`'s ownership contract for a
+/// caller-supplied `InputStream`.
+#[derive(Debug)]
+pub struct ImageInputStream<R> {
+    reader: RefCell<R>,
+}
+
+impl<R> ImageInputStream<R> {
+    /// Wraps a reader whose remaining bytes represent one image.
+    #[must_use]
+    pub const fn new(reader: R) -> Self {
+        Self {
+            reader: RefCell::new(reader),
+        }
+    }
+
+    /// Returns the wrapped reader, preserving its position after conversion.
+    #[must_use]
+    pub fn into_inner(self) -> R {
+        self.reader.into_inner()
+    }
+}
+
+impl<R> From<R> for ImageInputStream<R> {
+    fn from(reader: R) -> Self {
+        Self::new(reader)
+    }
+}
+
+impl<R: Read> IntoExcelCell for ImageInputStream<R> {
+    fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
+        read_image_bytes(&mut *self.reader.borrow_mut()).map(CellValue::Image)
+    }
+}
+
+fn read_image_bytes(reader: &mut dyn Read) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Java `InputStreamImageConverter` equivalent for annotation-selected stream fields.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InputStreamImageConverter;
+
+impl<R: Read> Converter<ImageInputStream<R>> for InputStreamImageConverter {
+    fn convert_to_excel_data(
+        &self,
+        context: &WriteConverterContext<'_, ImageInputStream<R>>,
+    ) -> Result<CellValue> {
+        context.value().to_excel_cell(context.convert_context())
+    }
+}
+
+/// Java `UrlImageConverter` equivalent with Java's default timeout values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UrlImageConverter {
+    connect_timeout: Duration,
+    read_timeout: Duration,
+}
+
+impl UrlImageConverter {
+    /// Java `EasyExcel`'s default URL connection timeout.
+    pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
+    /// Java `EasyExcel`'s default URL response-read timeout.
+    pub const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Creates a converter with explicit connection and response-read timeouts.
+    #[must_use]
+    pub const fn new(connect_timeout: Duration, read_timeout: Duration) -> Self {
+        Self {
+            connect_timeout,
+            read_timeout,
+        }
+    }
+
+    /// Returns the configured connection timeout.
+    #[must_use]
+    pub fn connect_timeout(self) -> Duration {
+        self.connect_timeout
+    }
+
+    /// Returns the configured response-read timeout.
+    #[must_use]
+    pub fn read_timeout(self) -> Duration {
+        self.read_timeout
+    }
+
+    fn download(self, value: &Url) -> Result<Vec<u8>> {
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_connect(Some(self.connect_timeout))
+            .timeout_recv_body(Some(self.read_timeout))
+            .build()
+            .into();
+        let mut response = agent.get(value.as_str()).call().map_err(url_image_error)?;
+        let mut bytes = Vec::new();
+        response
+            .body_mut()
+            .as_reader()
+            .read_to_end(&mut bytes)
+            .map_err(url_image_error)?;
+        Ok(bytes)
+    }
+}
+
+impl Default for UrlImageConverter {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_CONNECT_TIMEOUT, Self::DEFAULT_READ_TIMEOUT)
+    }
+}
+
+impl Converter<Url> for UrlImageConverter {
+    fn convert_to_excel_data(&self, context: &WriteConverterContext<'_, Url>) -> Result<CellValue> {
+        self.download(context.value()).map(CellValue::Image)
+    }
+}
+
+impl IntoExcelCell for Url {
+    fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
+        UrlImageConverter::default()
+            .download(self)
+            .map(CellValue::Image)
+    }
+}
+
+fn url_image_error(error: impl Display) -> ExcelError {
+    ExcelError::Io(std::io::Error::other(error.to_string()))
 }
 
 trait ErasedConverter: Send + Sync {

@@ -2,14 +2,17 @@
 
 use std::cell::RefCell;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Cursor, Read, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::thread;
 
 use chrono::NaiveDate;
 use easyexcel::{
     AnalysisContext, BigInt, CellStyle, CellValue, Converter, EasyExcel, ExcelColumn, ExcelError,
-    ExcelRow, HorizontalAlignment, PageReadListener, ReadConverterContext, ReadListener, Result,
+    ExcelRow, HorizontalAlignment, ImageInputStream, InputStreamImageConverter, IntoExcelCell,
+    PageReadListener, ReadConverterContext, ReadListener, Result, Url, UrlImageConverter,
     VerticalAlignment, WriteConverterContext,
 };
 use tempfile::tempdir;
@@ -39,6 +42,14 @@ struct ImageConverterRow {
     file: PathBuf,
     #[excel(name = "String file", index = 4, converter = easyexcel::StringImageConverter)]
     string_file: String,
+}
+
+#[derive(Debug, ExcelRow)]
+struct StreamUrlImageRow {
+    #[excel(name = "InputStream", index = 0, converter = InputStreamImageConverter)]
+    stream: ImageInputStream<Cursor<Vec<u8>>>,
+    #[excel(name = "URL", index = 1, converter = UrlImageConverter)]
+    url: Url,
 }
 
 #[derive(Default)]
@@ -217,6 +228,30 @@ fn tiny_png() -> Vec<u8> {
     ]
 }
 
+fn serve_image_once(
+    status: &str,
+    body: Vec<u8>,
+    declared_length: usize,
+) -> Result<(Url, thread::JoinHandle<()>)> {
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let address = listener.local_addr()?;
+    let status = status.to_owned();
+    let server = thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("accept image request");
+        let mut request = [0_u8; 1024];
+        let _ = socket.read(&mut request).expect("read image request");
+        write!(
+            socket,
+            "HTTP/1.1 {status}\r\nContent-Length: {declared_length}\r\nConnection: close\r\n\r\n"
+        )
+        .expect("write image response head");
+        socket.write_all(&body).expect("write image response body");
+    });
+    let url = Url::parse(&format!("http://{address}/logo.png"))
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    Ok((url, server))
+}
+
 #[test]
 fn writes_and_reads_typed_rows_with_java_style_builders() -> Result<()> {
     let directory = tempdir()?;
@@ -369,6 +404,64 @@ fn derive_uses_java_style_byte_array_and_file_image_converters() -> Result<()> {
         .map_err(|error| ExcelError::Format(error.to_string()))?
         .read_to_string(&mut drawing_xml)?;
     assert_eq!(drawing_xml.matches("<xdr:twoCellAnchor").count(), 5);
+    Ok(())
+}
+
+#[test]
+fn derive_uses_java_style_input_stream_and_url_image_converters() -> Result<()> {
+    let bytes = tiny_png();
+    let probe_stream = ImageInputStream::from(Cursor::new(bytes.clone()));
+    assert_eq!(probe_stream.into_inner().into_inner(), bytes);
+    let defaults = UrlImageConverter::default();
+    assert_eq!(
+        defaults.connect_timeout(),
+        UrlImageConverter::DEFAULT_CONNECT_TIMEOUT
+    );
+    assert_eq!(
+        defaults.read_timeout(),
+        UrlImageConverter::DEFAULT_READ_TIMEOUT
+    );
+    let (url, server) = serve_image_once("200 OK", bytes.clone(), bytes.len())?;
+    let directory = tempdir()?;
+    let workbook_path = directory.path().join("stream-url-images.xlsx");
+
+    EasyExcel::write::<StreamUrlImageRow>(&workbook_path).do_write([StreamUrlImageRow {
+        stream: ImageInputStream::new(Cursor::new(bytes.clone())),
+        url,
+    }])?;
+    server.join().expect("image server joins");
+
+    let conversion = easyexcel::ConvertContext {
+        sheet_name: "Images".to_owned(),
+        row_index: 1,
+        column_index: Some(1),
+        field: "url",
+        format: None,
+    };
+    let (url, server) = serve_image_once("404 Not Found", Vec::new(), 0)?;
+    assert!(url.to_excel_cell(&conversion).is_err());
+    server.join().expect("image server joins");
+    let (url, server) = serve_image_once("200 OK", bytes.clone(), bytes.len() + 1)?;
+    assert!(url.to_excel_cell(&conversion).is_err());
+    server.join().expect("image server joins");
+    let column = ExcelColumn::new("stream", "InputStream", Some(0), 0, None);
+    let read_context = ReadConverterContext::new(None, &column, &conversion);
+    assert!(
+        Converter::<ImageInputStream<Cursor<Vec<u8>>>>::convert_to_rust_data(
+            &InputStreamImageConverter,
+            &read_context,
+        )
+        .is_err()
+    );
+
+    let mut archive = ZipArchive::new(File::open(&workbook_path)?)
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    let mut drawing_xml = String::new();
+    archive
+        .by_name("xl/drawings/drawing1.xml")
+        .map_err(|error| ExcelError::Format(error.to_string()))?
+        .read_to_string(&mut drawing_xml)?;
+    assert_eq!(drawing_xml.matches("<xdr:twoCellAnchor").count(), 2);
     Ok(())
 }
 
