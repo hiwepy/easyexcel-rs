@@ -364,22 +364,39 @@ where
     let mut current_index = None;
     let mut current_cells = Vec::new();
     let mut headers = Arc::new(HashMap::new());
+    let mut next_row_index = 0;
 
     while let Some(cell) = reader.next_cell().map_err(format_error)? {
         let (row, column) = cell.get_position();
-        if current_index.is_some_and(|current| current != row)
-            && consumer.process(
+        if current_index != Some(row) {
+            if let Some(current) = current_index {
+                if consumer.process(
+                    sheet_no,
+                    sheet_name,
+                    current,
+                    std::mem::take(&mut current_cells),
+                    options,
+                    &mut headers,
+                )? == ReadFlow::Stop
+                {
+                    return Ok(ReadFlow::Stop);
+                }
+                next_row_index = current.saturating_add(1);
+            }
+            if process_missing_rows(
+                next_row_index,
+                row,
                 sheet_no,
                 sheet_name,
-                current_index.expect("row index exists"),
-                std::mem::take(&mut current_cells),
                 options,
                 &mut headers,
+                consumer,
             )? == ReadFlow::Stop
-        {
-            return Ok(ReadFlow::Stop);
+            {
+                return Ok(ReadFlow::Stop);
+            }
+            current_index = Some(row);
         }
-        current_index = Some(row);
         let column = to_column_index(column)?;
         if current_cells.len() <= column {
             current_cells.resize(column + 1, CellValue::Empty);
@@ -402,6 +419,32 @@ where
 
     let final_row = current_index.unwrap_or_default();
     consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))?;
+    Ok(ReadFlow::Continue)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_missing_rows(
+    start_row: u32,
+    end_row: u32,
+    sheet_no: usize,
+    sheet_name: &str,
+    options: &ReadOptions,
+    headers: &mut Arc<HashMap<String, usize>>,
+    consumer: &mut dyn RowConsumer,
+) -> Result<ReadFlow> {
+    for row_index in start_row..end_row {
+        if consumer.process(
+            sheet_no,
+            sheet_name,
+            row_index,
+            Vec::new(),
+            options,
+            headers,
+        )? == ReadFlow::Stop
+        {
+            return Ok(ReadFlow::Stop);
+        }
+    }
     Ok(ReadFlow::Continue)
 }
 

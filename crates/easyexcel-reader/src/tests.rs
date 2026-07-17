@@ -78,6 +78,8 @@ struct Probe {
     fail_after: bool,
     error_action: Option<ErrorAction>,
     errors: usize,
+    stop_after_callbacks: Option<usize>,
+    callback_count: usize,
 }
 
 impl ReadListener<TestRow> for Probe {
@@ -119,7 +121,9 @@ impl ReadListener<TestRow> for Probe {
     }
 
     fn has_next(&mut self, _context: &AnalysisContext) -> bool {
-        self.continue_reading
+        self.callback_count += 1;
+        self.stop_after_callbacks
+            .map_or(self.continue_reading, |limit| self.callback_count < limit)
     }
 }
 
@@ -1140,6 +1144,76 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
         &mut out_of_order_probe,
     )?;
     assert_eq!(out_of_order_probe.rows, vec![TestRow("first".to_owned())]);
+
+    let sparse_path = fixture_directory.path().join("sparse.xlsx");
+    let sparse_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>Value</t></is></c></row>
+    <row r="4"><c r="A4" t="inlineStr"><is><t>one</t></is></c></row>
+  </sheetData>
+</worksheet>"#;
+    rewrite_first_sheet(&path, &sparse_path, sparse_xml)?;
+    let sparse_options = ReadOptions {
+        ignore_empty_row: false,
+        ..options()
+    };
+    let mut sparse_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_xlsx::<TestRow, _>(&sparse_path, &sparse_options, &mut sparse_probe)?;
+    assert_eq!(
+        sparse_probe.rows,
+        vec![
+            TestRow(String::new()),
+            TestRow(String::new()),
+            TestRow("one".to_owned())
+        ]
+    );
+
+    let mut stopped_sparse = Probe {
+        continue_reading: true,
+        stop_after_callbacks: Some(2),
+        ..Probe::default()
+    };
+    read_xlsx::<TestRow, _>(&sparse_path, &sparse_options, &mut stopped_sparse)?;
+    assert_eq!(stopped_sparse.rows, vec![TestRow(String::new())]);
+    assert!(stopped_sparse.after.is_empty());
+
+    let mut failing_sparse = Probe {
+        continue_reading: true,
+        fail_invoke: true,
+        ..Probe::default()
+    };
+    assert!(read_xlsx::<TestRow, _>(&sparse_path, &sparse_options, &mut failing_sparse).is_err());
+    assert_eq!(failing_sparse.errors, 1);
+
+    let leading_sparse_path = fixture_directory.path().join("leading-sparse.xlsx");
+    let leading_sparse_xml = worksheet_xml(r#"<c r="A3" t="inlineStr"><is><t>first</t></is></c>"#)
+        .replace("<row r=\"1\">", "<row r=\"3\">");
+    rewrite_first_sheet(&path, &leading_sparse_path, &leading_sparse_xml)?;
+    let mut leading_sparse_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_xlsx::<TestRow, _>(
+        &leading_sparse_path,
+        &ReadOptions {
+            head_row_number: 0,
+            ignore_empty_row: false,
+            ..options()
+        },
+        &mut leading_sparse_probe,
+    )?;
+    assert_eq!(
+        leading_sparse_probe.rows,
+        vec![
+            TestRow(String::new()),
+            TestRow(String::new()),
+            TestRow("first".to_owned())
+        ]
+    );
 
     let wide_path = fixture_directory.path().join("wide.xlsx");
     let wide_column = column_name(u32::from(u16::MAX) + 1);

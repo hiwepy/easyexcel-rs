@@ -17,5 +17,5 @@ cargo llvm-cov report \
   --fail-under-lines 100 \
   --fail-under-regions 100 \
   --fail-under-functions 100 \
-  --summary-only \
+  --summary-only 2>&1 \
   | awk '{ print } $1 == "TOTAL" && ($3 != 0 || $6 != 0 || $9 != 0) { exit 1 }'

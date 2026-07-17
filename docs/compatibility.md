@@ -48,7 +48,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
 | CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, stateful same-sheet multi-write, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; JVM-only charset providers remain |
-| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, row conversion, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; explicit empty `<row>` elements, comments, hyperlinks, merged-cell extras, and disk-backed shared-string caching remain |
+| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate sparse rows, row conversion, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; trailing cell-free `<row>` elements, comments, hyperlinks, merged-cell extras, and disk-backed shared-string caching remain |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
@@ -75,12 +75,19 @@ callback is followed by `has_next`; `false` stops the complete workbook; and a
 stopped sheet does not invoke `do_after_all_analysed`. Conversion and listener
 callback failures both pass through `on_exception`.
 
+Like Java's `RowTagHandler`, the dispatcher synthesizes every missing row before
+the first cell-bearing row and between later cell-bearing rows. This preserves
+empty header callbacks and `ignore_empty_row(false)` data callbacks without
+materializing a sheet. Calamine's cell stream cannot reveal trailing explicit
+`<row>` elements that contain no `<c>` element, so that final boundary still
+needs a lightweight OOXML row-event extension.
+
 This is not yet the complete Java `XlsxSaxAnalyser` contract. Calamine loads
 the workbook shared-string table in memory, whereas Java can select a
-disk-backed cache. Its cell stream also omits explicit empty `<row>` elements
-and does not expose Java's comments, hyperlinks, and merged-cell extra-data
-events. Those gaps require a row-event extension around the OOXML stream, not
-a second implementation of the already-streaming basic cell path.
+disk-backed cache. It also does not expose Java's comments, hyperlinks, and
+merged-cell extra-data events. Those gaps require focused extensions around
+the OOXML stream, not a second implementation of the already-streaming basic
+cell path.
 
 ## Encryption boundary
 
