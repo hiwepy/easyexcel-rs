@@ -43,6 +43,19 @@ pub struct ReadOptions {
     pub ignore_empty_row: bool,
     /// Whether leading and trailing whitespace is removed from string cells.
     pub auto_trim: bool,
+    /// Physical first row dispatched as data, zero-based and inclusive.
+    ///
+    /// Header rows are still analysed so name-based mapping remains available.
+    pub start_row: Option<u32>,
+    /// Physical last row dispatched as data, zero-based and inclusive.
+    ///
+    /// Header rows are still analysed so name-based mapping remains available.
+    pub end_row: Option<u32>,
+    /// Header aliases applied after optional Java-compatible trimming.
+    ///
+    /// Keys are workbook header names and values are names exposed to row mapping
+    /// and `ReadListener::invoke_head`.
+    pub header_aliases: HashMap<String, String>,
     /// Value mode used by Java-compatible no-model [`easyexcel_core::DynamicRow`] reads.
     pub read_default_return: ReadDefaultReturn,
     /// Extra worksheet metadata dispatched to `ReadListener::extra`.
@@ -60,6 +73,9 @@ impl Default for ReadOptions {
             head_row_number: 1,
             ignore_empty_row: true,
             auto_trim: true,
+            start_row: None,
+            end_row: None,
+            header_aliases: HashMap::new(),
             read_default_return: ReadDefaultReturn::default(),
             extra_read: HashSet::new(),
             password: None,
@@ -78,8 +94,13 @@ where
     T: ExcelRow,
     L: ReadListener<T>,
 {
-    let source = XlsxSource::open(path, options.password.as_deref())?;
+    let source = open_xlsx_source(path, options)?;
     read_xlsx_source::<T, L>(&source, options, listener)
+}
+
+fn open_xlsx_source(path: &Path, options: &ReadOptions) -> Result<XlsxSource> {
+    validate_read_options(options)?;
+    XlsxSource::open(path, options.password.as_deref())
 }
 
 fn read_xlsx_source<T, L>(
@@ -496,7 +517,8 @@ where
         let (row, column) = cell.pos;
         if current_index != Some(row) {
             if let Some(current) = current_index {
-                if consumer.process(
+                if dispatch_row(
+                    consumer,
                     sheet_no,
                     sheet_name,
                     current,
@@ -558,7 +580,8 @@ where
     }
 
     if let Some(row) = current_index
-        && consumer.process(
+        && dispatch_row(
+            consumer,
             sheet_no,
             sheet_name,
             row,
@@ -622,7 +645,8 @@ fn process_missing_rows(
     consumer: &mut dyn RowConsumer,
 ) -> Result<ReadFlow> {
     for row_index in start_row..end_row {
-        if consumer.process(
+        if dispatch_row(
+            consumer,
             sheet_no,
             sheet_name,
             row_index,
@@ -664,7 +688,8 @@ fn read_range(
                 (!matches!(value, Data::Empty)).then_some(start_column + offset)
             })
             .collect();
-        if consumer.process(
+        if dispatch_row(
+            consumer,
             sheet_no,
             sheet_name,
             row_index,
@@ -699,7 +724,9 @@ where
     T: ExcelRow,
 {
     let present_columns = (0..cells.len()).collect();
-    process_row_with_metadata(
+    let mut consumer = TypedRowConsumer::<T> { listener };
+    dispatch_row(
+        &mut consumer,
         sheet_no,
         sheet_name,
         row_index,
@@ -710,7 +737,28 @@ where
         },
         options,
         headers,
-        listener,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_row(
+    consumer: &mut dyn RowConsumer,
+    sheet_no: usize,
+    sheet_name: &str,
+    row_index: u32,
+    cells: Vec<CellValue>,
+    metadata: SourceRowMetadata,
+    options: &ReadOptions,
+    headers: &mut Arc<HashMap<String, usize>>,
+) -> Result<ReadFlow> {
+    if row_index >= options.head_row_number
+        && (options.start_row.is_some_and(|start| row_index < start)
+            || options.end_row.is_some_and(|end| row_index > end))
+    {
+        return Ok(ReadFlow::Continue);
+    }
+    consumer.process(
+        sheet_no, sheet_name, row_index, cells, metadata, options, headers,
     )
 }
 
@@ -739,7 +787,7 @@ where
     }
     let context = AnalysisContext::new(sheet_name, sheet_no, row_index);
     if row_index < options.head_row_number {
-        let current_headers = Arc::new(header_map(&cells));
+        let current_headers = Arc::new(header_map(&cells, &options.header_aliases));
         if row_index + 1 == options.head_row_number {
             *headers = Arc::clone(&current_headers);
         }
@@ -789,6 +837,7 @@ fn sheet_name_matches(candidate: &str, requested: &str, auto_trim: bool) -> bool
 }
 
 fn reject_extra_read(options: &ReadOptions, format: &str) -> Result<()> {
+    validate_read_options(options)?;
     if options.extra_read.is_empty() {
         Ok(())
     } else {
@@ -825,13 +874,30 @@ fn listener_error<T>(
     }
 }
 
-fn header_map(cells: &[CellValue]) -> HashMap<String, usize> {
+fn validate_read_options(options: &ReadOptions) -> Result<()> {
+    if let (Some(start), Some(end)) = (options.start_row, options.end_row)
+        && start > end
+    {
+        return Err(ExcelError::Format(format!(
+            "read row range start {start} exceeds end {end}"
+        )));
+    }
+    Ok(())
+}
+
+fn header_map(
+    cells: &[CellValue],
+    header_aliases: &HashMap<String, String>,
+) -> HashMap<String, usize> {
     cells
         .iter()
         .enumerate()
         .filter_map(|(index, value)| {
             let name = value.as_text();
-            (!name.is_empty()).then_some((name, index))
+            (!name.is_empty()).then(|| {
+                let alias = header_aliases.get(&name).cloned().unwrap_or(name);
+                (alias, index)
+            })
         })
         .collect()
 }

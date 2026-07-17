@@ -66,6 +66,49 @@ impl ExcelRow for TestRow {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct NamedRow(String);
+
+impl ExcelRow for NamedRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("value", "Canonical", None, 0, None)];
+        COLUMNS
+    }
+
+    fn from_row(row: &RowData) -> Result<Self> {
+        Ok(Self(
+            row.cell(&Self::schema()[0])
+                .map_or_else(String::new, CellValue::as_text),
+        ))
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![CellValue::String(self.0.clone())])
+    }
+}
+
+#[derive(Default)]
+struct NamedProbe {
+    heads: Vec<HashMap<String, usize>>,
+    rows: Vec<NamedRow>,
+}
+
+impl ReadListener<NamedRow> for NamedProbe {
+    fn invoke_head(
+        &mut self,
+        head: &HashMap<String, usize>,
+        _context: &AnalysisContext,
+    ) -> Result<()> {
+        self.heads.push(head.clone());
+        Ok(())
+    }
+
+    fn invoke(&mut self, data: NamedRow, _context: &AnalysisContext) -> Result<()> {
+        self.rows.push(data);
+        Ok(())
+    }
+}
+
 #[derive(Debug, PartialEq)]
 struct RawRow {
     cells: Vec<CellValue>,
@@ -267,6 +310,9 @@ fn options() -> ReadOptions {
         head_row_number: 1,
         ignore_empty_row: true,
         auto_trim: true,
+        start_row: None,
+        end_row: None,
+        header_aliases: HashMap::new(),
         read_default_return: ReadDefaultReturn::default(),
         extra_read: HashSet::new(),
         password: None,
@@ -477,6 +523,110 @@ fn helpers_preserve_diagnostics_and_xlsx_column_limits() {
     assert_eq!(java_trim("\u{a0}value\u{a0}"), "\u{a0}value\u{a0}");
     assert!(sheet_name_matches(" Sheet ", "Sheet", true));
     assert!(!sheet_name_matches(" Sheet ", "Sheet", false));
+}
+
+#[test]
+fn header_aliases_and_inclusive_row_ranges_apply_before_typed_mapping() -> Result<()> {
+    let mut range = Range::new((0, 0), (3, 0));
+    range.set_value((0, 0), Data::String("Source".to_owned()));
+    range.set_value((1, 0), Data::String("one".to_owned()));
+    range.set_value((2, 0), Data::String("two".to_owned()));
+    range.set_value((3, 0), Data::String("three".to_owned()));
+    let mut aliases = HashMap::new();
+    aliases.insert("Source".to_owned(), "Canonical".to_owned());
+    let options = ReadOptions {
+        start_row: Some(2),
+        end_row: Some(2),
+        header_aliases: aliases,
+        ..ReadOptions::default()
+    };
+    let mut probe = NamedProbe::default();
+
+    assert_eq!(
+        read_range(
+            &range,
+            0,
+            "Aliased",
+            &options,
+            &mut TypedRowConsumer::<NamedRow> {
+                listener: &mut probe,
+            },
+        )?,
+        ReadFlow::Continue
+    );
+    assert_eq!(probe.heads[0].get("Canonical"), Some(&0));
+    assert_eq!(probe.rows, vec![NamedRow("two".to_owned())]);
+    Ok(())
+}
+
+#[test]
+fn read_row_range_validation_rejects_only_reversed_bounds() {
+    assert!(validate_read_options(&ReadOptions::default()).is_ok());
+    assert!(
+        validate_read_options(&ReadOptions {
+            start_row: Some(2),
+            ..ReadOptions::default()
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_read_options(&ReadOptions {
+            end_row: Some(2),
+            ..ReadOptions::default()
+        })
+        .is_ok()
+    );
+    assert!(
+        validate_read_options(&ReadOptions {
+            start_row: Some(2),
+            end_row: Some(2),
+            ..ReadOptions::default()
+        })
+        .is_ok()
+    );
+    assert_eq!(
+        validate_read_options(&ReadOptions {
+            start_row: Some(3),
+            end_row: Some(2),
+            ..ReadOptions::default()
+        })
+        .expect_err("reversed row range")
+        .to_string(),
+        "excel format error: read row range start 3 exceeds end 2"
+    );
+
+    let reversed = ReadOptions {
+        start_row: Some(3),
+        end_row: Some(2),
+        ..ReadOptions::default()
+    };
+    let mut modern_workbook_probe = Probe::default();
+    let mut legacy_workbook_probe = Probe::default();
+    let mut delimited_text_probe = Probe::default();
+    assert!(
+        read_xlsx::<TestRow, _>(
+            Path::new("missing.xlsx"),
+            &reversed,
+            &mut modern_workbook_probe,
+        )
+        .is_err()
+    );
+    assert!(
+        read_xls::<TestRow, _>(
+            Path::new("missing.xls"),
+            &reversed,
+            &mut legacy_workbook_probe,
+        )
+        .is_err()
+    );
+    assert!(
+        read_csv::<TestRow, _>(
+            Path::new("missing.csv"),
+            &reversed,
+            &mut delimited_text_probe,
+        )
+        .is_err()
+    );
 }
 
 #[test]

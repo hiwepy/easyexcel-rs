@@ -19,6 +19,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `headRowNumber` | `head_row_number` | implemented |
 | `ignoreEmptyRow` | `ignore_empty_row` | implemented |
 | `autoTrim` | `auto_trim` | implemented: defaults to `true`; sheet-name matching, content/header strings, and trim-to-empty row handling match Java |
+| Hutool POI header aliases and row slices | `header_alias` / `start_row` / `end_row` / `read_rows` | additive enhancement: aliases are applied before typed mapping; physical bounds are inclusive and retain header analysis |
 | `sheet(Integer/String)` | `sheet(index/name)` | implemented |
 | `doRead` | `do_read` | implemented |
 | `doReadSync` | `read_sync(...).do_read_sync()` | implemented |
@@ -57,6 +58,10 @@ This document is the release gate, not a marketing checklist. A row is marked
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
 | Axum/Actix adapters | `easyexcel-web` | planned |
+
+Hutool POI is used only as a secondary ergonomics and production-hardening
+reference. The adoption boundary and dependency direction are documented in
+[hutool-poi-adoption.md](hutool-poi-adoption.md).
 
 ## Verification evidence required for 1.0
 

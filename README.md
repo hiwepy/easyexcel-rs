@@ -6,6 +6,13 @@ streaming reads, constant-memory writes, templates, and write handlers.
 
 The project is under active compatibility development. The authoritative
 feature inventory is [docs/compatibility.md](docs/compatibility.md).
+Hutool POI-inspired additions follow the explicit boundary in
+[docs/hutool-poi-adoption.md](docs/hutool-poi-adoption.md): Java EasyExcel
+compatibility remains primary, while streaming-safe production conveniences may
+be added without changing EasyExcel defaults.
+Future `easydoc-rs`, `easyofd-rs`, and `easypdf-rs` work is recorded only in the
+[independent ecosystem roadmap](docs/ecosystem-roadmap.md); those formats are
+not implemented in this repository.
 
 ```rust,no_run
 use easyexcel::{CellExtraType, EasyExcel, ExcelRow, PageReadListener};
@@ -25,6 +32,8 @@ let listener = PageReadListener::new(1_000, |rows, _context| save(rows));
 EasyExcel::read::<User, _>("users.xlsx", listener)
     .sheet("Users")
     .auto_trim(true)
+    .header_alias("用户姓名", "Name")
+    .read_rows(1, 100_000)
     .extra_read(CellExtraType::Comment)
     .do_read()?;
 # Ok(())

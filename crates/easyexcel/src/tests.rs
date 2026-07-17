@@ -138,6 +138,10 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .head_row_number(3)
         .ignore_empty_row(false)
         .auto_trim(false)
+        .start_row(4)
+        .end_row(8)
+        .read_rows(5, 7)
+        .header_alias("Source", "Value")
         .read_default_return(ReadDefaultReturn::ActualData)
         .extra_read(CellExtraType::Comment)
         .extra_read(CellExtraType::Merge)
@@ -148,6 +152,15 @@ fn factories_and_builder_options_match_java_style_chaining() {
     assert_eq!(read.options.head_row_number, 3);
     assert!(!read.options.ignore_empty_row);
     assert!(!read.options.auto_trim);
+    assert_eq!(read.options.start_row, Some(5));
+    assert_eq!(read.options.end_row, Some(7));
+    assert_eq!(
+        read.options
+            .header_aliases
+            .get("Source")
+            .map(String::as_str),
+        Some("Value")
+    );
     assert_eq!(
         read.options.read_default_return,
         ReadDefaultReturn::ActualData
@@ -159,18 +172,32 @@ fn factories_and_builder_options_match_java_style_chaining() {
 
     let sync = EasyExcel::read_sync::<Value>("sync.xlsx")
         .sheet("Values")
+        .all_sheets()
         .head_row_number(2)
         .ignore_empty_row(false)
         .auto_trim(false)
+        .start_row(3)
+        .end_row(9)
+        .read_rows(4, 6)
+        .header_alias("Original", "Value")
         .read_default_return(ReadDefaultReturn::ReadCellData)
         .extra_read(CellExtraType::Hyperlink)
         .password("sync-secret")
         .charset(CsvCharset::new("UTF-16BE"));
     assert_eq!(sync.path, PathBuf::from("sync.xlsx"));
-    assert_eq!(sync.options.sheet, SheetSelector::Name("Values".to_owned()));
+    assert_eq!(sync.options.sheet, SheetSelector::All);
     assert_eq!(sync.options.head_row_number, 2);
     assert!(!sync.options.ignore_empty_row);
     assert!(!sync.options.auto_trim);
+    assert_eq!(sync.options.start_row, Some(4));
+    assert_eq!(sync.options.end_row, Some(6));
+    assert_eq!(
+        sync.options
+            .header_aliases
+            .get("Original")
+            .map(String::as_str),
+        Some("Value")
+    );
     assert_eq!(
         sync.options.read_default_return,
         ReadDefaultReturn::ReadCellData

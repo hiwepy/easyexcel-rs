@@ -194,6 +194,41 @@ where
         self
     }
 
+    /// Sets the first physical data row to dispatch, zero-based and inclusive.
+    ///
+    /// Configured header rows are still analysed for name-based mapping.
+    #[must_use]
+    pub const fn start_row(mut self, row: u32) -> Self {
+        self.options.start_row = Some(row);
+        self
+    }
+
+    /// Sets the last physical data row to dispatch, zero-based and inclusive.
+    ///
+    /// Configured header rows are still analysed for name-based mapping.
+    #[must_use]
+    pub const fn end_row(mut self, row: u32) -> Self {
+        self.options.end_row = Some(row);
+        self
+    }
+
+    /// Limits data callbacks to an inclusive physical row range.
+    #[must_use]
+    pub const fn read_rows(mut self, start: u32, end: u32) -> Self {
+        self.options.start_row = Some(start);
+        self.options.end_row = Some(end);
+        self
+    }
+
+    /// Maps a workbook header name to the name used by typed row mapping.
+    #[must_use]
+    pub fn header_alias(mut self, header: impl Into<String>, alias: impl Into<String>) -> Self {
+        self.options
+            .header_aliases
+            .insert(header.into(), alias.into());
+        self
+    }
+
     /// Selects the Java-compatible no-model return mode.
     #[must_use]
     pub const fn read_default_return(mut self, mode: ReadDefaultReturn) -> Self {
@@ -256,6 +291,13 @@ where
         self
     }
 
+    /// Selects every worksheet in workbook order.
+    #[must_use]
+    pub fn all_sheets(mut self) -> Self {
+        self.options.sheet = SheetSelector::All;
+        self
+    }
+
     /// Sets the number of header rows.
     #[must_use]
     pub const fn head_row_number(mut self, rows: u32) -> Self {
@@ -274,6 +316,41 @@ where
     #[must_use]
     pub const fn auto_trim(mut self, enabled: bool) -> Self {
         self.options.auto_trim = enabled;
+        self
+    }
+
+    /// Sets the first physical data row to collect, zero-based and inclusive.
+    ///
+    /// Configured header rows are still analysed for name-based mapping.
+    #[must_use]
+    pub const fn start_row(mut self, row: u32) -> Self {
+        self.options.start_row = Some(row);
+        self
+    }
+
+    /// Sets the last physical data row to collect, zero-based and inclusive.
+    ///
+    /// Configured header rows are still analysed for name-based mapping.
+    #[must_use]
+    pub const fn end_row(mut self, row: u32) -> Self {
+        self.options.end_row = Some(row);
+        self
+    }
+
+    /// Limits collected data to an inclusive physical row range.
+    #[must_use]
+    pub const fn read_rows(mut self, start: u32, end: u32) -> Self {
+        self.options.start_row = Some(start);
+        self.options.end_row = Some(end);
+        self
+    }
+
+    /// Maps a workbook header name to the name used by typed row mapping.
+    #[must_use]
+    pub fn header_alias(mut self, header: impl Into<String>, alias: impl Into<String>) -> Self {
+        self.options
+            .header_aliases
+            .insert(header.into(), alias.into());
         self
     }
 
