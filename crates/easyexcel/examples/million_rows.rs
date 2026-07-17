@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use easyexcel::{
-    AnalysisContext, CellValue, ConvertContext, EasyExcel, ExcelColumn, ExcelRow,
-    ExcelWriteMetadata, FromExcelCell, IntoExcelCell, ReadListener, Result, RowData,
+    AnalysisContext, CellValue, ConvertContext, ConverterRegistry, EasyExcel, ExcelColumn,
+    ExcelRow, ExcelWriteMetadata, FromExcelCell, IntoExcelCell, ReadConverterContext, ReadListener,
+    Result, RowData,
 };
 
 const DEFAULT_ROWS: u32 = 1_000_000;

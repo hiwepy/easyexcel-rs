@@ -10,9 +10,9 @@ use calamine::{
     Data, DataRef, ExcelDateTime, ExcelDateTimeType, Range, Reader, Xls, Xlsx, open_workbook,
 };
 use easyexcel_core::{
-    AnalysisContext, CellExtra, CellExtraType, CellValue, CsvCharset, CustomReadObject,
-    ErrorAction, ExcelError, ExcelRow, FormulaData, ReadDefaultReturn, ReadListener, Result,
-    RowData,
+    AnalysisContext, CellExtra, CellExtraType, CellValue, ConverterRegistry, CsvCharset,
+    CustomReadObject, ErrorAction, ExcelError, ExcelRow, FormulaData, ReadDefaultReturn,
+    ReadListener, Result, RowData,
 };
 use encoding_rs::Encoding;
 use encoding_rs_io::DecodeReaderBytesBuilder;
@@ -95,6 +95,8 @@ pub struct ReadOptions {
     pub password: Option<String>,
     /// Character encoding used when reading CSV input.
     pub charset: CsvCharset,
+    /// Java-style globally registered converters.
+    pub converters: ConverterRegistry,
 }
 
 impl Default for ReadOptions {
@@ -115,6 +117,7 @@ impl Default for ReadOptions {
             extra_read: HashSet::new(),
             password: None,
             charset: CsvCharset::default(),
+            converters: ConverterRegistry::default(),
         }
     }
 }
@@ -857,7 +860,7 @@ where
         .with_decimal_values(decimal_values)
         .with_present_columns(present_columns)
         .with_read_default_return(options.read_default_return);
-    match T::from_row(&row) {
+    match T::from_row_with_converters(&row, &options.converters) {
         Ok(data) => {
             let result = listener.invoke(data, &context);
             listener_result(result, listener, &context)

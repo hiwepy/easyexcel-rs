@@ -222,6 +222,17 @@ where
         self
     }
 
+    /// Registers a Java-style global converter for this read operation.
+    #[must_use]
+    pub fn register_converter<V, C>(mut self, converter: C) -> Self
+    where
+        V: 'static,
+        C: Converter<V> + Send + Sync + 'static,
+    {
+        self.options.converters.register::<V, C>(converter);
+        self
+    }
+
     /// Sets the first physical data row to dispatch, zero-based and inclusive.
     ///
     /// Configured header rows are still analysed for name-based mapping.
@@ -379,6 +390,17 @@ where
     #[must_use]
     pub fn locale(mut self, locale: ExcelLocale) -> Self {
         self.options.locale = locale;
+        self
+    }
+
+    /// Registers a Java-style global converter while collecting rows.
+    #[must_use]
+    pub fn register_converter<V, C>(mut self, converter: C) -> Self
+    where
+        V: 'static,
+        C: Converter<V> + Send + Sync + 'static,
+    {
+        self.options.converters.register::<V, C>(converter);
         self
     }
 
@@ -610,6 +632,17 @@ where
     #[must_use]
     pub fn content_styles(mut self, styles: impl IntoIterator<Item = CellStyle>) -> Self {
         self.options.content_styles = styles.into_iter().collect();
+        self
+    }
+
+    /// Registers a Java-style global converter for this workbook.
+    #[must_use]
+    pub fn register_converter<V, C>(mut self, converter: C) -> Self
+    where
+        V: 'static,
+        C: Converter<V> + Send + Sync + 'static,
+    {
+        self.options.converters.register::<V, C>(converter);
         self
     }
 

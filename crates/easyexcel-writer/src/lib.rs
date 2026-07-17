@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 
 use bigdecimal::ToPrimitive;
 use easyexcel_core::{
-    CellValue, CsvCharset, ExcelBorderStyle, ExcelCellStyle, ExcelColor, ExcelColumn,
-    ExcelDataFormat, ExcelError, ExcelFillPattern, ExcelFontScript, ExcelFontStyle,
-    ExcelHorizontalAlignment, ExcelRow, ExcelUnderline, ExcelVerticalAlignment, ExcelWriteMetadata,
-    Result, WriteCellContext, WriteHandler, WriteRowContext, WriteSheetContext,
+    CellValue, Converter, ConverterRegistry, CsvCharset, ExcelBorderStyle, ExcelCellStyle,
+    ExcelColor, ExcelColumn, ExcelDataFormat, ExcelError, ExcelFillPattern, ExcelFontScript,
+    ExcelFontStyle, ExcelHorizontalAlignment, ExcelRow, ExcelUnderline, ExcelVerticalAlignment,
+    ExcelWriteMetadata, Result, WriteCellContext, WriteHandler, WriteRowContext, WriteSheetContext,
     WriteWorkbookContext,
 };
 use encoding_rs::{CoderResult, Encoding, UTF_8, UTF_16BE, UTF_16LE};
@@ -272,6 +272,8 @@ pub struct WriteOptions {
     pub charset: CsvCharset,
     /// Whether CSV output starts with the encoding's byte-order mark.
     pub with_bom: bool,
+    /// Java-style globally registered converters.
+    pub converters: ConverterRegistry,
 }
 
 impl Default for WriteOptions {
@@ -298,6 +300,7 @@ impl Default for WriteOptions {
             password: None,
             charset: CsvCharset::default(),
             with_bom: true,
+            converters: ConverterRegistry::default(),
         }
     }
 }
@@ -339,6 +342,17 @@ impl<T> WriteSheet<T> {
     #[must_use]
     pub const fn options(&self) -> &WriteOptions {
         &self.options
+    }
+
+    /// Registers a sheet-level converter that overrides a workbook registration.
+    #[must_use]
+    pub fn register_converter<V, C>(mut self, converter: C) -> Self
+    where
+        V: 'static,
+        C: Converter<V> + Send + Sync + 'static,
+    {
+        self.options.converters.register::<V, C>(converter);
+        self
     }
 
     /// Adds a Java-style zero-based logical sheet number to this worksheet.
@@ -457,6 +471,7 @@ pub struct ExcelWriter {
     started: bool,
     finished: bool,
     password: Option<String>,
+    converters: ConverterRegistry,
 }
 
 impl ExcelWriter {
@@ -508,6 +523,7 @@ impl ExcelWriter {
             started: false,
             finished: false,
             password: options.password,
+            converters: options.converters,
         }
     }
 
@@ -626,7 +642,8 @@ impl ExcelWriter {
             return Ok(());
         }
 
-        let options = sheet.options().clone();
+        let mut options = sheet.options().clone();
+        options.converters = self.converters.merged_with(&options.converters);
         let progress = write_sheet_to_workbook::<T, I>(
             &mut self.workbook,
             &options,
@@ -668,6 +685,7 @@ impl ExcelWriter {
             let mut options = sheet.options().clone();
             options.charset = self.csv_charset.clone();
             options.with_bom = self.csv_with_bom;
+            options.converters = self.converters.merged_with(&options.converters);
             (
                 StatefulSheetState {
                     schema: T::schema(),
@@ -861,7 +879,9 @@ where
     I: IntoIterator<Item = T>,
 {
     let columns = selected_columns(T::schema(), options);
-    let mut rows = rows.into_iter().map(|row| row.to_row());
+    let mut rows = rows
+        .into_iter()
+        .map(|row| row.to_row_with_converters(&options.converters));
     write_csv_records(
         path,
         output,
@@ -986,7 +1006,9 @@ where
     I: IntoIterator<Item = T>,
 {
     let columns = selected_columns(T::schema(), options);
-    let mut rows = rows.into_iter().map(|row| row.to_row());
+    let mut rows = rows
+        .into_iter()
+        .map(|row| row.to_row_with_converters(&options.converters));
     append_csv_records(
         writer,
         options,
@@ -1529,7 +1551,7 @@ where
                 .set_row_height(row_index, height)
                 .map_err(format_error)?;
         }
-        let cells = row.to_row()?;
+        let cells = row.to_row_with_converters(&options.converters)?;
         let dynamic_columns = dynamic_columns_for_row(T::schema().is_empty(), cells.len(), options);
         let row_columns = dynamic_columns.as_deref().unwrap_or(&columns);
         let style = (!options.content_styles.is_empty())

@@ -1,6 +1,6 @@
 //! Core data model and extension points for `easyexcel-rs`.
 
-use std::any::Any;
+use std::any::{Any, TypeId, type_name};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
@@ -128,6 +128,51 @@ impl CellValue {
             Self::Comment { value, .. } => value.as_text(),
         }
     }
+
+    /// Returns the Java EasyExcel-compatible logical cell type used to select converters.
+    #[must_use]
+    pub fn data_type(&self) -> CellDataType {
+        match self {
+            Self::Empty => CellDataType::Empty,
+            Self::String(_) | Self::Hyperlink { .. } => CellDataType::String,
+            Self::Bool(_) => CellDataType::Boolean,
+            Self::Int(_) | Self::Float(_) | Self::Decimal(_) => CellDataType::Number,
+            Self::Date(_) | Self::DateTime(_) => CellDataType::Date,
+            Self::Error(_) => CellDataType::Error,
+            Self::Formula(_) => CellDataType::Formula,
+            Self::Comment { value, .. } => value.data_type(),
+            Self::Image(_) => CellDataType::Image,
+        }
+    }
+}
+
+/// Logical Excel cell type used as the read-converter dispatch key.
+///
+/// The core variants mirror Java `EasyExcel`'s `CellDataTypeEnum`. `Formula` and
+/// `Image` preserve Rust's richer backend-neutral values when a caller supplies
+/// them directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CellDataType {
+    /// Shared or inline string.
+    String,
+    /// Direct inline string.
+    DirectString,
+    /// Numeric value.
+    Number,
+    /// Boolean value.
+    Boolean,
+    /// Empty or physically absent cell.
+    Empty,
+    /// Excel error value.
+    Error,
+    /// Date or date-time value.
+    Date,
+    /// Rich text string.
+    RichTextString,
+    /// Formula expression supplied as a write value.
+    Formula,
+    /// Encoded image bytes.
+    Image,
 }
 
 /// Formula metadata associated with a cached cell value while reading.
@@ -1138,6 +1183,15 @@ impl<'a, T> WriteConverterContext<'a, T> {
 /// Custom bidirectional converter selected by `#[excel(converter = Type)]`.
 #[allow(clippy::missing_errors_doc)]
 pub trait Converter<T> {
+    /// Returns the source cell type supported when this converter is registered globally.
+    ///
+    /// Java `EasyExcel` requires global read converters to expose this key. A
+    /// string default keeps field-only converters concise while matching the
+    /// most common custom converter contract.
+    fn support_excel_type(&self) -> CellDataType {
+        CellDataType::String
+    }
+
     /// Converts an Excel cell into a Rust field value.
     fn convert_to_rust_data(&self, _context: &ReadConverterContext<'_>) -> Result<T> {
         Err(ExcelError::Unsupported(
@@ -1152,6 +1206,194 @@ pub trait Converter<T> {
         ))
     }
 }
+
+trait ErasedConverter: Send + Sync {
+    fn target_type_id(&self) -> TypeId;
+    fn target_type_name(&self) -> &'static str;
+    fn support_excel_type(&self) -> CellDataType;
+    fn convert_to_rust_data(&self, context: &ReadConverterContext<'_>) -> Result<Box<dyn Any>>;
+    fn convert_to_excel_data(
+        &self,
+        value: &dyn Any,
+        column: &ExcelColumn,
+        context: &ConvertContext,
+    ) -> Result<CellValue>;
+}
+
+struct TypedConverter<T, C> {
+    converter: C,
+    marker: std::marker::PhantomData<fn() -> T>,
+}
+
+impl<T, C> ErasedConverter for TypedConverter<T, C>
+where
+    T: 'static,
+    C: Converter<T> + Send + Sync,
+{
+    fn target_type_id(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    fn target_type_name(&self) -> &'static str {
+        type_name::<T>()
+    }
+
+    fn support_excel_type(&self) -> CellDataType {
+        self.converter.support_excel_type()
+    }
+
+    fn convert_to_rust_data(&self, context: &ReadConverterContext<'_>) -> Result<Box<dyn Any>> {
+        self.converter
+            .convert_to_rust_data(context)
+            .map(|value| Box::new(value) as Box<dyn Any>)
+    }
+
+    fn convert_to_excel_data(
+        &self,
+        value: &dyn Any,
+        column: &ExcelColumn,
+        context: &ConvertContext,
+    ) -> Result<CellValue> {
+        let value = value.downcast_ref::<T>().ok_or_else(|| {
+            ExcelError::Format(format!(
+                "registered converter expected Rust type {}",
+                type_name::<T>()
+            ))
+        })?;
+        self.converter
+            .convert_to_excel_data(&WriteConverterContext::new(value, column, context))
+    }
+}
+
+/// Runtime converter registry populated by Java-style `registerConverter` builders.
+///
+/// Registrations are searched from newest to oldest. Read selection uses the
+/// pair `(Rust target type, Excel cell type)` while write selection uses only
+/// the Rust type, matching Java `EasyExcel`'s holder initialization rules.
+#[derive(Clone, Default)]
+pub struct ConverterRegistry {
+    converters: Vec<Arc<dyn ErasedConverter>>,
+}
+
+impl ConverterRegistry {
+    /// Registers a converter for `T`, overriding an earlier converter with the same key.
+    pub fn register<T, C>(&mut self, converter: C)
+    where
+        T: 'static,
+        C: Converter<T> + Send + Sync + 'static,
+    {
+        self.converters.push(Arc::new(TypedConverter::<T, C> {
+            converter,
+            marker: std::marker::PhantomData,
+        }));
+    }
+
+    /// Returns a registry where `overrides` take precedence over this registry.
+    #[must_use]
+    pub fn merged_with(&self, overrides: &Self) -> Self {
+        let mut converters = self.converters.clone();
+        converters.extend(overrides.converters.iter().cloned());
+        Self { converters }
+    }
+
+    /// Converts a cell through the newest matching global converter.
+    ///
+    /// `None` means no global converter matched and the caller should use its
+    /// built-in conversion implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the registered converter's error or a type-contract error.
+    pub fn convert_to_rust_data<T>(&self, context: &ReadConverterContext<'_>) -> Result<Option<T>>
+    where
+        T: 'static,
+    {
+        let data_type = context
+            .cell()
+            .map_or(CellDataType::Empty, CellValue::data_type);
+        let Some(converter) = self.converters.iter().rev().find(|converter| {
+            converter.target_type_id() == TypeId::of::<T>()
+                && converter.support_excel_type() == data_type
+        }) else {
+            return Ok(None);
+        };
+        converter
+            .convert_to_rust_data(context)?
+            .downcast::<T>()
+            .map(|value| Some(*value))
+            .map_err(|_| {
+                ExcelError::Format(format!(
+                    "registered converter returned a value other than {}",
+                    type_name::<T>()
+                ))
+            })
+    }
+
+    /// Converts a Rust value through the newest matching global converter.
+    ///
+    /// `None` means no global converter matched and the caller should use its
+    /// built-in conversion implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns the registered converter's conversion error.
+    pub fn convert_to_excel_data<T>(
+        &self,
+        value: &T,
+        column: &ExcelColumn,
+        context: &ConvertContext,
+    ) -> Result<Option<CellValue>>
+    where
+        T: 'static,
+    {
+        let Some(converter) = self
+            .converters
+            .iter()
+            .rev()
+            .find(|converter| converter.target_type_id() == TypeId::of::<T>())
+        else {
+            return Ok(None);
+        };
+        converter
+            .convert_to_excel_data(value, column, context)
+            .map(Some)
+    }
+
+    /// Returns whether no custom converter has been registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.converters.is_empty()
+    }
+}
+
+impl std::fmt::Debug for ConverterRegistry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_list()
+            .entries(
+                self.converters.iter().map(|converter| {
+                    (converter.target_type_name(), converter.support_excel_type())
+                }),
+            )
+            .finish()
+    }
+}
+
+impl PartialEq for ConverterRegistry {
+    fn eq(&self, other: &Self) -> bool {
+        self.converters.len() == other.converters.len()
+            && self
+                .converters
+                .iter()
+                .zip(&other.converters)
+                .all(|(left, right)| {
+                    left.target_type_id() == right.target_type_id()
+                        && left.support_excel_type() == right.support_excel_type()
+                })
+    }
+}
+
+impl Eq for ConverterRegistry {}
 
 /// Workbook-level write lifecycle context.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1544,12 +1786,34 @@ pub trait ExcelRow: Sized {
     /// Returns a location-aware conversion error when any field cannot be decoded.
     fn from_row(row: &RowData) -> Result<Self>;
 
+    /// Converts a physical row using Java-style globally registered converters.
+    ///
+    /// Implementations that do not expose typed fields can retain the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns a location-aware conversion error.
+    fn from_row_with_converters(row: &RowData, _converters: &ConverterRegistry) -> Result<Self> {
+        Self::from_row(row)
+    }
+
     /// Converts the user type into schema-ordered cells.
     ///
     /// # Errors
     ///
     /// Returns an error when any field cannot be encoded as an Excel cell.
     fn to_row(&self) -> Result<Vec<CellValue>>;
+
+    /// Converts the value using Java-style globally registered converters.
+    ///
+    /// Implementations that do not expose typed fields can retain the default.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a field cannot be represented as an Excel cell.
+    fn to_row_with_converters(&self, _converters: &ConverterRegistry) -> Result<Vec<CellValue>> {
+        self.to_row()
+    }
 }
 
 impl ExcelRow for DynamicRow {

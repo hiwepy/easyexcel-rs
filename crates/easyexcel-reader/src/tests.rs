@@ -335,6 +335,7 @@ fn options() -> ReadOptions {
         extra_read: HashSet::new(),
         password: None,
         charset: CsvCharset::default(),
+        converters: easyexcel_core::ConverterRegistry::default(),
     }
 }
 

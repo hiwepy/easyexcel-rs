@@ -36,6 +36,7 @@ pub(crate) fn expand_excel_row_tokens(
     expand_excel_row(syn::parse2(input)?)
 }
 
+#[allow(clippy::too_many_lines)]
 fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     let crate_path = easyexcel_path();
     let name = input.ident;
@@ -44,7 +45,9 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
 
     let mut columns = Vec::new();
     let mut readers = Vec::new();
+    let mut registered_readers = Vec::new();
     let mut writers = Vec::new();
+    let mut registered_writers = Vec::new();
     let mut schema_position = 0usize;
 
     for field in fields {
@@ -53,6 +56,7 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
         let options = parse_field_options(&field.attrs, &crate_path)?;
         if options.ignore || (struct_options.ignore_unannotated && !options.annotated) {
             readers.push(quote!(#ident: ::core::default::Default::default()));
+            registered_readers.push(quote!(#ident: ::core::default::Default::default()));
             continue;
         }
 
@@ -92,6 +96,8 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
         columns.push(column);
         let position = syn::Index::from(schema_position);
         let read_conversion = field_read_conversion(&crate_path, &ty, converter.as_ref());
+        let registered_read_conversion =
+            field_registered_read_conversion(&crate_path, &ty, converter.as_ref());
         readers.push(quote! {
             #ident: {
                 let column = &Self::schema()[#position];
@@ -99,7 +105,16 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
                 #read_conversion
             }
         });
+        registered_readers.push(quote! {
+            #ident: {
+                let column = &Self::schema()[#position];
+                let context = row.convert_context(column);
+                #registered_read_conversion
+            }
+        });
         let write_conversion = field_write_conversion(&crate_path, &ty, &ident, converter.as_ref());
+        let registered_write_conversion =
+            field_registered_write_conversion(&crate_path, &ty, &ident, converter.as_ref());
         writers.push(quote! {
             {
                 let column = &Self::schema()[#position];
@@ -111,6 +126,19 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
                     format: column.format,
                 };
                 #write_conversion
+            }
+        });
+        registered_writers.push(quote! {
+            {
+                let column = &Self::schema()[#position];
+                let context = #crate_path::ConvertContext {
+                    sheet_name: ::std::string::String::new(),
+                    row_index: 0,
+                    column_index: column.index,
+                    field: column.field,
+                    format: column.format,
+                };
+                #registered_write_conversion
             }
         });
         schema_position += 1;
@@ -134,8 +162,22 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
                 Ok(Self { #(#readers),* })
             }
 
+            fn from_row_with_converters(
+                row: &#crate_path::RowData,
+                converters: &#crate_path::ConverterRegistry,
+            ) -> #crate_path::Result<Self> {
+                Ok(Self { #(#registered_readers),* })
+            }
+
             fn to_row(&self) -> #crate_path::Result<::std::vec::Vec<#crate_path::CellValue>> {
                 Ok(::std::vec![#(#writers),*])
+            }
+
+            fn to_row_with_converters(
+                &self,
+                converters: &#crate_path::ConverterRegistry,
+            ) -> #crate_path::Result<::std::vec::Vec<#crate_path::CellValue>> {
+                Ok(::std::vec![#(#registered_writers),*])
             }
         }
     })
@@ -213,6 +255,47 @@ fn field_read_conversion(
     )
 }
 
+fn field_registered_read_conversion(
+    crate_path: &proc_macro2::TokenStream,
+    ty: &syn::Type,
+    converter: Option<&Path>,
+) -> proc_macro2::TokenStream {
+    converter.map_or_else(
+        || {
+            quote! {
+                if let ::core::option::Option::Some(value) = converters.convert_to_rust_data::<#ty>(
+                    &#crate_path::ReadConverterContext::with_formula(
+                        row.cell(column),
+                        row.formula(column),
+                        column,
+                        &context,
+                    ),
+                )? {
+                    value
+                } else {
+                    <#ty as #crate_path::FromExcelCell>::from_excel_cell(
+                        row.cell(column),
+                        &context,
+                    )?
+                }
+            }
+        },
+        |converter| {
+            quote! {
+                #crate_path::Converter::<#ty>::convert_to_rust_data(
+                    &<#converter as ::core::default::Default>::default(),
+                    &#crate_path::ReadConverterContext::with_formula(
+                        row.cell(column),
+                        row.formula(column),
+                        column,
+                        &context,
+                    ),
+                )?
+            }
+        },
+    )
+}
+
 fn field_write_conversion(
     crate_path: &proc_macro2::TokenStream,
     ty: &syn::Type,
@@ -223,6 +306,41 @@ fn field_write_conversion(
         || {
             quote! {
                 #crate_path::IntoExcelCell::to_excel_cell(&self.#ident, &context)?
+            }
+        },
+        |converter| {
+            quote! {
+                #crate_path::Converter::<#ty>::convert_to_excel_data(
+                    &<#converter as ::core::default::Default>::default(),
+                    &#crate_path::WriteConverterContext::new(
+                        &self.#ident,
+                        column,
+                        &context,
+                    ),
+                )?
+            }
+        },
+    )
+}
+
+fn field_registered_write_conversion(
+    crate_path: &proc_macro2::TokenStream,
+    ty: &syn::Type,
+    ident: &syn::Ident,
+    converter: Option<&Path>,
+) -> proc_macro2::TokenStream {
+    converter.map_or_else(
+        || {
+            quote! {
+                if let ::core::option::Option::Some(value) = converters.convert_to_excel_data::<#ty>(
+                    &self.#ident,
+                    column,
+                    &context,
+                )? {
+                    value
+                } else {
+                    #crate_path::IntoExcelCell::to_excel_cell(&self.#ident, &context)?
+                }
             }
         },
         |converter| {

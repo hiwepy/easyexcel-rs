@@ -648,6 +648,7 @@ fn default_options_and_helpers_are_deterministic() {
             password: None,
             charset: CsvCharset::default(),
             with_bom: true,
+            converters: ConverterRegistry::default(),
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");

@@ -29,6 +29,77 @@ impl ExcelRow for Value {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
+struct ConverterRow {
+    #[excel(name = "Value", index = 0)]
+    value: String,
+}
+
+#[derive(Clone, Copy)]
+struct PrefixConverter {
+    prefix: &'static str,
+    cell_type: CellDataType,
+}
+
+impl PrefixConverter {
+    const fn string(prefix: &'static str) -> Self {
+        Self {
+            prefix,
+            cell_type: CellDataType::String,
+        }
+    }
+}
+
+impl Converter<String> for PrefixConverter {
+    fn support_excel_type(&self) -> CellDataType {
+        self.cell_type
+    }
+
+    fn convert_to_rust_data(&self, context: &ReadConverterContext<'_>) -> Result<String> {
+        Ok(format!(
+            "{}:{}",
+            self.prefix,
+            context.cell().map_or_else(String::new, CellValue::as_text)
+        ))
+    }
+
+    fn convert_to_excel_data(
+        &self,
+        context: &WriteConverterContext<'_, String>,
+    ) -> Result<CellValue> {
+        Ok(CellValue::String(format!(
+            "{}:{}",
+            self.prefix,
+            context.value()
+        )))
+    }
+}
+
+#[derive(Default)]
+struct FieldPrefixConverter;
+
+impl Converter<String> for FieldPrefixConverter {
+    fn convert_to_rust_data(&self, context: &ReadConverterContext<'_>) -> Result<String> {
+        Ok(format!(
+            "field:{}",
+            context.cell().map_or_else(String::new, CellValue::as_text)
+        ))
+    }
+
+    fn convert_to_excel_data(
+        &self,
+        context: &WriteConverterContext<'_, String>,
+    ) -> Result<CellValue> {
+        Ok(CellValue::String(format!("field:{}", context.value())))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
+struct FieldConverterRow {
+    #[excel(name = "Value", index = 0, converter = FieldPrefixConverter)]
+    value: String,
+}
+
 struct WideCell(CellValue);
 
 impl ExcelRow for WideCell {
@@ -84,6 +155,9 @@ struct NoopWriteHandler;
 #[derive(Clone, Default)]
 struct DynamicListener(Arc<Mutex<Vec<DynamicRow>>>);
 
+#[derive(Clone, Default)]
+struct ConverterListener(Arc<Mutex<Vec<ConverterRow>>>);
+
 impl WriteHandler for NoopWriteHandler {}
 
 impl ReadListener<Value> for Listener {
@@ -110,6 +184,13 @@ impl ReadListener<Value> for FailingListener {
 impl ReadListener<DynamicRow> for DynamicListener {
     fn invoke(&mut self, data: DynamicRow, _context: &AnalysisContext) -> Result<()> {
         self.0.lock().expect("dynamic listener lock").push(data);
+        Ok(())
+    }
+}
+
+impl ReadListener<ConverterRow> for ConverterListener {
+    fn invoke(&mut self, data: ConverterRow, _context: &AnalysisContext) -> Result<()> {
+        self.0.lock().expect("converter listener lock").push(data);
         Ok(())
     }
 }
@@ -783,5 +864,99 @@ fn collecting_listener_appends_rows() -> Result<()> {
         &AnalysisContext::new("Sheet1", 0, 1),
     )?;
     assert_eq!(listener.0, vec![Value("value".to_owned())]);
+    Ok(())
+}
+
+#[test]
+fn registered_converter_runs_in_sync_and_event_read_paths() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("registered-read.xlsx");
+    EasyExcel::write::<ConverterRow>(&path).do_write([ConverterRow {
+        value: "source".to_owned(),
+    }])?;
+
+    let rows = EasyExcel::read_sync::<ConverterRow>(&path)
+        .register_converter::<String, _>(PrefixConverter::string("sync"))
+        .do_read_sync()?;
+    assert_eq!(rows[0].value, "sync:source");
+
+    let probe = ConverterListener::default();
+    let observed = Arc::clone(&probe.0);
+    EasyExcel::read::<ConverterRow, _>(&path, probe)
+        .register_converter::<String, _>(PrefixConverter::string("event"))
+        .do_read()?;
+    assert_eq!(
+        observed.lock().expect("converter listener lock")[0].value,
+        "event:source"
+    );
+
+    let fallback = EasyExcel::read_sync::<ConverterRow>(&path)
+        .register_converter::<String, _>(PrefixConverter {
+            prefix: "wrong-cell-type",
+            cell_type: CellDataType::Boolean,
+        })
+        .do_read_sync()?;
+    assert_eq!(fallback[0].value, "source");
+    Ok(())
+}
+
+#[test]
+fn registered_write_converter_uses_latest_registration_and_field_precedence() -> Result<()> {
+    let directory = tempdir()?;
+    let global_path = directory.path().join("registered-write.xlsx");
+    EasyExcel::write::<ConverterRow>(&global_path)
+        .register_converter::<String, _>(PrefixConverter::string("first"))
+        .register_converter::<String, _>(PrefixConverter::string("latest"))
+        .do_write([ConverterRow {
+            value: "source".to_owned(),
+        }])?;
+    let global = EasyExcel::read_sync::<ConverterRow>(&global_path).do_read_sync()?;
+    assert_eq!(global[0].value, "latest:source");
+
+    let field_path = directory.path().join("field-precedence.xlsx");
+    EasyExcel::write::<FieldConverterRow>(&field_path)
+        .register_converter::<String, _>(PrefixConverter::string("global"))
+        .do_write([FieldConverterRow {
+            value: "source".to_owned(),
+        }])?;
+    let written = EasyExcel::read_sync::<ConverterRow>(&field_path).do_read_sync()?;
+    assert_eq!(written[0].value, "field:source");
+
+    let read = EasyExcel::read_sync::<FieldConverterRow>(&global_path)
+        .register_converter::<String, _>(PrefixConverter::string("global"))
+        .do_read_sync()?;
+    assert_eq!(read[0].value, "field:latest:source");
+    Ok(())
+}
+
+#[test]
+fn sheet_converter_overrides_stateful_workbook_converter() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("stateful-converters.xlsx");
+    let mut writer = EasyExcel::write::<ConverterRow>(&path)
+        .register_converter::<String, _>(PrefixConverter::string("workbook"))
+        .build();
+    let workbook_sheet = EasyExcel::writer_sheet::<ConverterRow>("Workbook");
+    let override_sheet = EasyExcel::writer_sheet::<ConverterRow>("Override")
+        .register_converter::<String, _>(PrefixConverter::string("sheet"));
+    writer.write(
+        [ConverterRow {
+            value: "one".to_owned(),
+        }],
+        &workbook_sheet,
+    )?;
+    writer.write(
+        [ConverterRow {
+            value: "two".to_owned(),
+        }],
+        &override_sheet,
+    )?;
+    writer.finish()?;
+
+    let rows = EasyExcel::read_sync::<ConverterRow>(&path)
+        .all_sheets()
+        .do_read_sync()?;
+    assert_eq!(rows[0].value, "workbook:one");
+    assert_eq!(rows[1].value, "sheet:two");
     Ok(())
 }
