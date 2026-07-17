@@ -158,8 +158,10 @@ XLSX package with the wrong extension.
 XLSX worksheet cells are read incrementally through Calamine's `quick-xml`
 cell stream rather than materializing the worksheet. Listener callbacks follow
 Java EasyExcel's ordering, including workbook-wide `has_next` termination and
-exception routing. The remaining SAX compatibility work is tracked explicitly
-in [the compatibility contract](docs/compatibility.md#xlsx-streaming-boundary).
+exception routing. With `ignore_empty_row(false)`, a row-metadata-only OOXML
+scan also preserves leading, intermediate, and trailing empty-row callbacks;
+the default path skips that extra scan. The remaining SAX compatibility work is
+tracked in [the compatibility contract](docs/compatibility.md#xlsx-streaming-boundary).
 
 Password-protected `.xlsx` files use the same Java-style builder call on both
 read and write paths:

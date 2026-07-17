@@ -28,6 +28,7 @@ ms-offcrypto-writer = "1.0.7"
 office-crypto = "0.2.0"
 proc-macro-crate = "3.4.0"
 proc-macro2 = "1.0.103"
+quick-xml = "0.41.0"
 quote = "1.0.40"
 rand = "0.9.2"
 rust_xlsxwriter = { version = "0.96.0", features = ["chrono", "constant_memory"] }

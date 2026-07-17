@@ -14,6 +14,10 @@ use easyexcel_core::{
 use encoding_rs::Encoding;
 use encoding_rs_io::DecodeReaderBytesBuilder;
 
+mod xlsx_rows;
+
+use xlsx_rows::XlsxRowMetadata;
+
 /// Selects a worksheet by index, name, or all sheets.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SheetSelector {
@@ -65,12 +69,39 @@ where
     T: ExcelRow,
     L: ReadListener<T>,
 {
-    let mut workbook = open_xlsx(path, options.password.as_deref())?;
+    let source = XlsxSource::open(path, options.password.as_deref())?;
+    read_xlsx_source::<T, L>(&source, options, listener)
+}
+
+fn read_xlsx_source<T, L>(
+    source: &XlsxSource,
+    options: &ReadOptions,
+    listener: &mut L,
+) -> Result<()>
+where
+    T: ExcelRow,
+    L: ReadListener<T>,
+{
+    let mut workbook = Xlsx::new(source.reader()?).map_err(format_error)?;
+    let mut row_metadata = (!options.ignore_empty_row)
+        .then(|| source.reader().and_then(XlsxRowMetadata::new))
+        .transpose()?;
     let names = selected_sheet_names(&workbook, &options.sheet)?;
     for (sheet_no, sheet_name) in names {
+        let last_explicit_row = row_metadata
+            .as_mut()
+            .map(|metadata| metadata.last_explicit_row(&sheet_name))
+            .transpose()?
+            .flatten();
         let mut consumer = TypedRowConsumer::<T> { listener };
-        if read_sheet(&mut workbook, sheet_no, &sheet_name, options, &mut consumer)?
-            == ReadFlow::Stop
+        if read_sheet(
+            &mut workbook,
+            sheet_no,
+            &sheet_name,
+            last_explicit_row,
+            options,
+            &mut consumer,
+        )? == ReadFlow::Stop
         {
             break;
         }
@@ -80,7 +111,7 @@ where
 
 enum XlsxInput {
     File(BufReader<File>),
-    Memory(Cursor<Vec<u8>>),
+    Memory(Cursor<Arc<[u8]>>),
 }
 
 impl Read for XlsxInput {
@@ -101,11 +132,19 @@ impl Seek for XlsxInput {
     }
 }
 
-fn open_xlsx(path: &Path, password: Option<&str>) -> Result<Xlsx<XlsxInput>> {
-    let mut reader = BufReader::new(File::open(path)?);
-    // If the lightweight probe itself fails, the XLSX parser below still
-    // returns the authoritative workbook error from the unchanged stream.
-    let input = if is_compound_document(&mut reader) {
+enum XlsxSource {
+    File(std::path::PathBuf),
+    Memory(Arc<[u8]>),
+}
+
+impl XlsxSource {
+    fn open(path: &Path, password: Option<&str>) -> Result<Self> {
+        let mut reader = BufReader::new(File::open(path)?);
+        // If the lightweight probe itself fails, the XLSX parser below still
+        // returns the authoritative workbook error from the unchanged stream.
+        if !is_compound_document(&mut reader) {
+            return Ok(Self::File(path.to_owned()));
+        }
         let password = password.ok_or_else(|| {
             ExcelError::Unsupported("encrypted OOXML workbook requires a password".to_owned())
         })?;
@@ -113,11 +152,15 @@ fn open_xlsx(path: &Path, password: Option<&str>) -> Result<Xlsx<XlsxInput>> {
             Ok(decrypted) => decrypted,
             Err(error) => return Err(decryption_error(&error)),
         };
-        XlsxInput::Memory(Cursor::new(decrypted))
-    } else {
-        XlsxInput::File(reader)
-    };
-    Xlsx::new(input).map_err(format_error)
+        Ok(Self::Memory(Arc::from(decrypted)))
+    }
+
+    fn reader(&self) -> Result<XlsxInput> {
+        match self {
+            Self::File(path) => Ok(XlsxInput::File(BufReader::new(File::open(path)?))),
+            Self::Memory(bytes) => Ok(XlsxInput::Memory(Cursor::new(Arc::clone(bytes)))),
+        }
+    }
 }
 
 fn is_compound_document(reader: &mut dyn BufRead) -> bool {
@@ -352,6 +395,7 @@ fn read_sheet<RS>(
     workbook: &mut Xlsx<RS>,
     sheet_no: usize,
     sheet_name: &str,
+    last_explicit_row: Option<u32>,
     options: &ReadOptions,
     consumer: &mut dyn RowConsumer,
 ) -> Result<ReadFlow>
@@ -417,7 +461,23 @@ where
         return Ok(ReadFlow::Stop);
     }
 
-    let final_row = current_index.unwrap_or_default();
+    if let Some(last_row) = last_explicit_row {
+        let first_trailing_row = current_index.map_or(0, |row| row.saturating_add(1));
+        if process_missing_rows(
+            first_trailing_row,
+            last_row.saturating_add(1),
+            sheet_no,
+            sheet_name,
+            options,
+            &mut headers,
+            consumer,
+        )? == ReadFlow::Stop
+        {
+            return Ok(ReadFlow::Stop);
+        }
+    }
+
+    let final_row = last_explicit_row.or(current_index).unwrap_or_default();
     consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))?;
     Ok(ReadFlow::Continue)
 }

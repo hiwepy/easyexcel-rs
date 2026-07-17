@@ -75,6 +75,8 @@ struct Probe {
     continue_reading: bool,
     fail_head: bool,
     fail_invoke: bool,
+    fail_invoke_at: Option<usize>,
+    invoke_count: usize,
     fail_after: bool,
     error_action: Option<ErrorAction>,
     errors: usize,
@@ -96,7 +98,8 @@ impl ReadListener<TestRow> for Probe {
     }
 
     fn invoke(&mut self, data: TestRow, _context: &AnalysisContext) -> Result<()> {
-        if self.fail_invoke {
+        self.invoke_count += 1;
+        if self.fail_invoke || self.fail_invoke_at == Some(self.invoke_count) {
             return Err(ExcelError::Format("invoke failed".to_owned()));
         }
         self.rows.push(data);
@@ -190,6 +193,29 @@ fn rewrite_first_sheet(source: &Path, destination: &Path, replacement: &str) -> 
             entry.read_to_end(&mut bytes)?;
             writer.write_all(&bytes)?;
         }
+    }
+    writer.finish().map_err(test_error)?;
+    Ok(())
+}
+
+fn remove_first_sheet(source: &Path, destination: &Path) -> Result<()> {
+    let mut archive = ZipArchive::new(fs::File::open(source)?).map_err(test_error)?;
+    let mut writer = ZipWriter::new(fs::File::create(destination)?);
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(test_error)?;
+        let name = entry.name().to_owned();
+        if name == "xl/worksheets/sheet1.xml" {
+            continue;
+        }
+        let options = SimpleFileOptions::default().compression_method(entry.compression());
+        if entry.is_dir() {
+            writer.add_directory(name, options).map_err(test_error)?;
+            continue;
+        }
+        writer.start_file(&name, options).map_err(test_error)?;
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes)?;
+        writer.write_all(&bytes)?;
     }
     writer.finish().map_err(test_error)?;
     Ok(())
@@ -538,6 +564,22 @@ fn reads_java_easyexcel_encrypted_xlsx_fixture() -> Result<()> {
     );
     assert_eq!(probe.heads[0].get("姓名"), Some(&0));
     assert_eq!(probe.after, vec![("0".to_owned(), 0, 10)]);
+
+    let mut empty_row_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_xlsx::<TestRow, _>(
+        &path,
+        &ReadOptions {
+            ignore_empty_row: false,
+            password: Some("123456".to_owned()),
+            ..options()
+        },
+        &mut empty_row_probe,
+    )?;
+    assert_eq!(empty_row_probe.rows.len(), 10);
+    assert_eq!(empty_row_probe.after, vec![("0".to_owned(), 0, 10)]);
     Ok(())
 }
 
@@ -1109,9 +1151,20 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
     let mut consumer = TypedRowConsumer::<TestRow> {
         listener: &mut direct,
     };
-    assert!(read_sheet(&mut opened, 0, "Missing", &options(), &mut consumer).is_err());
-    let mut public_opened = open_xlsx(&path, None)?;
-    assert!(read_sheet(&mut public_opened, 0, "Missing", &options(), &mut consumer,).is_err());
+    assert!(read_sheet(&mut opened, 0, "Missing", None, &options(), &mut consumer).is_err());
+    let source = XlsxSource::open(&path, None)?;
+    let mut public_opened = Xlsx::new(source.reader()?).map_err(test_error)?;
+    assert!(
+        read_sheet(
+            &mut public_opened,
+            0,
+            "Missing",
+            None,
+            &options(),
+            &mut consumer,
+        )
+        .is_err()
+    );
 
     let empty_path = fixture_directory.path().join("empty.xlsx");
     let mut empty_workbook = Workbook::new();
@@ -1188,6 +1241,128 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
     };
     assert!(read_xlsx::<TestRow, _>(&sparse_path, &sparse_options, &mut failing_sparse).is_err());
     assert_eq!(failing_sparse.errors, 1);
+
+    let trailing_empty_path = fixture_directory.path().join("trailing-empty.xlsx");
+    let trailing_empty_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>Value</t></is></c></row>
+    <row r="2"><c r="A2" t="inlineStr"><is><t>one</t></is></c></row>
+    <row r="5"/>
+  </sheetData>
+</worksheet>"#;
+    rewrite_first_sheet(&path, &trailing_empty_path, trailing_empty_xml)?;
+    let mut trailing_empty_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_xlsx::<TestRow, _>(
+        &trailing_empty_path,
+        &sparse_options,
+        &mut trailing_empty_probe,
+    )?;
+    assert_eq!(
+        trailing_empty_probe.rows,
+        vec![
+            TestRow("one".to_owned()),
+            TestRow(String::new()),
+            TestRow(String::new()),
+            TestRow(String::new())
+        ]
+    );
+    assert_eq!(trailing_empty_probe.after, vec![("First".to_owned(), 0, 4)]);
+
+    let mut stopped_trailing = Probe {
+        continue_reading: true,
+        stop_after_callbacks: Some(3),
+        ..Probe::default()
+    };
+    read_xlsx::<TestRow, _>(&trailing_empty_path, &sparse_options, &mut stopped_trailing)?;
+    assert_eq!(
+        stopped_trailing.rows,
+        vec![TestRow("one".to_owned()), TestRow(String::new())]
+    );
+    assert!(stopped_trailing.after.is_empty());
+
+    let mut failing_trailing = Probe {
+        continue_reading: true,
+        fail_invoke_at: Some(2),
+        ..Probe::default()
+    };
+    assert!(
+        read_xlsx::<TestRow, _>(&trailing_empty_path, &sparse_options, &mut failing_trailing,)
+            .is_err()
+    );
+    assert_eq!(failing_trailing.errors, 1);
+
+    let empty_rows_path = fixture_directory.path().join("only-empty-rows.xlsx");
+    let empty_rows_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row/><row/><row/></sheetData>
+</worksheet>"#;
+    rewrite_first_sheet(&path, &empty_rows_path, empty_rows_xml)?;
+    let mut empty_rows_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    read_xlsx::<TestRow, _>(
+        &empty_rows_path,
+        &ReadOptions {
+            head_row_number: 0,
+            ignore_empty_row: false,
+            ..options()
+        },
+        &mut empty_rows_probe,
+    )?;
+    assert_eq!(
+        empty_rows_probe.rows,
+        vec![
+            TestRow(String::new()),
+            TestRow(String::new()),
+            TestRow(String::new())
+        ]
+    );
+    assert_eq!(empty_rows_probe.after, vec![("First".to_owned(), 0, 2)]);
+
+    let invalid_row_path = fixture_directory.path().join("invalid-row.xlsx");
+    let invalid_row_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData><row r="0"/></sheetData>
+</worksheet>"#;
+    rewrite_first_sheet(&path, &invalid_row_path, invalid_row_xml)?;
+    let mut invalid_row_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    assert!(
+        read_xlsx::<TestRow, _>(
+            &invalid_row_path,
+            &ReadOptions {
+                ignore_empty_row: false,
+                ..options()
+            },
+            &mut invalid_row_probe,
+        )
+        .is_err()
+    );
+
+    let missing_sheet_path = fixture_directory.path().join("missing-sheet-part.xlsx");
+    remove_first_sheet(&path, &missing_sheet_path)?;
+    let mut missing_sheet_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    assert!(
+        read_xlsx::<TestRow, _>(
+            &missing_sheet_path,
+            &ReadOptions {
+                ignore_empty_row: false,
+                ..options()
+            },
+            &mut missing_sheet_probe,
+        )
+        .is_err()
+    );
 
     let leading_sparse_path = fixture_directory.path().join("leading-sparse.xlsx");
     let leading_sparse_xml = worksheet_xml(r#"<c r="A3" t="inlineStr"><is><t>first</t></is></c>"#)
@@ -1273,6 +1448,8 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
         )
         .is_err()
     );
+    let missing_source = XlsxSource::File(directory.path().join("missing-source.xlsx"));
+    assert!(read_xlsx_source::<TestRow, _>(&missing_source, &options(), &mut probe).is_err());
     assert!(read_xlsx::<TestRow, _>(directory.path(), &options(), &mut probe).is_err());
     let invalid_encrypted = directory.path().join("invalid-encrypted.xlsx");
     fs::write(

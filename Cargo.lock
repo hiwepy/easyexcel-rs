@@ -319,6 +319,7 @@ dependencies = [
  "encoding_rs_io",
  "flate2",
  "office-crypto",
+ "quick-xml 0.41.0",
  "rust_xlsxwriter",
  "tempfile",
  "zip 7.2.0",
