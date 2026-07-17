@@ -68,6 +68,15 @@ impl EasyExcel {
         WriteSheet::new(name)
     }
 
+    /// Creates typed worksheet metadata for a Java-style zero-based sheet number.
+    #[must_use]
+    pub fn writer_sheet_index<T>(index: usize) -> WriteSheet<T>
+    where
+        T: ExcelRow,
+    {
+        WriteSheet::new_index(index)
+    }
+
     /// Fills scalar `{key}` placeholders in an existing XLSX template.
     ///
     /// # Errors
@@ -273,6 +282,14 @@ where
     #[must_use]
     pub fn sheet(mut self, name: impl Into<String>) -> Self {
         self.options.sheet_name = name.into();
+        self
+    }
+
+    /// Sets the Java-style zero-based logical worksheet number.
+    #[must_use]
+    pub fn sheet_index(mut self, index: usize) -> Self {
+        self.options.sheet_index = Some(index);
+        self.options.sheet_name = index.to_string();
         self
     }
 

@@ -65,7 +65,9 @@ logical path for handler context.
 
 Stateful builders follow Java `ExcelWriter` semantics: repeated writes to the
 same sheet append rows without repeating the head. XLSX may target multiple
-sheets, while CSV accepts one logical sheet:
+sheets, while CSV accepts one logical sheet. `writer_sheet_index(index)` and
+`WriteSheet::sheet_index(index)` provide Java-style zero-based logical sheet
+numbers; a cached number takes precedence over a newly supplied name:
 
 ```rust,no_run
 # use easyexcel::{EasyExcel, ExcelRow};

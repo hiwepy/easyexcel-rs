@@ -30,7 +30,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | built-in scalar converters | `FromExcelCell` / `IntoExcelCell` | partial |
 | custom `Converter<T>` | `#[excel(converter = Type)]` + converter contexts | partial: field converter implemented |
 | `EasyExcel.write(file, head)` | `EasyExcel::write::<T>(file)` | implemented |
-| `sheet(Integer/String)` | `sheet(index/name)` | partial: name implemented |
+| `sheet(Integer/String)` | `sheet_index(index)` / `sheet(name)` | implemented |
 | `needHead` | `need_head` | implemented |
 | freeze panes | `freeze_head` / `freeze_panes` | implemented |
 | `doWrite(Collection)` | `do_write(IntoIterator)` | implemented |

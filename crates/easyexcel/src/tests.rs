@@ -169,6 +169,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .constant_memory(true);
     assert_eq!(write.path, PathBuf::from("output.xlsx"));
     assert_eq!(write.options.sheet_name, "Values");
+    assert_eq!(write.options.sheet_index, None);
     assert!(!write.options.need_head);
     assert!(write.options.freeze_head);
     assert_eq!(write.options.freeze_panes, Some((2, 1)));
@@ -202,6 +203,13 @@ fn factories_and_builder_options_match_java_style_chaining() {
     assert_eq!(write.options.password.as_deref(), Some("write-secret"));
     assert_eq!(write.options.charset.name(), "GBK");
     assert!(!write.options.with_bom);
+
+    let indexed_write = EasyExcel::write::<Value>("indexed.xlsx").sheet_index(4);
+    assert_eq!(indexed_write.options.sheet_index, Some(4));
+    assert_eq!(indexed_write.options.sheet_name, "4");
+    let indexed_sheet = EasyExcel::writer_sheet_index::<Value>(5);
+    assert_eq!(indexed_sheet.options().sheet_index, Some(5));
+    assert_eq!(indexed_sheet.options().sheet_name, "5");
 }
 
 #[test]

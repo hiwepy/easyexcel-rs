@@ -225,6 +225,8 @@ impl LoopMergeStrategy {
 pub struct WriteOptions {
     /// Worksheet name.
     pub sheet_name: String,
+    /// Optional logical worksheet number, starting from zero.
+    pub sheet_index: Option<usize>,
     /// Whether to use a one-row constant-memory worksheet.
     pub constant_memory: bool,
     /// Whether column headers are written.
@@ -269,6 +271,7 @@ impl Default for WriteOptions {
     fn default() -> Self {
         Self {
             sheet_name: "Sheet1".to_owned(),
+            sheet_index: None,
             constant_memory: false,
             need_head: true,
             freeze_head: false,
@@ -312,10 +315,30 @@ impl<T> WriteSheet<T> {
         }
     }
 
+    /// Creates worksheet metadata identified by a Java-style zero-based sheet number.
+    #[must_use]
+    pub fn new_index(index: usize) -> Self {
+        Self {
+            options: WriteOptions {
+                sheet_name: index.to_string(),
+                sheet_index: Some(index),
+                ..WriteOptions::default()
+            },
+            marker: PhantomData,
+        }
+    }
+
     /// Returns the effective write options.
     #[must_use]
     pub const fn options(&self) -> &WriteOptions {
         &self.options
+    }
+
+    /// Adds a Java-style zero-based logical sheet number to this worksheet.
+    #[must_use]
+    pub const fn sheet_index(mut self, index: usize) -> Self {
+        self.options.sheet_index = Some(index);
+        self
     }
 
     /// Enables or disables headers for this sheet.
@@ -419,6 +442,7 @@ pub struct ExcelWriter {
     workbook: Workbook,
     handlers: Vec<Box<dyn WriteHandler>>,
     sheets: HashMap<String, StatefulSheetState>,
+    sheet_indexes: HashMap<usize, String>,
     csv_writer: Option<csv::Writer<CsvEncodingWriter>>,
     csv_charset: CsvCharset,
     csv_with_bom: bool,
@@ -469,6 +493,7 @@ impl ExcelWriter {
             workbook: Workbook::new(),
             handlers,
             sheets: HashMap::new(),
+            sheet_indexes: HashMap::new(),
             csv_writer: None,
             csv_charset: options.charset,
             csv_with_bom: options.with_bom,
@@ -497,13 +522,12 @@ impl ExcelWriter {
             ));
         }
         self.start()?;
-        let sheet_name = sheet.options().sheet_name.clone();
         if is_csv_path(&self.path) {
             self.write_csv_batch::<T, I>(rows, sheet)?;
         } else {
             self.write_xlsx_batch::<T, I>(rows, sheet)?;
         }
-        debug_assert!(self.sheets.contains_key(&sheet_name));
+        debug_assert!(self.resolve_sheet_name(sheet.options()).is_some());
         Ok(self)
     }
 
@@ -558,8 +582,13 @@ impl ExcelWriter {
         T: ExcelRow,
         I: IntoIterator<Item = T>,
     {
-        let sheet_name = sheet.options().sheet_name.clone();
-        if let Some(state) = self.sheets.get(&sheet_name).cloned() {
+        let requested_name = sheet.options().sheet_name.clone();
+        if let Some(sheet_name) = self.resolve_sheet_name(sheet.options()) {
+            let state = self
+                .sheets
+                .get(&sheet_name)
+                .cloned()
+                .expect("resolved worksheet must exist");
             validate_stateful_schema(&sheet_name, &state, T::schema())?;
             let worksheet = self
                 .workbook
@@ -594,7 +623,7 @@ impl ExcelWriter {
             &mut self.handlers,
         )?;
         self.sheets.insert(
-            sheet_name,
+            requested_name.clone(),
             StatefulSheetState {
                 schema: T::schema(),
                 options,
@@ -602,6 +631,7 @@ impl ExcelWriter {
                 next_data_index: progress.next_data_index,
             },
         );
+        self.remember_sheet_index(sheet.options().sheet_index, &requested_name);
         Ok(())
     }
 
@@ -610,14 +640,14 @@ impl ExcelWriter {
         T: ExcelRow,
         I: IntoIterator<Item = T>,
     {
-        let sheet_name = sheet.options().sheet_name.clone();
-        if let Some(existing_name) = self.sheets.keys().next()
-            && existing_name != &sheet_name
-        {
+        let requested_name = sheet.options().sheet_name.clone();
+        let existing_name = self.resolve_sheet_name(sheet.options());
+        if existing_name.is_none() && !self.sheets.is_empty() {
             return Err(ExcelError::Unsupported(
                 "CSV supports only one worksheet".to_owned(),
             ));
         }
+        let sheet_name = existing_name.unwrap_or(requested_name);
 
         let (state, is_new) = if let Some(state) = self.sheets.get(&sheet_name).cloned() {
             validate_stateful_schema(&sheet_name, &state, T::schema())?;
@@ -658,14 +688,34 @@ impl ExcelWriter {
             after_sheet(&mut self.handlers, &sheet_context)?;
         }
         self.sheets.insert(
-            sheet_name,
+            sheet_name.clone(),
             StatefulSheetState {
                 next_row: progress.next_row,
                 next_data_index: progress.next_data_index,
                 ..state
             },
         );
+        if is_new {
+            self.remember_sheet_index(sheet.options().sheet_index, &sheet_name);
+        }
         Ok(())
+    }
+
+    fn resolve_sheet_name(&self, options: &WriteOptions) -> Option<String> {
+        options
+            .sheet_index
+            .and_then(|index| self.sheet_indexes.get(&index).cloned())
+            .or_else(|| {
+                self.sheets
+                    .contains_key(&options.sheet_name)
+                    .then(|| options.sheet_name.clone())
+            })
+    }
+
+    fn remember_sheet_index(&mut self, index: Option<usize>, sheet_name: &str) {
+        if let Some(index) = index {
+            self.sheet_indexes.insert(index, sheet_name.to_owned());
+        }
     }
 }
 

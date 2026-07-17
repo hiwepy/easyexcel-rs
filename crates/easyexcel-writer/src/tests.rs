@@ -463,6 +463,7 @@ fn default_options_and_helpers_are_deterministic() {
         WriteOptions::default(),
         WriteOptions {
             sheet_name: "Sheet1".to_owned(),
+            sheet_index: None,
             constant_memory: false,
             need_head: true,
             freeze_head: false,
@@ -511,6 +512,12 @@ fn default_options_and_helpers_are_deterministic() {
             vec!["User".to_owned(), "Age".to_owned()],
         ])
     );
+    let indexed = WriteSheet::<EveryCell>::new_index(5);
+    assert_eq!(indexed.options().sheet_index, Some(5));
+    assert_eq!(indexed.options().sheet_name, "5");
+    let indexed_name = WriteSheet::<EveryCell>::new("Named").sheet_index(6);
+    assert_eq!(indexed_name.options().sheet_index, Some(6));
+    assert_eq!(indexed_name.options().sheet_name, "Named");
 }
 
 #[test]
@@ -922,6 +929,7 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
         events: Rc::clone(&events),
     })];
     let first = WriteSheet::<EveryCell>::new("Users")
+        .sheet_index(7)
         .freeze_head(true)
         .merge_cells(MergeRange::new(0, 0, 0, 1))
         .auto_width(true)
@@ -931,9 +939,11 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
         .content_styles([CellStyle::new().wrap_text(true)])
         .loop_merge(LoopMergeStrategy::new(2, 1, 0)?);
     let second = WriteSheet::<EveryCell>::new("Archive")
+        .sheet_index(9)
         .need_head(false)
         .constant_memory(true);
     assert_eq!(first.options().sheet_name, "Users");
+    assert_eq!(first.options().sheet_index, Some(7));
     assert!(first.options().freeze_head);
     assert!(first.options().auto_width);
     assert_eq!(first.options().column_widths, vec![(0, 20)]);
@@ -950,6 +960,8 @@ fn stateful_writer_supports_multiple_sheets_and_idempotent_finish() -> Result<()
         .write(vec![every_cell(), every_cell()], &first)?
         .write(vec![every_cell(), every_cell()], &first)?
         .write(vec![every_cell(), every_cell()], &second)?;
+    writer.write(Vec::new(), &WriteSheet::<EveryCell>::new_index(7))?;
+    writer.write(Vec::new(), &WriteSheet::<EveryCell>::new_index(9))?;
     writer.finish()?;
     assert!(writer.is_finished());
     writer.finish()?;
@@ -1162,11 +1174,12 @@ fn stateful_csv_appends_batches_with_one_head_and_one_sheet_lifecycle() -> Resul
         with_bom: false,
         ..WriteOptions::default()
     };
-    let sheet = WriteSheet::<EveryCell>::new("Values");
+    let sheet = WriteSheet::<EveryCell>::new("Values").sheet_index(3);
+    let indexed_alias = WriteSheet::<EveryCell>::new_index(3);
     let mut writer = ExcelWriter::with_handlers_and_options(&path, handlers, options);
     writer
         .write(vec![every_cell()], &sheet)?
-        .write(vec![every_cell()], &sheet)?;
+        .write(vec![every_cell()], &indexed_alias)?;
     USE_WIDE_SCHEMA.with(|wide| wide.set(true));
     let schema_change_result = writer.write(Vec::new(), &sheet);
     USE_WIDE_SCHEMA.with(|wide| wide.set(false));
