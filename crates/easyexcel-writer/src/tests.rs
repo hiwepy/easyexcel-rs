@@ -874,6 +874,27 @@ fn output_stream_exposes_real_ownership_close_and_poison_failures() {
 fn stateful_output_stream_propagates_csv_commit_start_and_close_failures() -> Result<()> {
     let sheet = WriteSheet::<EveryCell>::new("Values");
 
+    for (write_excel_on_exception, should_emit) in [(false, false), (true, true)] {
+        let output = ExcelOutputStream::new(Vec::new());
+        let inspect = output.clone();
+        let mut writer = ExcelWriter::with_output_stream(
+            "response.xlsx",
+            output,
+            Vec::new(),
+            WriteOptions {
+                auto_close_stream: false,
+                write_excel_on_exception,
+                ..WriteOptions::default()
+            },
+        );
+        writer.write([every_cell()], &sheet)?;
+        writer.finish_on_exception()?;
+        let bytes = inspect
+            .with_inner(Clone::clone)
+            .expect("open output stream");
+        assert_eq!(bytes.starts_with(b"PK"), should_emit);
+    }
+
     let mut invalid_charset = ExcelWriter::with_output_stream(
         "response.csv",
         ExcelOutputStream::new(Vec::new()),

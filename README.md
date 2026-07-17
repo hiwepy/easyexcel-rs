@@ -137,9 +137,31 @@ let users = EasyExcel::read_sync::<User>("users.csv")
 
 UTF-8, UTF-16LE/BE, GBK, and the other encodings exposed by `encoding_rs` are
 transcoded incrementally rather than buffering the complete CSV file.
-For Java `OutputStream`-style integration, use the re-exported
-`write_csv_to_writer` function with any owned Rust `Write` implementation and a
-logical path for handler context.
+Java `OutputStream`-style output is available for XLSX and CSV. A borrowed
+writer remains caller-owned, which is the Rust equivalent of
+`autoCloseStream(false)`:
+
+```rust,no_run
+# use easyexcel::{EasyExcel, ExcelRow};
+# #[derive(ExcelRow)] struct User { #[excel(name = "Name")] name: String }
+# fn run(users: Vec<User>) -> easyexcel::Result<()> {
+let mut response = Vec::new();
+EasyExcel::write::<User>("users.xlsx")
+    .to_writer(&mut response)
+    .do_write(users)?;
+assert!(response.starts_with(b"PK"));
+# Ok(())
+# }
+```
+
+For stateful multi-batch output, wrap an owned sink in `ExcelOutputStream` and
+use `to_output_stream`. Owned streams close by default; `auto_close_stream(false)`
+keeps the sink accessible. `finish_on_exception()` discards accumulated output
+by default, while `write_excel_on_exception(true)` emits it like Java
+EasyExcel. CSV output is staged until finish so the default exception path
+does not leak a partial response. The lower-level `write_xlsx_to_writer`,
+`write_csv_to_writer`, and `CsvEncodingWriter` APIs remain available when a
+builder is not needed.
 
 Java's no-model `Map<Integer, ...>` reads map to the ordered `DynamicRow` type.
 The default mode returns strings, while `ActualData` preserves scalar cell

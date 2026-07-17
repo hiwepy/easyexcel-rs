@@ -42,6 +42,9 @@ This document is the release gate, not a marketing checklist. A row is marked
 | default image write converters | `IntoExcelCell` for `Vec<u8>`, `Box<[u8]>`, `[u8; N]`, `PathBuf`, `ImageInputStream<R>`, and `Url`; `StringImageConverter` / `UrlImageConverter` | implemented for Java's default `byte[]`, `Byte[]`, `File`, `InputStream`, and `URL` inventory plus explicit `StringImageConverter`: sources are read/downloaded into real drawing/media parts, URL defaults match Java's 1-second connect and 5-second read timeouts, caller-owned streams remain open |
 | custom `Converter<T>` / `registerConverter` | `#[excel(converter = Type)]` / `register_converter::<T, _>(value)` + converter contexts | implemented: read dispatch uses Rust target type plus Excel cell type; write dispatch uses the Rust type; later registrations override earlier ones, sheet registrations override workbook registrations, and field annotations have highest priority across event/sync read and one-shot/stateful XLSX/CSV write paths |
 | `EasyExcel.write(file, head)` | `EasyExcel::write::<T>(file)` | implemented |
+| `EasyExcel.write(OutputStream, head)` | borrowed `to_writer(&mut W)` / owned `ExcelOutputStream` + `to_output_stream` | implemented for XLSX and CSV: one-shot and stateful multi-batch writes produce real bytes; borrowed sinks remain caller-owned |
+| `autoCloseStream` | `auto_close_stream` | implemented: owned output streams default to close-on-finish; borrowed writers always remain caller-owned |
+| `writeExcelOnException` / `finish(boolean)` | `write_excel_on_exception` / `finish_on_exception` | implemented: default exception completion discards accumulated output; opt-in emits it; handlers and close cleanup still run |
 | `sheet(Integer/String)` | `sheet_index(index)` / `sheet(name)` | implemented |
 | `needHead` | `need_head` | implemented |
 | freeze panes | `freeze_head` / `freeze_panes` | implemented |
@@ -183,9 +186,22 @@ provided by `encoding_rs`. A JVM installation can expose additional custom
 `CharsetProvider` implementations; those provider-specific names currently
 return a typed unsupported-operation error.
 
-`write_csv_to_writer` accepts any owned `std::io::Write` sink and preserves the
-same handler lifecycle as file output. Its logical path is context metadata,
-which mirrors Java EasyExcel's `OutputStream` use without requiring a real file.
+`to_writer(&mut W)` writes XLSX or CSV to a borrowed `std::io::Write` sink and
+never closes it. `ExcelOutputStream<W>` provides cloneable owned-stream
+lifecycle state for one-shot or stateful output. Owned streams default to
+`auto_close_stream(true)`; disabling it allows the caller to inspect or reuse
+the sink after finish. `finish_on_exception()` follows Java's
+`writeExcelOnException`: accumulated output is discarded by default and emitted
+only when explicitly enabled. CSV bytes are staged until completion so an
+exception cannot expose a partial response. XLSX, CSV, encryption, handler,
+flush, close, and malformed-stream failure paths are exercised with real
+in-memory and fault-injecting writers.
+
+The lower-level `write_xlsx_to_writer` and `write_csv_to_writer` functions use a
+logical path only for backend selection and handler context. `CsvEncodingWriter`
+supports incremental UTF-8 chunks, Java-style charset selection, explicit
+encoder finalization, incomplete UTF-8 detection, and underlying I/O error
+propagation.
 
 Stateful `ExcelWriter::write` caches the first `WriteSheet` configuration,
 continues row and content-style indexes across batches, and emits the head only

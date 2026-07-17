@@ -509,6 +509,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn facade_reads_and_writes_java_style_dynamic_rows() -> Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("dynamic.xlsx");
@@ -952,6 +953,7 @@ fn facade_csv_stream_writer_propagates_validation_and_io_failures() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn facade_borrowed_xlsx_stream_is_real_and_remains_caller_owned() -> Result<()> {
     let mut output = FacadeProbeWrite::default();
     EasyExcel::write::<Value>("response.xlsx")
