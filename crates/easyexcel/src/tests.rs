@@ -616,7 +616,13 @@ fn facade_reads_and_writes_java_style_dynamic_rows() -> Result<()> {
         .do_write([filter_source.clone()])?;
     EasyExcel::write::<DynamicRow>(directory.path().join("dynamic-field-filter.xlsx"))
         .include_column_field_names(["unknown"])
+        .do_write([filter_source.clone()])?;
+    EasyExcel::write::<DynamicRow>(directory.path().join("dynamic-index-include.xlsx"))
+        .include_column_indexes([1])
         .do_write([filter_source])?;
+    EasyExcel::write::<Value>(directory.path().join("typed-field-include.xlsx"))
+        .include_column_field_names(["value"])
+        .do_write([Value("included".to_owned())])?;
     Ok(())
 }
 
