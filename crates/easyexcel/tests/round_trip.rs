@@ -62,6 +62,15 @@ struct LargeInteger {
     value: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
+#[excel(column_width = 18, head_row_height = 24, content_row_height = 16)]
+struct AnnotatedDimensions {
+    #[excel(name = "姓名", index = 0, column_width = 30)]
+    name: String,
+    #[excel(name = "年龄", index = 1)]
+    age: u32,
+}
+
 struct EveryPublicCell;
 
 impl ExcelRow for EveryPublicCell {
@@ -235,6 +244,25 @@ fn derive_selected_converter_transforms_read_and_write_values() -> Result<()> {
         EasyExcel::read_sync::<ConvertedName>(&path).do_read_sync()?,
         expected
     );
+    Ok(())
+}
+
+#[test]
+fn derive_exposes_java_style_dimension_annotations() -> Result<()> {
+    let metadata = AnnotatedDimensions::write_metadata();
+    assert_eq!(AnnotatedDimensions::schema()[0].column_width, Some(30));
+    assert_eq!(AnnotatedDimensions::schema()[1].column_width, None);
+    assert_eq!(metadata.column_width, Some(18));
+    assert_eq!(metadata.head_row_height, Some(24));
+    assert_eq!(metadata.content_row_height, Some(16));
+
+    let directory = tempdir()?;
+    EasyExcel::write::<AnnotatedDimensions>(directory.path().join("dimensions.xlsx"))
+        .column_width(1, 40)
+        .do_write([AnnotatedDimensions {
+            name: "Alice".to_owned(),
+            age: 30,
+        }])?;
     Ok(())
 }
 

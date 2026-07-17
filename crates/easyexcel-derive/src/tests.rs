@@ -37,10 +37,35 @@ fn crate_paths_support_self_renames_and_fallback_lookup() {
 #[test]
 fn struct_options_accept_ignore_unannotated_and_reject_unknown_values() {
     let input: DeriveInput = parse_quote! {
-        #[excel(ignore_unannotated)]
+        #[excel(ignore_unannotated, column_width = 25, head_row_height = 20, content_row_height = 16)]
         struct User { name: String }
     };
-    assert!(parse_struct_options(&input.attrs).expect("valid option"));
+    let options = parse_struct_options(&input.attrs).expect("valid option");
+    assert!(options.ignore_unannotated);
+    assert_eq!(
+        options
+            .column_width
+            .expect("width")
+            .base10_parse::<u16>()
+            .expect("u16"),
+        25
+    );
+    assert_eq!(
+        options
+            .head_row_height
+            .expect("head height")
+            .base10_parse::<u16>()
+            .expect("u16"),
+        20
+    );
+    assert_eq!(
+        options
+            .content_row_height
+            .expect("content height")
+            .base10_parse::<u16>()
+            .expect("u16"),
+        16
+    );
 
     let input: DeriveInput = parse_quote! {
         #[excel(unknown)]
@@ -48,17 +73,30 @@ fn struct_options_accept_ignore_unannotated_and_reject_unknown_values() {
     };
     assert!(
         parse_struct_options(&input.attrs)
-            .expect_err("unknown option")
+            .err()
+            .expect("unknown option")
             .to_string()
             .contains("unsupported ExcelRow struct option")
     );
+
+    for attribute in [
+        "column_width",
+        "column_width = \"wide\"",
+        "column_width = 65536",
+        "head_row_height",
+        "content_row_height = -1",
+    ] {
+        let source = format!("#[excel({attribute})] struct User {{ value: String }}");
+        let input = syn::parse_str::<DeriveInput>(&source).expect("attribute tokens");
+        assert!(parse_struct_options(&input.attrs).is_err());
+    }
 }
 
 #[test]
 fn field_options_parse_every_supported_value_and_reject_unknown_values() {
     let input: DeriveInput = parse_quote! {
         struct User {
-            #[excel(name = "姓名", index = 2, order = 1, format = "%Y-%m-%d", converter = crate::NameConverter, ignore)]
+            #[excel(name = "姓名", index = 2, order = 1, format = "%Y-%m-%d", converter = crate::NameConverter, column_width = 30, ignore)]
             name: String,
         }
     };
@@ -88,6 +126,14 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
     );
     assert_eq!(options.format.expect("format").value(), "%Y-%m-%d");
     assert_eq!(options.converter.expect("converter").segments.len(), 2);
+    assert_eq!(
+        options
+            .column_width
+            .expect("width")
+            .base10_parse::<u16>()
+            .expect("u16"),
+        30
+    );
 
     let input: DeriveInput = parse_quote! {
         struct User { #[excel(unknown)] name: String }
@@ -115,6 +161,9 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
         "format = 1",
         "converter",
         "converter = 1",
+        "column_width",
+        "column_width = \"wide\"",
+        "column_width = 65536",
     ] {
         let source = format!("struct User {{ #[excel({attribute})] value: String }}");
         let input = syn::parse_str::<DeriveInput>(&source).expect("attribute tokens");
@@ -131,12 +180,12 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
 #[test]
 fn expansion_generates_schema_readers_writers_defaults_and_generics() {
     let input: DeriveInput = parse_quote! {
-        #[excel(ignore_unannotated)]
+        #[excel(ignore_unannotated, column_width = 25, head_row_height = 20, content_row_height = 16)]
         struct User<T>
         where
             T: Default,
         {
-            #[excel(name = "姓名", index = 0, order = 2, format = "text")]
+            #[excel(name = "姓名", index = 0, order = 2, format = "text", column_width = 30)]
             name: String,
             #[excel(ignore)]
             ignored: u32,
@@ -148,6 +197,8 @@ fn expansion_generates_schema_readers_writers_defaults_and_generics() {
         "impl < T >",
         "ExcelRow for User < T >",
         "ExcelColumn :: new",
+        "with_column_width (30)",
+        "ExcelWriteMetadata :: new () . column_width (25) . head_row_height (20) . content_row_height (16)",
         "姓名",
         "Option :: Some (0)",
         "Option :: Some (\"text\")",

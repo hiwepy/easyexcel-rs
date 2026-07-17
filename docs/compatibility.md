@@ -39,8 +39,9 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `WriteHandler` lifecycle | ordered `WriteHandler` callbacks | implemented |
 | include/exclude columns | builder filters | implemented |
 | column width / auto width | `column_width` / `auto_width` | implemented |
+| `@ColumnWidth` / `@HeadRowHeight` / `@ContentRowHeight` | `#[excel(column_width, head_row_height, content_row_height)]` | implemented: field width overrides type width; explicit builder width overrides annotations |
 | `HorizontalCellStyleStrategy` | header and cycling content `CellStyle` | implemented |
-| style annotations and borders | derive style metadata | planned |
+| font/fill/alignment/border annotations | derive style metadata | planned |
 | formulas/images/comments/hyperlinks | rich `CellValue` variants | partial: XLSX write implemented |
 | `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |
 | `LoopMergeStrategy` | repeating data-row merge metadata | implemented |

@@ -7,8 +7,8 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use easyexcel_core::{
-    CellValue, CsvCharset, ExcelColumn, ExcelError, ExcelRow, Result, WriteCellContext,
-    WriteHandler, WriteRowContext, WriteSheetContext, WriteWorkbookContext,
+    CellValue, CsvCharset, ExcelColumn, ExcelError, ExcelRow, ExcelWriteMetadata, Result,
+    WriteCellContext, WriteHandler, WriteRowContext, WriteSheetContext, WriteWorkbookContext,
 };
 use encoding_rs::{CoderResult, Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use ms_offcrypto_writer::Ecma376AgileWriter;
@@ -431,6 +431,7 @@ impl<T> WriteSheet<T> {
 #[derive(Clone)]
 struct StatefulSheetState {
     schema: &'static [ExcelColumn],
+    metadata: ExcelWriteMetadata,
     options: WriteOptions,
     next_row: u32,
     next_data_index: usize,
@@ -599,9 +600,12 @@ impl ExcelWriter {
                 &state.options,
                 rows,
                 &mut self.handlers,
-                state.next_row,
-                state.next_data_index,
+                WriteProgress {
+                    next_row: state.next_row,
+                    next_data_index: state.next_data_index,
+                },
                 false,
+                &state.metadata,
             )?;
             if state.options.auto_width {
                 worksheet.autofit();
@@ -626,6 +630,7 @@ impl ExcelWriter {
             requested_name.clone(),
             StatefulSheetState {
                 schema: T::schema(),
+                metadata: *T::write_metadata(),
                 options,
                 next_row: progress.next_row,
                 next_data_index: progress.next_data_index,
@@ -659,6 +664,7 @@ impl ExcelWriter {
             (
                 StatefulSheetState {
                     schema: T::schema(),
+                    metadata: *T::write_metadata(),
                     options,
                     next_row: 0,
                     next_data_index: 0,
@@ -1318,6 +1324,7 @@ where
             .set_column_width(*column, *width)
             .map_err(format_error)?;
     }
+    apply_annotation_column_widths::<T>(worksheet, options)?;
     for range in &options.merge_ranges {
         worksheet
             .merge_range(
@@ -1343,8 +1350,18 @@ where
     let sheet_context = WriteSheetContext::new(&options.sheet_name);
     before_sheet(handlers, &sheet_context)?;
 
-    let progress =
-        append_rows_to_worksheet::<T, I>(worksheet, options, rows, handlers, 0, 0, true)?;
+    let progress = append_rows_to_worksheet::<T, I>(
+        worksheet,
+        options,
+        rows,
+        handlers,
+        WriteProgress {
+            next_row: 0,
+            next_data_index: 0,
+        },
+        true,
+        T::write_metadata(),
+    )?;
     after_sheet(handlers, &sheet_context)?;
     if options.auto_width {
         worksheet.autofit();
@@ -1357,14 +1374,18 @@ fn append_rows_to_worksheet<T, I>(
     options: &WriteOptions,
     rows: I,
     handlers: &mut [Box<dyn WriteHandler>],
-    mut row_index: u32,
-    mut data_index: usize,
+    progress: WriteProgress,
     write_head: bool,
+    metadata: &ExcelWriteMetadata,
 ) -> Result<WriteProgress>
 where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
+    let WriteProgress {
+        next_row: mut row_index,
+        next_data_index: mut data_index,
+    } = progress;
     let columns = selected_columns(T::schema(), options);
     if write_head && options.need_head {
         if let Some(head) = &options.dynamic_head {
@@ -1385,9 +1406,22 @@ where
                 handlers,
             )?;
         }
-        row_index = dynamic_head_rows(options)?;
+        let head_rows = dynamic_head_rows(options)?;
+        if let Some(height) = metadata.head_row_height {
+            for head_row in row_index..row_index + head_rows {
+                worksheet
+                    .set_row_height(head_row, height)
+                    .map_err(format_error)?;
+            }
+        }
+        row_index += head_rows;
     }
     for row in rows {
+        if let Some(height) = metadata.content_row_height {
+            worksheet
+                .set_row_height(row_index, height)
+                .map_err(format_error)?;
+        }
         let cells = row.to_row()?;
         let style = (!options.content_styles.is_empty())
             .then(|| &options.content_styles[data_index % options.content_styles.len()]);
@@ -1494,6 +1528,31 @@ fn ordered_columns(schema: &'static [ExcelColumn]) -> Vec<(usize, usize, &'stati
         (*physical_index, column.order, *schema_index)
     });
     columns
+}
+
+fn apply_annotation_column_widths<T>(
+    worksheet: &mut Worksheet,
+    options: &WriteOptions,
+) -> Result<()>
+where
+    T: ExcelRow,
+{
+    let type_width = T::write_metadata().column_width;
+    for (physical_index, _, column) in selected_columns(T::schema(), options) {
+        if options
+            .column_widths
+            .iter()
+            .any(|(explicit, _)| usize::from(*explicit) == physical_index)
+        {
+            continue;
+        }
+        if let Some(width) = column.column_width.or(type_width) {
+            worksheet
+                .set_column_width(to_column(physical_index)?, width)
+                .map_err(format_error)?;
+        }
+    }
+    Ok(())
 }
 
 fn selected_columns(

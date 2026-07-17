@@ -63,7 +63,7 @@ fn cell_values_have_stable_text_and_empty_semantics() {
 
 #[test]
 fn row_data_resolves_index_before_header_name() {
-    let explicit = ExcelColumn::new("first", "Header", Some(1), 3, Some("0"));
+    let explicit = ExcelColumn::new("first", "Header", Some(1), 3, Some("0")).with_column_width(24);
     let named = ExcelColumn::new("second", "Header", None, i32::MAX, None);
     let missing = ExcelColumn::new("missing", "Missing", None, i32::MAX, None);
     let headers = Arc::new(HashMap::from([("Header".to_owned(), 0)]));
@@ -85,6 +85,20 @@ fn row_data_resolves_index_before_header_name() {
     assert_eq!(row.convert_context(&explicit).column_index, Some(1));
     assert_eq!(row.convert_context(&named).column_index, Some(0));
     assert_eq!(row.convert_context(&missing).column_index, None);
+    assert_eq!(explicit.column_width, Some(24));
+    assert_eq!(named.column_width, None);
+    assert_eq!(ExcelWriteMetadata::default(), ExcelWriteMetadata::new());
+    assert_eq!(
+        ExcelWriteMetadata::new()
+            .column_width(18)
+            .head_row_height(20)
+            .content_row_height(16),
+        ExcelWriteMetadata {
+            column_width: Some(18),
+            head_row_height: Some(20),
+            content_row_height: Some(16),
+        }
+    );
 }
 
 #[test]

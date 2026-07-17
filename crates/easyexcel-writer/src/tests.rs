@@ -173,6 +173,37 @@ fn cell_style_id(sheet_xml: &str, cell: &str) -> Option<String> {
         .map(|(style, _)| style.to_owned())
 }
 
+fn sheet_column_width(sheet_xml: &str, one_based_column: u16) -> Result<f64> {
+    let marker = format!("<col min=\"{one_based_column}\"");
+    let (_, column) = sheet_xml
+        .split_once(&marker)
+        .ok_or_else(|| test_error(format!("missing column {one_based_column}")))?;
+    let (_, width) = column
+        .split_once("width=\"")
+        .ok_or_else(|| test_error("missing column width"))?;
+    let (width, _) = width
+        .split_once('"')
+        .ok_or_else(|| test_error("unterminated column width"))?;
+    width.parse::<f64>().map_err(test_error)
+}
+
+fn sheet_row_height(sheet_xml: &str, one_based_row: u32) -> Result<f64> {
+    let marker = format!("<row r=\"{one_based_row}\"");
+    let (_, row) = sheet_xml
+        .split_once(&marker)
+        .ok_or_else(|| test_error(format!("missing row {one_based_row}")))?;
+    let (row, _) = row
+        .split_once('>')
+        .ok_or_else(|| test_error("unterminated row"))?;
+    let (_, height) = row
+        .split_once("ht=\"")
+        .ok_or_else(|| test_error("missing row height"))?;
+    let (height, _) = height
+        .split_once('"')
+        .ok_or_else(|| test_error("unterminated row height"))?;
+    height.parse::<f64>().map_err(test_error)
+}
+
 #[derive(Clone)]
 struct EveryCell {
     cells: Vec<CellValue>,
@@ -181,11 +212,46 @@ struct EveryCell {
 
 thread_local! {
     static USE_WIDE_SCHEMA: Cell<bool> = const { Cell::new(false) };
+    static USE_ANNOTATED_WIDE_SCHEMA: Cell<bool> = const { Cell::new(false) };
+    static USE_BACKEND_WIDE_SCHEMA: Cell<bool> = const { Cell::new(false) };
 }
 
 const TEST_COLUMN: ExcelColumn = ExcelColumn::new("value", "Value", Some(0), 0, None);
 
 struct SparseRow;
+
+struct DimensionRow;
+
+impl ExcelRow for DimensionRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] = &[
+            ExcelColumn::new("field", "Field", Some(0), 0, None).with_column_width(30),
+            ExcelColumn::new("type", "Type", Some(1), 0, None),
+            ExcelColumn::new("explicit", "Explicit", Some(2), 0, None),
+        ];
+        COLUMNS
+    }
+
+    fn write_metadata() -> &'static ExcelWriteMetadata {
+        const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new()
+            .column_width(18)
+            .head_row_height(24)
+            .content_row_height(16);
+        &METADATA
+    }
+
+    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+        Ok(Self)
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![
+            CellValue::String("field".to_owned()),
+            CellValue::String("type".to_owned()),
+            CellValue::String("explicit".to_owned()),
+        ])
+    }
+}
 
 impl ExcelRow for SparseRow {
     fn schema() -> &'static [ExcelColumn] {
@@ -229,7 +295,23 @@ impl ExcelRow for EveryCell {
         ];
         const WIDE_COLUMNS: &[ExcelColumn] =
             &[ExcelColumn::new("wide", "Wide", Some(65_536), 0, None)];
-        USE_WIDE_SCHEMA.with(|wide| if wide.get() { WIDE_COLUMNS } else { COLUMNS })
+        const ANNOTATED_WIDE_COLUMNS: &[ExcelColumn] =
+            &[ExcelColumn::new("wide", "Wide", Some(65_536), 0, None).with_column_width(10)];
+        const BACKEND_WIDE_COLUMNS: &[ExcelColumn] =
+            &[ExcelColumn::new("wide", "Wide", Some(65_535), 0, None).with_column_width(10)];
+        USE_BACKEND_WIDE_SCHEMA.with(|backend_wide| {
+            if backend_wide.get() {
+                BACKEND_WIDE_COLUMNS
+            } else {
+                USE_ANNOTATED_WIDE_SCHEMA.with(|annotated_wide| {
+                    if annotated_wide.get() {
+                        ANNOTATED_WIDE_COLUMNS
+                    } else {
+                        USE_WIDE_SCHEMA.with(|wide| if wide.get() { WIDE_COLUMNS } else { COLUMNS })
+                    }
+                })
+            }
+        })
     }
 
     fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
@@ -589,6 +671,30 @@ fn style_model_maps_every_alignment_and_cycles_content_rows() -> Result<()> {
 }
 
 #[test]
+fn annotation_dimensions_apply_field_type_and_explicit_precedence() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("annotation-dimensions.xlsx");
+    write_xlsx::<DimensionRow, _>(
+        &path,
+        &WriteOptions {
+            column_widths: vec![(2, 40)],
+            ..WriteOptions::default()
+        },
+        vec![DimensionRow],
+    )?;
+
+    let sheet = zip_entry(&path, "xl/worksheets/sheet1.xml")?;
+    let field_width = sheet_column_width(&sheet, 1)?;
+    let type_width = sheet_column_width(&sheet, 2)?;
+    let explicit_width = sheet_column_width(&sheet, 3)?;
+    assert!((field_width - type_width - 12.0).abs() < f64::EPSILON);
+    assert!((explicit_width - type_width - 22.0).abs() < f64::EPSILON);
+    assert!((sheet_row_height(&sheet, 1)? - 24.0).abs() < f64::EPSILON);
+    assert!((sheet_row_height(&sheet, 2)? - 16.0).abs() <= 0.25);
+    Ok(())
+}
+
+#[test]
 fn dynamic_multi_level_head_merges_parents_and_offsets_data_rows() -> Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("dynamic-head.xlsx");
@@ -683,9 +789,50 @@ fn dynamic_head_validation_and_backend_failures_are_typed() -> Result<()> {
             &invalid_head_options,
             Vec::new(),
             &mut [],
-            0,
-            0,
+            WriteProgress {
+                next_row: 0,
+                next_data_index: 0,
+            },
             true,
+            EveryCell::write_metadata(),
+        )
+        .is_err()
+    );
+    let invalid_head_height = ExcelWriteMetadata::new().head_row_height(16);
+    assert!(
+        append_rows_to_worksheet::<EveryCell, _>(
+            workbook.add_worksheet(),
+            &WriteOptions {
+                include_column_indexes: Some(Vec::new()),
+                ..WriteOptions::default()
+            },
+            Vec::new(),
+            &mut [],
+            WriteProgress {
+                next_row: 1_048_576,
+                next_data_index: 0,
+            },
+            true,
+            &invalid_head_height,
+        )
+        .is_err()
+    );
+    let invalid_content_height = ExcelWriteMetadata::new().content_row_height(16);
+    assert!(
+        append_rows_to_worksheet::<EveryCell, _>(
+            workbook.add_worksheet(),
+            &WriteOptions {
+                need_head: false,
+                ..WriteOptions::default()
+            },
+            vec![every_cell()],
+            &mut [],
+            WriteProgress {
+                next_row: 1_048_576,
+                next_data_index: 0,
+            },
+            true,
+            &invalid_content_height,
         )
         .is_err()
     );
@@ -714,6 +861,26 @@ fn dynamic_head_validation_and_backend_failures_are_typed() -> Result<()> {
         .is_err()
     );
     USE_WIDE_SCHEMA.with(|wide| wide.set(false));
+    USE_ANNOTATED_WIDE_SCHEMA.with(|wide| wide.set(true));
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("annotated-wide-column.xlsx"),
+            &WriteOptions::default(),
+            Vec::new(),
+        )
+        .is_err()
+    );
+    USE_ANNOTATED_WIDE_SCHEMA.with(|wide| wide.set(false));
+    USE_BACKEND_WIDE_SCHEMA.with(|wide| wide.set(true));
+    assert!(
+        write_xlsx::<EveryCell, _>(
+            &directory.path().join("backend-wide-column.xlsx"),
+            &WriteOptions::default(),
+            Vec::new(),
+        )
+        .is_err()
+    );
+    USE_BACKEND_WIDE_SCHEMA.with(|wide| wide.set(false));
 
     let head = vec![vec!["Group".to_owned()], vec!["Group".to_owned()]];
     for columns in [

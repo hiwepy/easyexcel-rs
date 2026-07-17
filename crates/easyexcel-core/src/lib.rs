@@ -134,6 +134,8 @@ pub struct ExcelColumn {
     pub order: i32,
     /// Optional date or number format.
     pub format: Option<&'static str>,
+    /// Optional annotation-driven column width in Excel character units.
+    pub column_width: Option<u16>,
 }
 
 impl ExcelColumn {
@@ -152,7 +154,59 @@ impl ExcelColumn {
             index,
             order,
             format,
+            column_width: None,
         }
+    }
+
+    /// Creates static column metadata with annotation-driven write dimensions.
+    #[must_use]
+    pub const fn with_column_width(mut self, width: u16) -> Self {
+        self.column_width = Some(width);
+        self
+    }
+}
+
+/// Type-level dimensions derived from Java-style write annotations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ExcelWriteMetadata {
+    /// Default width for columns without a field-level override.
+    pub column_width: Option<u16>,
+    /// Height for every generated header row.
+    pub head_row_height: Option<u16>,
+    /// Height for every generated content row.
+    pub content_row_height: Option<u16>,
+}
+
+impl ExcelWriteMetadata {
+    /// Creates empty write metadata.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            column_width: None,
+            head_row_height: None,
+            content_row_height: None,
+        }
+    }
+
+    /// Sets the type-level default column width.
+    #[must_use]
+    pub const fn column_width(mut self, width: u16) -> Self {
+        self.column_width = Some(width);
+        self
+    }
+
+    /// Sets the generated header-row height.
+    #[must_use]
+    pub const fn head_row_height(mut self, height: u16) -> Self {
+        self.head_row_height = Some(height);
+        self
+    }
+
+    /// Sets the generated content-row height.
+    #[must_use]
+    pub const fn content_row_height(mut self, height: u16) -> Self {
+        self.content_row_height = Some(height);
+        self
     }
 }
 
@@ -685,6 +739,13 @@ impl<T: IntoExcelCell> IntoExcelCell for Option<T> {
 pub trait ExcelRow: Sized {
     /// Returns static column metadata.
     fn schema() -> &'static [ExcelColumn];
+
+    /// Returns annotation-driven dimensions used by writers.
+    #[must_use]
+    fn write_metadata() -> &'static ExcelWriteMetadata {
+        const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new();
+        &METADATA
+    }
 
     /// Converts a physical row into the user type.
     ///

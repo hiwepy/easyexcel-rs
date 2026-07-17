@@ -29,6 +29,30 @@ EasyExcel::read::<User, _>("users.xlsx", listener)
 # }
 ```
 
+Java's `@ColumnWidth`, `@HeadRowHeight`, and `@ContentRowHeight` map to
+Rust derive attributes. A field width overrides the type-level default, while
+an explicit builder width overrides both:
+
+```rust,no_run
+use easyexcel::{EasyExcel, ExcelRow};
+
+#[derive(ExcelRow)]
+#[excel(column_width = 18, head_row_height = 24, content_row_height = 16)]
+struct User {
+    #[excel(name = "姓名", column_width = 30)]
+    name: String,
+    #[excel(name = "年龄")]
+    age: u32,
+}
+
+# fn run(users: Vec<User>) -> easyexcel::Result<()> {
+EasyExcel::write::<User>("users.xlsx")
+    .column_width(1, 22)
+    .do_write(users)?;
+# Ok(())
+# }
+```
+
 The same read and write builders automatically select the CSV engine for a
 `.csv` path. Typed mapping, listeners, column filters, and write handlers keep
 the same lifecycle. Like Java EasyExcel, CSV output includes a BOM by default
