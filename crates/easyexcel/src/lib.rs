@@ -1,6 +1,6 @@
 //! Public facade for typed, event-driven Excel reading and writing.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
@@ -134,8 +134,85 @@ impl EasyExcel {
     pub fn template_writer(
         template: impl AsRef<Path>,
         output: impl Into<PathBuf>,
-    ) -> Result<ExcelTemplateWriter> {
+    ) -> Result<ExcelTemplateWriter<'static>> {
         ExcelTemplateWriter::new(template, output)
+    }
+
+    /// Loads an XLSX template from a Java-style input stream and writes to a path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn template_writer_from_reader<R>(
+        template: R,
+        output: impl Into<PathBuf>,
+    ) -> Result<ExcelTemplateWriter<'static>>
+    where
+        R: Read,
+    {
+        ExcelTemplateWriter::from_reader(template, output)
+    }
+
+    /// Loads a path template and writes to a caller-owned output stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn template_writer_to_writer<W>(
+        template: impl AsRef<Path>,
+        output: &mut W,
+    ) -> Result<ExcelTemplateWriter<'_>>
+    where
+        W: Write,
+    {
+        ExcelTemplateWriter::to_writer(template, output)
+    }
+
+    /// Loads a stream template and writes to a caller-owned output stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn template_writer_from_reader_to_writer<R, W>(
+        template: R,
+        output: &mut W,
+    ) -> Result<ExcelTemplateWriter<'_>>
+    where
+        R: Read,
+        W: Write,
+    {
+        ExcelTemplateWriter::from_reader_to_writer(template, output)
+    }
+
+    /// Loads a path template and writes to a closeable output stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn template_writer_to_output_stream<'a, W>(
+        template: impl AsRef<Path>,
+        output: ExcelOutputStream<W>,
+    ) -> Result<ExcelTemplateWriter<'a>>
+    where
+        W: Write + 'a,
+    {
+        ExcelTemplateWriter::to_output_stream(template, output)
+    }
+
+    /// Loads a stream template and writes to a closeable output stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn template_writer_from_reader_to_output_stream<'a, R, W>(
+        template: R,
+        output: ExcelOutputStream<W>,
+    ) -> Result<ExcelTemplateWriter<'a>>
+    where
+        R: Read,
+        W: Write + 'a,
+    {
+        ExcelTemplateWriter::from_reader_to_output_stream(template, output)
     }
 }
 

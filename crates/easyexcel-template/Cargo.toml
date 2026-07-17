@@ -11,6 +11,7 @@ repository.workspace = true
 bigdecimal.workspace = true
 chrono.workspace = true
 easyexcel-core = { path = "../easyexcel-core" }
+easyexcel-writer = { path = "../easyexcel-writer" }
 num-bigint.workspace = true
 zip.workspace = true
 

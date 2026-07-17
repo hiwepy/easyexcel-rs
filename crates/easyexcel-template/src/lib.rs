@@ -1,15 +1,17 @@
 //! OOXML-preserving XLSX template filling.
 
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
 use std::fs::File;
-use std::io::{Read, Seek, Write};
+use std::io::{Cursor, Read, Seek, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
 use bigdecimal::BigDecimal;
 use chrono::{NaiveDate, NaiveDateTime};
 use easyexcel_core::{CellValue, ExcelError, Result};
+use easyexcel_writer::ExcelOutputStream;
 use num_bigint::BigInt;
 use zip::CompressionMethod;
 use zip::read::ZipArchive;
@@ -314,31 +316,183 @@ struct PendingCollectionFill {
 /// Scalar values and collection fills are accumulated against one loaded XLSX
 /// package. Repeated collection fills with the same prefix append at the prior
 /// fill position instead of reopening the original template.
-#[derive(Debug)]
-pub struct ExcelTemplateWriter {
-    output: PathBuf,
+pub struct ExcelTemplateWriter<'a> {
+    output: TemplateOutput<'a>,
     entries: Vec<TemplateEntry>,
     scalar: TemplateData,
     collections: Vec<PendingCollectionFill>,
     appended_rows: Vec<Vec<CellValue>>,
     finished: bool,
+    auto_close_stream: bool,
 }
 
-impl ExcelTemplateWriter {
+enum TemplateOutput<'a> {
+    Path(PathBuf),
+    Borrowed(&'a mut dyn Write),
+    Owned(Box<dyn CloseableWrite + 'a>),
+}
+
+trait CloseableWrite: Write {
+    fn close(&self) -> std::io::Result<()>;
+}
+
+impl<W> CloseableWrite for ExcelOutputStream<W>
+where
+    W: Write,
+{
+    fn close(&self) -> std::io::Result<()> {
+        ExcelOutputStream::close(self)
+    }
+}
+
+impl std::fmt::Debug for ExcelTemplateWriter<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let output = match self.output {
+            TemplateOutput::Path(_) => "path",
+            TemplateOutput::Borrowed(_) => "borrowed stream",
+            TemplateOutput::Owned(_) => "owned stream",
+        };
+        formatter
+            .debug_struct("ExcelTemplateWriter")
+            .field("output", &output)
+            .field("entries", &self.entries)
+            .field("scalar", &self.scalar)
+            .field("collections", &self.collections)
+            .field("appended_rows", &self.appended_rows)
+            .field("finished", &self.finished)
+            .field("auto_close_stream", &self.auto_close_stream)
+            .finish()
+    }
+}
+
+impl ExcelTemplateWriter<'static> {
     /// Loads a template package for stateful filling.
     ///
     /// # Errors
     ///
     /// Returns an I/O or OOXML package error when the template cannot be read.
     pub fn new(template: impl AsRef<Path>, output: impl Into<PathBuf>) -> Result<Self> {
-        Ok(Self {
-            output: output.into(),
-            entries: load_entries(template.as_ref())?,
+        Ok(Self::from_entries(
+            TemplateOutput::Path(output.into()),
+            load_entries(template.as_ref())?,
+        ))
+    }
+
+    /// Loads a template from a Java-style input stream and writes to a path.
+    ///
+    /// The reader is consumed and dropped after its bytes have been copied into
+    /// memory, matching Java `EasyExcel`'s default `autoCloseStream(true)` input
+    /// lifecycle. Pass `&mut reader` to retain caller ownership.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn from_reader<R>(template: R, output: impl Into<PathBuf>) -> Result<Self>
+    where
+        R: Read,
+    {
+        Ok(Self::from_entries(
+            TemplateOutput::Path(output.into()),
+            load_entries_from_reader(Box::new(template))?,
+        ))
+    }
+}
+
+impl<'a> ExcelTemplateWriter<'a> {
+    fn from_entries(output: TemplateOutput<'a>, entries: Vec<TemplateEntry>) -> Self {
+        Self {
+            output,
+            entries,
             scalar: TemplateData::new(),
             collections: Vec::new(),
             appended_rows: Vec::new(),
             finished: false,
-        })
+            auto_close_stream: true,
+        }
+    }
+
+    /// Loads a path template and writes to a caller-owned output stream.
+    ///
+    /// The borrowed writer is flushed but never closed or dropped by this
+    /// object, which is Rust's equivalent of Java `autoCloseStream(false)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn to_writer<W>(template: impl AsRef<Path>, output: &'a mut W) -> Result<Self>
+    where
+        W: Write,
+    {
+        Ok(Self::from_entries(
+            TemplateOutput::Borrowed(output),
+            load_entries(template.as_ref())?,
+        ))
+    }
+
+    /// Loads a stream template and writes to a caller-owned output stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn from_reader_to_writer<R, W>(template: R, output: &'a mut W) -> Result<Self>
+    where
+        R: Read,
+        W: Write,
+    {
+        Ok(Self::from_entries(
+            TemplateOutput::Borrowed(output),
+            load_entries_from_reader(Box::new(template))?,
+        ))
+    }
+
+    /// Loads a path template and writes to an explicitly closeable stream.
+    ///
+    /// Keep a clone of `output` to observe Java-compatible close state after
+    /// [`Self::finish`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn to_output_stream<W>(
+        template: impl AsRef<Path>,
+        output: ExcelOutputStream<W>,
+    ) -> Result<Self>
+    where
+        W: Write + 'a,
+    {
+        Ok(Self::from_entries(
+            TemplateOutput::Owned(Box::new(output)),
+            load_entries(template.as_ref())?,
+        ))
+    }
+
+    /// Loads a stream template and writes to an explicitly closeable stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn from_reader_to_output_stream<R, W>(
+        template: R,
+        output: ExcelOutputStream<W>,
+    ) -> Result<Self>
+    where
+        R: Read,
+        W: Write + 'a,
+    {
+        Ok(Self::from_entries(
+            TemplateOutput::Owned(Box::new(output)),
+            load_entries_from_reader(Box::new(template))?,
+        ))
+    }
+
+    /// Controls whether an owned output stream is closed by [`Self::finish`].
+    ///
+    /// The default is `true`, matching Java `EasyExcel`. Borrowed writers always
+    /// remain caller-owned regardless of this setting.
+    #[must_use]
+    pub const fn auto_close_stream(mut self, enabled: bool) -> Self {
+        self.auto_close_stream = enabled;
+        self
     }
 
     /// Accumulates scalar `{key}` values for this workbook.
@@ -424,7 +578,7 @@ impl ExcelTemplateWriter {
         replace_xml_placeholders(&mut self.entries, &self.scalar)?;
         append_rows_to_first_sheet(&mut self.entries, &self.appended_rows)?;
         self.finished = true;
-        write_entries(&self.output, &self.entries)
+        write_entries_to_output(&mut self.output, &self.entries, self.auto_close_stream)
     }
 
     /// Returns whether [`Self::finish`] has run.
@@ -448,9 +602,15 @@ trait ReadSeek: Read + Seek {}
 
 impl<T: Read + Seek> ReadSeek for T {}
 
-trait WriteSeek: Write + Seek {}
+trait WriteSeek: Write + Seek + Any {
+    fn into_any(self: Box<Self>) -> Box<dyn Any>;
+}
 
-impl<T: Write + Seek> WriteSeek for T {}
+impl<T: Write + Seek + Any> WriteSeek for T {
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
 
 type ArchiveWriter = ZipWriter<Box<dyn WriteSeek>>;
 
@@ -1412,6 +1572,12 @@ fn load_entries(path: &Path) -> Result<Vec<TemplateEntry>> {
     load_entries_from(Box::new(File::open(path)?))
 }
 
+fn load_entries_from_reader(mut reader: Box<dyn Read + '_>) -> Result<Vec<TemplateEntry>> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    load_entries_from(Box::new(Cursor::new(bytes)))
+}
+
 fn load_entries_from(reader: Box<dyn ReadSeek>) -> Result<Vec<TemplateEntry>> {
     let mut archive = ZipArchive::new(reader).map_err(format_error)?;
     let mut entries = Vec::with_capacity(archive.len());
@@ -1542,6 +1708,50 @@ fn write_entries(path: &Path, entries: &[TemplateEntry]) -> Result<()> {
         Ok(writer) => write_file_entries(writer, entries),
         Err(error) => Err(error.into()),
     }
+}
+
+fn write_entries_to_output(
+    output: &mut TemplateOutput<'_>,
+    entries: &[TemplateEntry],
+    auto_close_stream: bool,
+) -> Result<()> {
+    match output {
+        TemplateOutput::Path(path) => write_entries(path, entries),
+        TemplateOutput::Borrowed(writer) => {
+            let bytes = encode_entries(entries)?;
+            writer.write_all(&bytes)?;
+            writer.flush()?;
+            Ok(())
+        }
+        TemplateOutput::Owned(writer) => {
+            let write_result = encode_entries(entries).and_then(|bytes| {
+                writer
+                    .write_all(&bytes)
+                    .and_then(|()| writer.flush())
+                    .map_err(ExcelError::from)
+            });
+            let close_result = if auto_close_stream {
+                writer.close()
+            } else {
+                Ok(())
+            };
+            close_result.map_err(ExcelError::from)?;
+            write_result
+        }
+    }
+}
+
+fn encode_entries(entries: &[TemplateEntry]) -> Result<Vec<u8>> {
+    let writer = write_entries_to(Box::new(Cursor::new(Vec::new())), entries)?;
+    archive_output_bytes(writer)
+}
+
+fn archive_output_bytes(writer: Box<dyn WriteSeek>) -> Result<Vec<u8>> {
+    writer
+        .into_any()
+        .downcast::<Cursor<Vec<u8>>>()
+        .map(|cursor| cursor.into_inner())
+        .map_err(|_| ExcelError::Format("ZIP output buffer type changed".to_owned()))
 }
 
 fn write_file_entries(writer: File, entries: &[TemplateEntry]) -> Result<()> {

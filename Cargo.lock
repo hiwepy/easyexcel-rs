@@ -381,6 +381,7 @@ dependencies = [
  "calamine",
  "chrono",
  "easyexcel-core",
+ "easyexcel-writer",
  "flate2",
  "num-bigint",
  "rust_xlsxwriter",

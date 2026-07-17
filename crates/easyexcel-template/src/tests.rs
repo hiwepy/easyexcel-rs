@@ -1,5 +1,7 @@
 use std::fs;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use calamine::{Data, Reader, Xlsx, open_workbook};
@@ -17,6 +19,74 @@ struct FaultyIo {
     reads: usize,
     writes: usize,
     seeks: usize,
+}
+
+#[derive(Debug, Default)]
+struct SharedOutputState {
+    bytes: Vec<u8>,
+    fail_write: bool,
+    fail_flush: bool,
+    flushes: usize,
+}
+
+#[derive(Clone, Debug)]
+struct SharedOutput(Arc<Mutex<SharedOutputState>>);
+
+impl SharedOutput {
+    fn new(fail_write: bool, fail_flush: bool) -> Self {
+        Self(Arc::new(Mutex::new(SharedOutputState {
+            fail_write,
+            fail_flush,
+            ..SharedOutputState::default()
+        })))
+    }
+}
+
+impl Write for SharedOutput {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let mut state = self.0.lock().expect("output state lock");
+        if state.fail_write {
+            return Err(io::Error::other("injected stream write failure"));
+        }
+        state.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut state = self.0.lock().expect("output state lock");
+        state.flushes += 1;
+        if state.fail_flush {
+            Err(io::Error::other("injected stream flush failure"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct DropReader {
+    inner: Cursor<Vec<u8>>,
+    dropped: Arc<AtomicBool>,
+}
+
+impl DropReader {
+    fn new(bytes: Vec<u8>, dropped: Arc<AtomicBool>) -> Self {
+        Self {
+            inner: Cursor::new(bytes),
+            dropped,
+        }
+    }
+}
+
+impl Read for DropReader {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.inner.read(buffer)
+    }
+}
+
+impl Drop for DropReader {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
 }
 
 impl FaultyIo {
@@ -413,6 +483,180 @@ fn java_complex_fill_with_table_appends_summary_after_repeated_fill() -> Result<
         range.get_value((summary_row, 3)),
         Some(&Data::String("统计:1000".to_owned()))
     );
+    Ok(())
+}
+
+#[test]
+fn template_reader_and_owned_output_follow_java_default_close_lifecycle() -> Result<()> {
+    let (_directory, template) = template_fixture()?;
+    let input_dropped = Arc::new(AtomicBool::new(false));
+    let input = DropReader::new(fs::read(&template)?, Arc::clone(&input_dropped));
+    let state = SharedOutput::new(false, false);
+    let stream = ExcelOutputStream::new(state.clone());
+    let observer = stream.clone();
+
+    let mut writer = ExcelTemplateWriter::from_reader_to_output_stream(input, stream)?;
+    assert!(input_dropped.load(Ordering::SeqCst));
+    assert!(format!("{writer:?}").contains("owned stream"));
+    writer
+        .fill(&TemplateData::new().with("name", "stream"))?
+        .finish()?;
+
+    assert!(observer.is_closed());
+    let bytes = state.0.lock().expect("output state lock").bytes.clone();
+    let mut workbook = Xlsx::new(Cursor::new(bytes)).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    assert_eq!(
+        range.get((0, 0)),
+        Some(&Data::String("Hello stream".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn template_path_to_owned_output_can_retain_stream() -> Result<()> {
+    let (_directory, template) = template_fixture()?;
+    let state = SharedOutput::new(false, false);
+    let stream = ExcelOutputStream::new(state.clone());
+    let observer = stream.clone();
+    let mut writer =
+        ExcelTemplateWriter::to_output_stream(&template, stream)?.auto_close_stream(false);
+
+    writer.finish()?;
+    assert!(!observer.is_closed());
+    assert!(observer.with_inner(|_| ()).is_some());
+    observer.close()?;
+    assert!(observer.is_closed());
+    assert!(!state.0.lock().expect("output state lock").bytes.is_empty());
+    Ok(())
+}
+
+#[test]
+fn template_borrowed_output_remains_usable_for_path_and_reader_inputs() -> Result<()> {
+    let (directory, template) = template_fixture()?;
+    let reader_output = directory.path().join("reader-output.xlsx");
+    let mut path_writer =
+        ExcelTemplateWriter::from_reader(Cursor::new(fs::read(&template)?), &reader_output)?;
+    assert!(format!("{path_writer:?}").contains("path"));
+    path_writer.finish()?;
+    Xlsx::new(Cursor::new(fs::read(reader_output)?)).map_err(test_error)?;
+
+    let mut first = Cursor::new(Vec::new());
+    {
+        let mut writer = ExcelTemplateWriter::to_writer(&template, &mut first)?;
+        assert!(format!("{writer:?}").contains("borrowed stream"));
+        writer.finish()?;
+        writer.finish()?;
+    }
+    let first_bytes = first.get_ref().clone();
+    first.write_all(b"caller-owned")?;
+    assert!(first.get_ref().ends_with(b"caller-owned"));
+    Xlsx::new(Cursor::new(first_bytes)).map_err(test_error)?;
+
+    let mut second = Cursor::new(Vec::new());
+    ExcelTemplateWriter::from_reader_to_writer(Cursor::new(fs::read(&template)?), &mut second)?
+        .finish()?;
+    Xlsx::new(Cursor::new(second.into_inner())).map_err(test_error)?;
+    Ok(())
+}
+
+#[test]
+fn template_stream_failures_are_propagated_and_owned_stream_is_closed() -> Result<()> {
+    let (_directory, template) = template_fixture()?;
+    let bytes = fs::read(&template)?;
+    assert!(
+        ExcelTemplateWriter::from_reader(
+            FaultyIo::reading(bytes.clone(), 0),
+            template.with_extension("read-error.xlsx")
+        )
+        .is_err()
+    );
+
+    let missing = template.with_extension("missing.xlsx");
+    let mut constructor_output = Cursor::new(Vec::new());
+    assert!(ExcelTemplateWriter::to_writer(&missing, &mut constructor_output).is_err());
+    assert!(
+        ExcelTemplateWriter::from_reader_to_writer(
+            FaultyIo::reading(bytes.clone(), 0),
+            &mut constructor_output
+        )
+        .is_err()
+    );
+    assert!(
+        ExcelTemplateWriter::to_output_stream(
+            &missing,
+            ExcelOutputStream::new(SharedOutput::new(false, false))
+        )
+        .is_err()
+    );
+    assert!(
+        ExcelTemplateWriter::from_reader_to_output_stream(
+            FaultyIo::reading(bytes.clone(), 0),
+            ExcelOutputStream::new(SharedOutput::new(false, false))
+        )
+        .is_err()
+    );
+    ExcelTemplateWriter::from_reader(
+        FaultyIo::reading(bytes.clone(), usize::MAX),
+        template.with_extension("fault-reader-success.xlsx"),
+    )?
+    .finish()?;
+    assert!(
+        ExcelTemplateWriter::from_reader(
+            Cursor::new(b"not-a-zip".to_vec()),
+            template.with_extension("invalid.xlsx")
+        )
+        .is_err()
+    );
+
+    for (fail_write, fail_flush) in [(true, false), (false, true)] {
+        let state = SharedOutput::new(fail_write, fail_flush);
+        let stream = ExcelOutputStream::new(state);
+        let observer = stream.clone();
+        let mut writer =
+            ExcelTemplateWriter::from_reader_to_output_stream(Cursor::new(bytes.clone()), stream)?;
+        assert!(writer.finish().is_err());
+        assert!(observer.is_closed());
+    }
+
+    for (fail_write, fail_flush) in [(true, false), (false, true)] {
+        let mut output = SharedOutput::new(fail_write, fail_flush);
+        let mut writer = ExcelTemplateWriter::to_writer(&template, &mut output)?;
+        assert!(writer.finish().is_err());
+    }
+
+    let entries = load_entries(&template)?;
+    let wrong_type = write_entries_to(Box::new(FaultyIo::writing(usize::MAX)), &entries)?;
+    assert!(archive_output_bytes(wrong_type).is_err());
+
+    let invalid_entries = [TemplateEntry {
+        name: "invalid.bin".to_owned(),
+        is_dir: false,
+        compression: CompressionMethod::AES,
+        unix_mode: None,
+        bytes: vec![1],
+    }];
+    assert!(encode_entries(&invalid_entries).is_err());
+    let mut borrowed = Cursor::new(Vec::new());
+    assert!(
+        write_entries_to_output(
+            &mut TemplateOutput::Borrowed(&mut borrowed),
+            &invalid_entries,
+            true
+        )
+        .is_err()
+    );
+    let invalid_stream = ExcelOutputStream::new(SharedOutput::new(false, false));
+    let invalid_observer = invalid_stream.clone();
+    assert!(
+        write_entries_to_output(
+            &mut TemplateOutput::Owned(Box::new(invalid_stream)),
+            &invalid_entries,
+            true
+        )
+        .is_err()
+    );
+    assert!(invalid_observer.is_closed());
     Ok(())
 }
 
@@ -1208,22 +1452,24 @@ fn collection_coordinate_helpers_and_missing_input_are_deterministic() -> Result
     no_sheet_data[0].bytes = b"<worksheet/>".to_vec();
 
     let mut invalid_scalar_writer = ExcelTemplateWriter {
-        output: directory.path().join("invalid-scalar.xlsx"),
+        output: TemplateOutput::Path(directory.path().join("invalid-scalar.xlsx")),
         entries: invalid_sheet,
         scalar: TemplateData::new(),
         collections: Vec::new(),
         appended_rows: Vec::new(),
         finished: false,
+        auto_close_stream: true,
     };
     assert!(invalid_scalar_writer.finish().is_err());
     assert!(!invalid_scalar_writer.is_finished());
     let mut invalid_append_writer = ExcelTemplateWriter {
-        output: directory.path().join("invalid-append.xlsx"),
+        output: TemplateOutput::Path(directory.path().join("invalid-append.xlsx")),
         entries: no_sheet_data,
         scalar: TemplateData::new(),
         collections: Vec::new(),
         appended_rows: vec![vec![]],
         finished: false,
+        auto_close_stream: true,
     };
     assert!(invalid_append_writer.finish().is_err());
     assert!(!invalid_append_writer.is_finished());

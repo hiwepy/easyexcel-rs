@@ -457,11 +457,36 @@ follow Java and produce a string cell. `write_rows` appends ordinary
 `CellValue` rows after the filled template cursor, covering the Java
 `complexFillWithTable` pattern.
 
+Java-style template `InputStream` and output `OutputStream` workflows are also
+supported. The template reader is copied into memory before filling, matching
+Java EasyExcel. Owned output streams close on `finish()` by default; use
+`auto_close_stream(false)` to retain them. A borrowed Rust writer is always
+flushed and remains caller-owned:
+
+```rust,no_run
+use std::io::Cursor;
+use easyexcel::{EasyExcel, ExcelOutputStream, TemplateData};
+
+# fn run(template_bytes: Vec<u8>) -> easyexcel::Result<()> {
+let output = ExcelOutputStream::new(Cursor::new(Vec::new()));
+let observer = output.clone();
+let mut writer = EasyExcel::template_writer_from_reader_to_output_stream(
+    Cursor::new(template_bytes),
+    output,
+)?;
+writer
+    .fill(&TemplateData::new().with("title", "Stream report"))?
+    .finish()?;
+assert!(observer.is_closed());
+# Ok(())
+# }
+```
+
 The implementation is verified against Alibaba EasyExcel's official
 `simple.xlsx`, `composite.xlsx`, and `complexFillWithTable.xlsx` fixtures.
 Changing `FillConfig` for an already-used prefix, selecting a non-first sheet
-for appended rows, typed-model/write-handler composition, and template stream
-input/output remain compatibility work in progress.
+for appended rows, and typed-model/write-handler composition remain
+compatibility work in progress.
 
 ## Quality gates
 

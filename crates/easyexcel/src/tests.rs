@@ -123,6 +123,78 @@ fn write_minimal_template(path: &Path, shared_strings: &str, worksheet: &str) ->
     Ok(())
 }
 
+#[test]
+fn facade_template_stream_factories_write_real_archives_and_close_owned_outputs() -> Result<()> {
+    let directory = tempdir()?;
+    let template = directory.path().join("stream-template.xlsx");
+    write_minimal_template(
+        &template,
+        "<sst><si><t>{name}</t></si></sst>",
+        "<worksheet><sheetData><row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c></row></sheetData></worksheet>",
+    )?;
+    let bytes = fs::read(&template)?;
+
+    let path_output = directory.path().join("reader-path.xlsx");
+    EasyExcel::template_writer_from_reader(Cursor::new(bytes.clone()), &path_output)?.finish()?;
+    assert!(fs::read(path_output)?.starts_with(b"PK"));
+
+    let mut borrowed_path = Cursor::new(Vec::new());
+    EasyExcel::template_writer_to_writer(&template, &mut borrowed_path)?.finish()?;
+    assert!(borrowed_path.get_ref().starts_with(b"PK"));
+
+    let mut borrowed_reader = Cursor::new(Vec::new());
+    EasyExcel::template_writer_from_reader_to_writer(
+        Cursor::new(bytes.clone()),
+        &mut borrowed_reader,
+    )?
+    .finish()?;
+    assert!(borrowed_reader.get_ref().starts_with(b"PK"));
+
+    let path_stream = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let path_observer = path_stream.clone();
+    EasyExcel::template_writer_to_output_stream(&template, path_stream)?.finish()?;
+    assert!(path_observer.is_closed());
+
+    let reader_stream = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let reader_observer = reader_stream.clone();
+    EasyExcel::template_writer_from_reader_to_output_stream(Cursor::new(bytes), reader_stream)?
+        .finish()?;
+    assert!(reader_observer.is_closed());
+
+    let missing = directory.path().join("missing-template.xlsx");
+    assert!(
+        EasyExcel::template_writer_from_reader(
+            Cursor::new(b"invalid".to_vec()),
+            directory.path().join("invalid-reader.xlsx")
+        )
+        .is_err()
+    );
+    let mut missing_borrowed = Cursor::new(Vec::new());
+    assert!(EasyExcel::template_writer_to_writer(&missing, &mut missing_borrowed).is_err());
+    assert!(
+        EasyExcel::template_writer_from_reader_to_writer(
+            Cursor::new(b"invalid".to_vec()),
+            &mut missing_borrowed
+        )
+        .is_err()
+    );
+    assert!(
+        EasyExcel::template_writer_to_output_stream(
+            &missing,
+            ExcelOutputStream::new(FacadeProbeWrite::default())
+        )
+        .is_err()
+    );
+    assert!(
+        EasyExcel::template_writer_from_reader_to_output_stream(
+            Cursor::new(b"invalid".to_vec()),
+            ExcelOutputStream::new(FacadeProbeWrite::default())
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
 struct ConverterRow {
     #[excel(name = "Value", index = 0)]
