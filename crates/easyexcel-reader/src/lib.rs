@@ -6,7 +6,9 @@ use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 
-use calamine::{Data, DataRef, Range, Reader, Xls, Xlsx, open_workbook};
+use calamine::{
+    Data, DataRef, ExcelDateTime, ExcelDateTimeType, Range, Reader, Xls, Xlsx, open_workbook,
+};
 use easyexcel_core::{
     AnalysisContext, CellExtra, CellExtraType, CellValue, CsvCharset, CustomReadObject,
     ErrorAction, ExcelError, ExcelRow, FormulaData, ReadDefaultReturn, ReadListener, Result,
@@ -44,6 +46,8 @@ pub struct ReadOptions {
     pub ignore_empty_row: bool,
     /// Whether leading and trailing whitespace is removed from string cells.
     pub auto_trim: bool,
+    /// Whether numeric dates use Excel's 1904 windowing system.
+    pub use_1904_windowing: bool,
     /// Physical first row dispatched as data, zero-based and inclusive.
     ///
     /// Header rows are still analysed so name-based mapping remains available.
@@ -76,6 +80,7 @@ impl Default for ReadOptions {
             head_row_number: 1,
             ignore_empty_row: true,
             auto_trim: true,
+            use_1904_windowing: false,
             start_row: None,
             end_row: None,
             header_aliases: HashMap::new(),
@@ -144,7 +149,7 @@ fn read_xlsx_source_with_consumer(
                 row_metadata
                     .as_mut()
                     .expect("display metadata was initialized")
-                    .display_cells(&sheet_name)?,
+                    .display_cells(&sheet_name, options.use_1904_windowing)?,
             )
         } else {
             None
@@ -577,7 +582,7 @@ where
             current_cells.resize(column + 1, CellValue::Empty);
         }
         current_present_columns.insert(column);
-        current_cells[column] = from_calamine(&cell.value);
+        current_cells[column] = from_calamine(&cell.value, options.use_1904_windowing);
         if let Some(formula) = cell.formula {
             current_formulas.insert(column, FormulaData::new(formula));
         }
@@ -684,7 +689,10 @@ fn read_range(
     for row in range.rows() {
         final_row = row_index;
         let mut cells = vec![CellValue::Empty; start_column];
-        cells.extend(row.iter().map(from_data));
+        cells.extend(
+            row.iter()
+                .map(|value| from_data(value, options.use_1904_windowing)),
+        );
         let present_columns = row
             .iter()
             .enumerate()
@@ -916,7 +924,7 @@ fn header_map(
         .collect()
 }
 
-fn from_calamine(value: &DataRef<'_>) -> CellValue {
+fn from_calamine(value: &DataRef<'_>, use_1904_windowing: bool) -> CellValue {
     match value {
         DataRef::Empty => CellValue::Empty,
         DataRef::String(value) | DataRef::DateTimeIso(value) | DataRef::DurationIso(value) => {
@@ -926,20 +934,12 @@ fn from_calamine(value: &DataRef<'_>) -> CellValue {
         DataRef::Bool(value) => CellValue::Bool(*value),
         DataRef::Int(value) => CellValue::Int(*value),
         DataRef::Float(value) => CellValue::Float(*value),
-        DataRef::DateTime(value) => {
-            if value.is_datetime() {
-                value
-                    .as_datetime()
-                    .map_or(CellValue::Float(value.as_f64()), CellValue::DateTime)
-            } else {
-                CellValue::Float(value.as_f64())
-            }
-        }
+        DataRef::DateTime(value) => excel_datetime_cell(value, use_1904_windowing),
         DataRef::Error(value) => CellValue::String(value.to_string()),
     }
 }
 
-fn from_data(value: &Data) -> CellValue {
+fn from_data(value: &Data, use_1904_windowing: bool) -> CellValue {
     match value {
         Data::Empty => CellValue::Empty,
         Data::String(value) | Data::DateTimeIso(value) | Data::DurationIso(value) => {
@@ -948,17 +948,22 @@ fn from_data(value: &Data) -> CellValue {
         Data::Bool(value) => CellValue::Bool(*value),
         Data::Int(value) => CellValue::Int(*value),
         Data::Float(value) => CellValue::Float(*value),
-        Data::DateTime(value) => {
-            if value.is_datetime() {
-                value
-                    .as_datetime()
-                    .map_or(CellValue::Float(value.as_f64()), CellValue::DateTime)
-            } else {
-                CellValue::Float(value.as_f64())
-            }
-        }
+        Data::DateTime(value) => excel_datetime_cell(value, use_1904_windowing),
         Data::Error(value) => CellValue::String(value.to_string()),
     }
+}
+
+fn excel_datetime_cell(value: &ExcelDateTime, use_1904_windowing: bool) -> CellValue {
+    if !value.is_datetime() {
+        return CellValue::Float(value.as_f64());
+    }
+    ExcelDateTime::new(
+        value.as_f64(),
+        ExcelDateTimeType::DateTime,
+        use_1904_windowing,
+    )
+    .as_datetime()
+    .map_or(CellValue::Float(value.as_f64()), CellValue::DateTime)
 }
 
 fn format_error(error: impl std::fmt::Display) -> ExcelError {

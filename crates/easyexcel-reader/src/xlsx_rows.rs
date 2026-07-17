@@ -24,7 +24,6 @@ pub(crate) struct XlsxRowMetadata {
     path_cache: HashMap<String, String>,
     sheet_paths: HashMap<String, String>,
     cell_formats: Vec<XlsxNumberFormat>,
-    date_1904: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +88,7 @@ impl XlsxRowMetadata {
         let workbook_relationships_path = relationship_part_name(&workbook_path);
         let workbook_relationships =
             read_relationships(&mut archive, &path_cache, &workbook_relationships_path)?;
-        let (sheet_paths, date_1904) = read_workbook_metadata(
+        let (sheet_paths, _) = read_workbook_metadata(
             &mut archive,
             &path_cache,
             &workbook_path,
@@ -115,11 +114,14 @@ impl XlsxRowMetadata {
             path_cache,
             sheet_paths,
             cell_formats,
-            date_1904,
         })
     }
 
-    pub(crate) fn display_cells(&mut self, sheet_name: &str) -> Result<XlsxDisplayCellReader<'_>> {
+    pub(crate) fn display_cells(
+        &mut self,
+        sheet_name: &str,
+        use_1904_windowing: bool,
+    ) -> Result<XlsxDisplayCellReader<'_>> {
         let path = self
             .sheet_paths
             .get(sheet_name)
@@ -128,7 +130,7 @@ impl XlsxRowMetadata {
         let actual_path = cached_path(&self.path_cache, &path);
         let file = self.archive.by_name(actual_path).map_err(format_error)?;
         let reader = boxed_xml_reader(BufReader::new(file));
-        XlsxDisplayCellReader::new(reader, &self.cell_formats, self.date_1904)
+        XlsxDisplayCellReader::new(reader, &self.cell_formats, use_1904_windowing)
     }
 
     pub(crate) fn last_explicit_row(&mut self, sheet_name: &str) -> Result<Option<u32>> {

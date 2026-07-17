@@ -194,6 +194,13 @@ where
         self
     }
 
+    /// Selects Excel's 1904 date windowing system for numeric date cells.
+    #[must_use]
+    pub const fn use_1904_windowing(mut self, enabled: bool) -> Self {
+        self.options.use_1904_windowing = enabled;
+        self
+    }
+
     /// Sets the first physical data row to dispatch, zero-based and inclusive.
     ///
     /// Configured header rows are still analysed for name-based mapping.
@@ -326,6 +333,13 @@ where
     #[must_use]
     pub const fn auto_trim(mut self, enabled: bool) -> Self {
         self.options.auto_trim = enabled;
+        self
+    }
+
+    /// Selects Excel's 1904 date windowing system while collecting rows.
+    #[must_use]
+    pub const fn use_1904_windowing(mut self, enabled: bool) -> Self {
+        self.options.use_1904_windowing = enabled;
         self
     }
 

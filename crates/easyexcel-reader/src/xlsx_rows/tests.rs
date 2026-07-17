@@ -96,7 +96,7 @@ fn valid_entries() -> Vec<(&'static str, &'static str)> {
 #[test]
 fn metadata_resolves_strict_case_insensitive_relationships_and_rows() -> Result<()> {
     let mut metadata = XlsxRowMetadata::new(package(&valid_entries()))?;
-    assert!(metadata.display_cells("Missing").is_err());
+    assert!(metadata.display_cells("Missing", false).is_err());
     assert_eq!(metadata.last_explicit_row("A&B")?, Some(4));
     assert!(metadata.last_explicit_row("Chart").is_err());
     assert!(metadata.last_explicit_row("Missing").is_err());
@@ -106,9 +106,8 @@ fn metadata_resolves_strict_case_insensitive_relationships_and_rows() -> Result<
         path_cache: HashMap::new(),
         sheet_paths: HashMap::from([("MissingPart".to_owned(), "missing.xml".to_owned())]),
         cell_formats: vec![XlsxNumberFormat::Builtin(0)],
-        date_1904: false,
     };
-    assert!(missing_part.display_cells("MissingPart").is_err());
+    assert!(missing_part.display_cells("MissingPart", false).is_err());
     assert!(missing_part.last_explicit_row("MissingPart").is_err());
 
     let mut missing_sheet_entries = valid_entries();

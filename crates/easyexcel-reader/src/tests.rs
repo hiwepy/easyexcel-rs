@@ -324,6 +324,7 @@ fn options() -> ReadOptions {
         head_row_number: 1,
         ignore_empty_row: true,
         auto_trim: true,
+        use_1904_windowing: false,
         start_row: None,
         end_row: None,
         header_aliases: HashMap::new(),
@@ -506,17 +507,26 @@ fn calamine_values_map_to_every_core_cell_variant() {
         ),
     ];
     for (input, expected) in cases {
-        assert_eq!(from_calamine(&input), expected);
-        assert_eq!(from_data(&Data::from(input)), expected);
+        assert_eq!(from_calamine(&input, false), expected);
+        assert_eq!(from_data(&Data::from(input), false), expected);
     }
     assert!(matches!(
-        from_calamine(&DataRef::DateTime(datetime)),
+        from_calamine(&DataRef::DateTime(datetime), false),
         CellValue::DateTime(_)
     ));
     assert!(matches!(
-        from_data(&Data::DateTime(datetime)),
+        from_data(&Data::DateTime(datetime), false),
         CellValue::DateTime(_)
     ));
+    let serial_one = ExcelDateTime::new(1.0, ExcelDateTimeType::DateTime, true);
+    assert_eq!(
+        from_calamine(&DataRef::DateTime(serial_one), false).as_text(),
+        "1900-01-01 00:00:00"
+    );
+    assert_eq!(
+        from_data(&Data::DateTime(serial_one), true).as_text(),
+        "1904-01-02 00:00:00"
+    );
 }
 
 #[test]
@@ -1272,7 +1282,14 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
     )?;
 
     let mut probe = RawProbe::default();
-    read_xlsx::<RawRow, _>(&path, &options(), &mut probe)?;
+    read_xlsx::<RawRow, _>(
+        &path,
+        &ReadOptions {
+            use_1904_windowing: true,
+            ..options()
+        },
+        &mut probe,
+    )?;
     assert_eq!(probe.0.len(), 1);
     assert_eq!(
         probe.0[0].cells[0],
@@ -1322,8 +1339,22 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
         CellValue::String("  inline value  ".to_owned())
     );
 
+    let mut java_default = DynamicProbe::default();
+    read_xlsx::<DynamicRow, _>(&path, &options(), &mut java_default)?;
+    assert_eq!(
+        java_default.0[0].get(8),
+        Some(&DynamicValue::String("1/1/00".to_owned()))
+    );
+
     let mut strings = DynamicProbe::default();
-    read_xlsx::<DynamicRow, _>(&path, &options(), &mut strings)?;
+    read_xlsx::<DynamicRow, _>(
+        &path,
+        &ReadOptions {
+            use_1904_windowing: true,
+            ..options()
+        },
+        &mut strings,
+    )?;
     assert_eq!(
         strings.0[0].get(3),
         Some(&DynamicValue::String("42".to_owned()))
@@ -1338,6 +1369,7 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
         &path,
         &ReadOptions {
             read_default_return: ReadDefaultReturn::ActualData,
+            use_1904_windowing: true,
             ..options()
         },
         &mut actual,
@@ -1364,6 +1396,7 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
         &path,
         &ReadOptions {
             read_default_return: ReadDefaultReturn::ReadCellData,
+            use_1904_windowing: true,
             ..options()
         },
         &mut cell_data,
@@ -1427,7 +1460,7 @@ fn xlsx_display_stream_rejects_early_end_position_mismatch_and_extra_cells() -> 
         let mut workbook = Xlsx::new(workbook_source.reader()?).map_err(test_error)?;
         let metadata_source = XlsxSource::open(&metadata_path, None)?;
         let mut metadata = XlsxRowMetadata::new(metadata_source.reader()?)?;
-        let mut display_reader = metadata.display_cells("First")?;
+        let mut display_reader = metadata.display_cells("First", false)?;
         let mut listener = DynamicProbe::default();
         let mut consumer = TypedRowConsumer::<DynamicRow> {
             listener: &mut listener,
