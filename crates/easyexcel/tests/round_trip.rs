@@ -5,8 +5,8 @@ use std::rc::Rc;
 
 use chrono::NaiveDate;
 use easyexcel::{
-    AnalysisContext, CellStyle, CellValue, Converter, EasyExcel, ExcelColumn, ExcelError, ExcelRow,
-    HorizontalAlignment, PageReadListener, ReadConverterContext, ReadListener, Result,
+    AnalysisContext, BigInt, CellStyle, CellValue, Converter, EasyExcel, ExcelColumn, ExcelError,
+    ExcelRow, HorizontalAlignment, PageReadListener, ReadConverterContext, ReadListener, Result,
     VerticalAlignment, WriteConverterContext,
 };
 use tempfile::tempdir;
@@ -90,6 +90,12 @@ struct CachedFormulaValue {
 struct LargeInteger {
     #[excel(name = "整数", index = 0)]
     value: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
+struct ArbitraryInteger {
+    #[excel(name = "BigInteger", index = 0)]
+    value: BigInt,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
@@ -267,6 +273,34 @@ fn integers_beyond_excels_exact_number_range_round_trip_as_text() -> Result<()> 
         .do_write(values.clone())?;
     assert_eq!(
         EasyExcel::read_sync::<LargeInteger>(&path).do_read_sync()?,
+        values
+    );
+    Ok(())
+}
+
+#[test]
+fn java_big_integer_fields_round_trip_without_precision_loss() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("big-integers.xlsx");
+    let values = vec![
+        ArbitraryInteger {
+            value: BigInt::from(42),
+        },
+        ArbitraryInteger {
+            value: "1234567890123456789012345678901234567890"
+                .parse()
+                .expect("valid big integer"),
+        },
+        ArbitraryInteger {
+            value: "-987654321098765432109876543210987654321"
+                .parse()
+                .expect("valid big integer"),
+        },
+    ];
+
+    EasyExcel::write::<ArbitraryInteger>(&path).do_write(values.clone())?;
+    assert_eq!(
+        EasyExcel::read_sync::<ArbitraryInteger>(&path).do_read_sync()?,
         values
     );
     Ok(())

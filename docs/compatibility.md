@@ -32,7 +32,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `@ExcelProperty` | `#[excel(name, index, order, format)]` | implemented |
 | `@ExcelIgnore` | `#[excel(ignore)]` | implemented |
 | `@ExcelIgnoreUnannotated` | `#[excel(ignore_unannotated)]` | implemented |
-| built-in scalar converters | `FromExcelCell` / `IntoExcelCell` | partial: strings, booleans, signed/unsigned integers, floats, `BigDecimal`, `Option<T>`, `NaiveDate`, and `NaiveDateTime` are implemented; Java URL/locale/temporal converter inventory remains |
+| built-in scalar converters | `FromExcelCell` / `IntoExcelCell` | partial: strings, booleans, signed/unsigned integers, Java-compatible `BigInteger` (`BigInt`), floats, `BigDecimal`, `Option<T>`, `NaiveDate`, and `NaiveDateTime` are implemented; Java URL/image and remaining temporal converter inventory remains |
 | custom `Converter<T>` | `#[excel(converter = Type)]` + converter contexts | partial: field converter implemented |
 | `EasyExcel.write(file, head)` | `EasyExcel::write::<T>(file)` | implemented |
 | `sheet(Integer/String)` | `sheet_index(index)` / `sheet(name)` | implemented |

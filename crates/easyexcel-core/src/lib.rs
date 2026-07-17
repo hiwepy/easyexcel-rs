@@ -8,7 +8,10 @@ use std::sync::Arc;
 
 /// Arbitrary-precision decimal type used for Java `BigDecimal`-compatible cells.
 pub use bigdecimal::BigDecimal;
+use bigdecimal::ToPrimitive;
 use chrono::{NaiveDate, NaiveDateTime};
+/// Arbitrary-precision integer type used for Java `BigInteger`-compatible fields.
+pub use num_bigint::BigInt;
 use thiserror::Error;
 
 /// The result type used by all easyexcel crates.
@@ -1336,6 +1339,36 @@ macro_rules! integer_conversion {
 }
 
 integer_conversion!(i8, i16, i32, i64, isize, u8, u16, u32, u64, usize);
+
+impl FromExcelCell for BigInt {
+    fn from_excel_cell(value: Option<&CellValue>, context: &ConvertContext) -> Result<Self> {
+        let cell = value.unwrap_or(&CellValue::Empty);
+        match cell {
+            CellValue::Bool(value) => Ok(Self::from(u8::from(*value))),
+            CellValue::Int(value) => Ok(Self::from(*value)),
+            CellValue::Float(value) => BigDecimal::from_str(&value.to_string())
+                .map(|value| decimal_to_big_int(&value))
+                .map_err(|_| context.invalid(cell, "BigInt")),
+            CellValue::Decimal(value) => Ok(decimal_to_big_int(value)),
+            CellValue::String(value) => BigDecimal::from_str(value)
+                .map(|value| decimal_to_big_int(&value))
+                .map_err(|_| context.invalid(cell, "BigInt")),
+            other => Err(context.invalid(other, "BigInt")),
+        }
+    }
+}
+
+impl IntoExcelCell for BigInt {
+    fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
+        Ok(self
+            .to_i64()
+            .map_or_else(|| CellValue::String(self.to_string()), CellValue::Int))
+    }
+}
+
+fn decimal_to_big_int(value: &BigDecimal) -> BigInt {
+    value.with_scale(0).into_bigint_and_exponent().0
+}
 
 fn parse_integer<T>(
     value: Option<&CellValue>,

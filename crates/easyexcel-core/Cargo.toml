@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 bigdecimal.workspace = true
 chrono.workspace = true
+num-bigint.workspace = true
 thiserror.workspace = true
 
 [lints]

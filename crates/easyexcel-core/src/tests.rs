@@ -390,6 +390,67 @@ fn every_integer_type_is_supported_and_edge_paths_are_checked() -> Result<()> {
 }
 
 #[test]
+fn big_integer_matches_java_boolean_number_and_string_converters() -> Result<()> {
+    let context = context(None);
+    let huge: BigInt = "123456789012345678901234567890"
+        .parse()
+        .expect("valid big integer");
+
+    assert_eq!(
+        BigInt::from_excel_cell(Some(&CellValue::Bool(true)), &context)?,
+        BigInt::from(1)
+    );
+    assert_eq!(
+        BigInt::from_excel_cell(Some(&CellValue::Bool(false)), &context)?,
+        BigInt::from(0)
+    );
+    assert_eq!(
+        BigInt::from_excel_cell(Some(&CellValue::Int(-12)), &context)?,
+        BigInt::from(-12)
+    );
+    assert_eq!(
+        BigInt::from_excel_cell(Some(&CellValue::Float(42.9)), &context)?,
+        BigInt::from(42)
+    );
+    assert_eq!(
+        BigInt::from_excel_cell(
+            Some(&CellValue::Decimal(
+                "-99.75".parse().expect("valid decimal"),
+            )),
+            &context,
+        )?,
+        BigInt::from(-99)
+    );
+    assert_eq!(
+        BigInt::from_excel_cell(
+            Some(&CellValue::String(
+                "123456789012345678901234567890.8".to_owned(),
+            )),
+            &context,
+        )?,
+        huge
+    );
+    assert!(BigInt::from_excel_cell(Some(&CellValue::Float(f64::NAN)), &context).is_err());
+    assert!(BigInt::from_excel_cell(Some(&CellValue::String("bad".to_owned())), &context).is_err());
+    assert!(
+        BigInt::from_excel_cell(
+            Some(&CellValue::Date(
+                NaiveDate::from_ymd_opt(2026, 7, 17).expect("valid date")
+            )),
+            &context
+        )
+        .is_err()
+    );
+    assert!(BigInt::from_excel_cell(None, &context).is_err());
+    assert_eq!(BigInt::from(7).to_excel_cell(&context)?, CellValue::Int(7));
+    assert_eq!(
+        huge.to_excel_cell(&context)?,
+        CellValue::String(huge.to_string())
+    );
+    Ok(())
+}
+
+#[test]
 fn floating_point_types_support_numeric_and_string_cells() -> Result<()> {
     let context = context(None);
     for value in [
