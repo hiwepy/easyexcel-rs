@@ -425,7 +425,7 @@ writer. Collection rows continue from the previous call for each prefix, and
 scalar values can be supplied before or after collection data:
 
 ```rust,no_run
-use easyexcel::{EasyExcel, FillConfig, FillWrapper, TemplateData};
+use easyexcel::{CellValue, EasyExcel, FillConfig, FillWrapper, TemplateData};
 
 # fn run() -> easyexcel::Result<()> {
 let mut writer = EasyExcel::template_writer("template.xlsx", "report.xlsx")?;
@@ -439,16 +439,28 @@ writer
         FillConfig::new(),
     )?
     .fill(&TemplateData::new().with("title", "User report"))?
+    .write_rows([vec![
+        CellValue::Empty,
+        CellValue::Empty,
+        CellValue::String("Total: 2".to_owned()),
+    ]])?
     .finish()?;
 # Ok(())
 # }
 ```
 
 Escaped braces (`\{` and `\}`), repeated named/unnamed vertical collections,
-and repeated horizontal collections are supported. The composite behavior is
-verified against Alibaba EasyExcel's official `fill/composite.xlsx` fixture.
-Typed numeric/date template cells, changing `FillConfig` for an already-used
-prefix, mixing template fill with ordinary table writes, and template stream
+and repeated horizontal collections are supported. A placeholder that occupies
+the whole cell preserves Boolean, integer, floating-point, decimal, date,
+date-time, error, and formula types; placeholders mixed with surrounding text
+follow Java and produce a string cell. `write_rows` appends ordinary
+`CellValue` rows after the filled template cursor, covering the Java
+`complexFillWithTable` pattern.
+
+The implementation is verified against Alibaba EasyExcel's official
+`simple.xlsx`, `composite.xlsx`, and `complexFillWithTable.xlsx` fixtures.
+Changing `FillConfig` for an already-used prefix, selecting a non-first sheet
+for appended rows, typed-model/write-handler composition, and template stream
 input/output remain compatibility work in progress.
 
 ## Quality gates

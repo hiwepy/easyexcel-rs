@@ -120,9 +120,9 @@ fn template_fixture() -> Result<(TempDir, std::path::PathBuf)> {
     Ok((directory, path))
 }
 
-fn write_java_composite_fixture(path: &Path) -> Result<()> {
+fn write_compressed_java_fixture(path: &Path, fixture: &str) -> Result<()> {
     let compressed = base64::engine::general_purpose::STANDARD
-        .decode(include_str!("fixtures/java-demo-composite.xlsx.gz.b64").trim())
+        .decode(fixture.trim())
         .map_err(test_error)?;
     let mut decoder = GzDecoder::new(compressed.as_slice());
     let mut workbook = Vec::new();
@@ -131,19 +131,43 @@ fn write_java_composite_fixture(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn write_java_composite_fixture(path: &Path) -> Result<()> {
+    write_compressed_java_fixture(
+        path,
+        include_str!("fixtures/java-demo-composite.xlsx.gz.b64"),
+    )
+}
+
+fn find_string_coordinate(range: &calamine::Range<Data>, needle: &str) -> Option<(u32, u32)> {
+    range.cells().find_map(|(row, column, value)| {
+        (value == &Data::String(needle.to_owned())).then(|| {
+            (
+                u32::try_from(row).expect("small row"),
+                u32::try_from(column).expect("small column"),
+            )
+        })
+    })
+}
+
 #[test]
 fn template_data_and_xml_escaping_are_deterministic() {
     let mut data = TemplateData::new().with("name", "Alice").with("count", 2);
-    assert_eq!(data.insert("name", "Bob"), Some("Alice".to_owned()));
+    assert_eq!(
+        data.insert("name", "Bob"),
+        Some(CellValue::String("Alice".to_owned()))
+    );
     assert_eq!(data.insert("new", "value"), None);
-    assert_eq!(data.values().get("name").map(String::as_str), Some("Bob"));
+    assert_eq!(
+        data.values().get("name"),
+        Some(&CellValue::String("Bob".to_owned()))
+    );
     assert_eq!(escape_xml("<&>\"' text"), "&lt;&amp;&gt;&quot;&apos; text");
     assert_eq!(
         replace_placeholders(
             "{a}-{missing}-{b}",
             &BTreeMap::from([
-                ("a".to_owned(), "<".to_owned()),
-                ("b".to_owned(), "&".to_owned())
+                ("a".to_owned(), CellValue::String("<".to_owned())),
+                ("b".to_owned(), CellValue::String("&".to_owned()))
             ])
         ),
         "&lt;-{missing}-&amp;"
@@ -151,13 +175,245 @@ fn template_data_and_xml_escaping_are_deterministic() {
     assert_eq!(
         replace_placeholders(
             r"\{a\}-{a}-\{missing\}",
-            &BTreeMap::from([("a".to_owned(), "<值>".to_owned())])
+            &BTreeMap::from([("a".to_owned(), CellValue::String("<值>".to_owned()))])
         ),
         "{a}-&lt;值&gt;-{missing}"
     );
     assert!(!contains_unescaped(r"\{users.name}", "{users."));
     assert!(contains_unescaped("{users.name}", "{users."));
     assert_eq!(TemplateData::default(), TemplateData::new());
+
+    let owned = "owned".to_owned();
+    let typed_date = NaiveDate::from_ymd_opt(2026, 7, 17).expect("valid date");
+    let date_time = typed_date.and_hms_opt(12, 34, 56).expect("valid time");
+    for value in [
+        "text".into_template_value(),
+        owned.clone().into_template_value(),
+        (&owned).into_template_value(),
+        true.into_template_value(),
+        i8::MIN.into_template_value(),
+        i16::MIN.into_template_value(),
+        i32::MIN.into_template_value(),
+        i64::MIN.into_template_value(),
+        isize::MIN.into_template_value(),
+        i128::MIN.into_template_value(),
+        u8::MAX.into_template_value(),
+        u16::MAX.into_template_value(),
+        u32::MAX.into_template_value(),
+        usize::MAX.into_template_value(),
+        u64::MAX.into_template_value(),
+        u128::MAX.into_template_value(),
+        BigInt::from(i128::MAX).into_template_value(),
+        1.25_f32.into_template_value(),
+        2.5_f64.into_template_value(),
+        BigDecimal::from(42).into_template_value(),
+        typed_date.into_template_value(),
+        date_time.into_template_value(),
+        Some(7_i32).into_template_value(),
+        Option::<i32>::None.into_template_value(),
+        CellValue::Error("#N/A".to_owned()).into_template_value(),
+    ] {
+        assert!(matches!(value, CellValue::Empty) || !value.as_text().is_empty());
+    }
+}
+
+#[test]
+fn exact_placeholders_preserve_java_scalar_cell_types() -> Result<()> {
+    let directory = tempdir()?;
+    let template = directory.path().join("typed-template.xlsx");
+    let output = directory.path().join("typed-output.xlsx");
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    for (row, placeholder) in [
+        "{string}",
+        "{boolean}",
+        "{integer}",
+        "{float}",
+        "{decimal}",
+        "{date}",
+        "{datetime}",
+        "{error}",
+        "{formula}",
+        "{empty}",
+        "value={integer}",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        worksheet
+            .write_string(u32::try_from(row).expect("small row"), 0, placeholder)
+            .map_err(test_error)?;
+    }
+    workbook.save(&template).map_err(test_error)?;
+
+    let date = NaiveDate::from_ymd_opt(2026, 7, 17).expect("valid date");
+    fill_xlsx_template(
+        &template,
+        &output,
+        &TemplateData::new()
+            .with("string", "Alice")
+            .with("boolean", true)
+            .with("integer", 42_i64)
+            .with("float", 5.25_f64)
+            .with("decimal", BigDecimal::from(12345))
+            .with("date", date)
+            .with(
+                "datetime",
+                date.and_hms_opt(13, 14, 15).expect("valid time"),
+            )
+            .with("error", CellValue::Error("#N/A".to_owned()))
+            .with("formula", CellValue::Formula("SUM(20,22)".to_owned()))
+            .with("empty", Option::<String>::None),
+    )?;
+
+    let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    assert_eq!(
+        range.get_value((0, 0)),
+        Some(&Data::String("Alice".to_owned()))
+    );
+    assert_eq!(range.get_value((1, 0)), Some(&Data::Bool(true)));
+    assert_eq!(range.get_value((2, 0)), Some(&Data::Float(42.0)));
+    assert_eq!(range.get_value((3, 0)), Some(&Data::Float(5.25)));
+    assert_eq!(range.get_value((4, 0)), Some(&Data::Float(12345.0)));
+    assert_eq!(
+        range.get_value((5, 0)),
+        Some(&Data::DateTimeIso("2026-07-17".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((6, 0)),
+        Some(&Data::DateTimeIso("2026-07-17T13:14:15".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((7, 0)),
+        Some(&Data::Error(calamine::CellErrorType::NA))
+    );
+    assert_eq!(
+        range.get_value((10, 0)),
+        Some(&Data::String("value=42".to_owned()))
+    );
+
+    let entries = load_entries(&output)?;
+    let sheet = entries
+        .iter()
+        .find(|entry| entry.name == "xl/worksheets/sheet1.xml")
+        .and_then(|entry| std::str::from_utf8(&entry.bytes).ok())
+        .expect("typed worksheet");
+    assert!(sheet.contains("<f>SUM(20,22)</f>"));
+    assert!(sheet.contains("r=\"A10\"></c>"));
+    Ok(())
+}
+
+#[test]
+fn fills_java_official_simple_template_with_typed_number() -> Result<()> {
+    let directory = tempdir()?;
+    let template = directory.path().join("java-simple.xlsx");
+    let output = directory.path().join("java-simple-filled.xlsx");
+    write_compressed_java_fixture(
+        &template,
+        include_str!("fixtures/java-demo-simple.xlsx.gz.b64"),
+    )?;
+
+    let mut source: Xlsx<_> = open_workbook(&template).map_err(test_error)?;
+    let source_range = source.worksheet_range("Sheet1").map_err(test_error)?;
+    let name_coordinate = find_string_coordinate(&source_range, "{name}").expect("name marker");
+    let number_coordinate =
+        find_string_coordinate(&source_range, "{number}").expect("number marker");
+
+    fill_xlsx_template(
+        &template,
+        &output,
+        &TemplateData::new()
+            .with("name", "张三")
+            .with("number", 5.2_f64),
+    )?;
+
+    let mut result: Xlsx<_> = open_workbook(output).map_err(test_error)?;
+    let range = result.worksheet_range("Sheet1").map_err(test_error)?;
+    assert_eq!(
+        range.get_value(name_coordinate),
+        Some(&Data::String("张三".to_owned()))
+    );
+    assert_eq!(range.get_value(number_coordinate), Some(&Data::Float(5.2)));
+    Ok(())
+}
+
+#[test]
+fn java_complex_fill_with_table_appends_summary_after_repeated_fill() -> Result<()> {
+    let directory = tempdir()?;
+    let template = directory.path().join("java-complex-table.xlsx");
+    let output = directory.path().join("java-complex-table-filled.xlsx");
+    write_compressed_java_fixture(
+        &template,
+        include_str!("fixtures/java-demo-complex-fill-with-table.xlsx.gz.b64"),
+    )?;
+
+    let entries = load_entries(&template)?;
+    let shared_strings = entries
+        .iter()
+        .find(|entry| entry.name == "xl/sharedStrings.xml")
+        .and_then(|entry| std::str::from_utf8(&entry.bytes).ok())
+        .map(shared_string_values)
+        .expect("official shared strings");
+    let sheet = entries
+        .iter()
+        .find(|entry| entry.name == "xl/worksheets/sheet1.xml")
+        .and_then(|entry| std::str::from_utf8(&entry.bytes).ok())
+        .expect("official worksheet");
+    let marker = FillWrapper::new([TemplateData::new().with("name", "probe")]);
+    let (_, _, marker_row, _, _, _) =
+        find_collection_row(sheet, &marker, &shared_strings).expect("list marker row");
+    let first_data_row = row_index(marker_row).expect("marker row index") - 1;
+
+    let first = [
+        TemplateData::new().with("name", "A").with("number", 1),
+        TemplateData::new().with("name", "B").with("number", 2),
+        TemplateData::new().with("name", "C").with("number", 3),
+    ];
+    let second = [
+        TemplateData::new().with("name", "D").with("number", 4),
+        TemplateData::new().with("name", "E").with("number", 5),
+        TemplateData::new().with("name", "F").with("number", 6),
+    ];
+    let mut writer = ExcelTemplateWriter::new(&template, &output)?;
+    writer
+        .fill_list(&FillWrapper::new(first), FillConfig::new())?
+        .fill_list(&FillWrapper::new(second), FillConfig::new())?
+        .fill(&TemplateData::new().with("date", "2019年10月9日13:28:28"))?
+        .write_rows([vec![
+            CellValue::Empty,
+            CellValue::Empty,
+            CellValue::Empty,
+            CellValue::String("统计:1000".to_owned()),
+        ]])?
+        .finish()?;
+
+    let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    for (offset, (name, number)) in [
+        ("A", 1.0),
+        ("B", 2.0),
+        ("C", 3.0),
+        ("D", 4.0),
+        ("E", 5.0),
+        ("F", 6.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row = u32::try_from(first_data_row + offset).expect("small row");
+        assert_eq!(
+            range.get_value((row, 0)),
+            Some(&Data::String(name.to_owned()))
+        );
+        assert_eq!(range.get_value((row, 1)), Some(&Data::Float(number)));
+    }
+    let summary_row = u32::try_from(first_data_row + 6).expect("small row");
+    assert_eq!(
+        range.get_value((summary_row, 3)),
+        Some(&Data::String("统计:1000".to_owned()))
+    );
+    Ok(())
 }
 
 #[test]
@@ -367,6 +623,7 @@ fn fill_config_and_wrapper_match_java_defaults_and_builders() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn stateful_template_writer_matches_java_repeated_and_composite_fill() -> Result<()> {
     let directory = tempdir()?;
     let template = directory.path().join("composite-template.xlsx");
@@ -423,7 +680,13 @@ fn stateful_template_writer_matches_java_repeated_and_composite_fill() -> Result
             vertical,
         )?
         .fill_list(&FillWrapper::default(), FillConfig::new())?
-        .fill(&TemplateData::new().with("date", 2026))?;
+        .fill(&TemplateData::new().with("date", 2026))?
+        .write_rows([vec![
+            CellValue::Empty,
+            CellValue::Empty,
+            CellValue::Empty,
+            CellValue::String("统计:1000".to_owned()),
+        ]])?;
     assert!(
         writer
             .fill_list(
@@ -436,6 +699,7 @@ fn stateful_template_writer_matches_java_repeated_and_composite_fill() -> Result
     writer.finish()?;
     assert!(writer.is_finished());
     assert!(writer.fill(&TemplateData::new()).is_err());
+    assert!(writer.write_rows([Vec::<CellValue>::new()]).is_err());
     assert!(
         writer
             .fill_list(&FillWrapper::default(), FillConfig::new())
@@ -467,6 +731,10 @@ fn stateful_template_writer_matches_java_repeated_and_composite_fill() -> Result
     assert_eq!(
         range.get_value((8, 0)),
         Some(&Data::String("Footer".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((9, 3)),
+        Some(&Data::String("统计:1000".to_owned()))
     );
     Ok(())
 }
@@ -535,25 +803,33 @@ fn fills_java_official_composite_template_across_all_analysis_cells() -> Result<
     for (coordinate, expected) in [
         ((0, 2), "A"),
         ((0, 3), "B"),
-        ((1, 2), "1"),
-        ((1, 3), "2"),
         ((2, 2), "A"),
         ((2, 3), "B"),
-        ((3, 2), "1"),
-        ((3, 3), "2"),
         ((4, 0), "时间：2026-07-17"),
         ((8, 0), "X"),
-        ((8, 1), "10"),
         ((9, 0), "Y"),
-        ((9, 1), "20"),
         ((10, 3), "P"),
-        ((10, 4), "100"),
         ((11, 3), "Q"),
-        ((11, 4), "200"),
     ] {
         assert_eq!(
             range.get_value(coordinate),
             Some(&Data::String(expected.to_owned())),
+            "coordinate {coordinate:?}"
+        );
+    }
+    for (coordinate, expected) in [
+        ((1, 2), 1.0),
+        ((1, 3), 2.0),
+        ((3, 2), 1.0),
+        ((3, 3), 2.0),
+        ((8, 1), 10.0),
+        ((9, 1), 20.0),
+        ((10, 4), 100.0),
+        ((11, 4), 200.0),
+    ] {
+        assert_eq!(
+            range.get_value(coordinate),
+            Some(&Data::Float(expected)),
             "coordinate {coordinate:?}"
         );
     }
@@ -709,6 +985,7 @@ fn expands_horizontal_unnamed_cells_and_can_drop_style() -> Result<()> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn collection_parser_defensive_paths_are_deterministic() {
     let empty = FillWrapper::default();
     let mut no_entries = Vec::new();
@@ -770,6 +1047,16 @@ fn collection_parser_defensive_paths_are_deterministic() {
     );
 
     let data = wrapper.rows().first().unwrap();
+    assert_eq!(exact_collection_value("{.name", data, None), None);
+    assert_eq!(
+        exact_collection_value("{other.name}", data, Some("users")),
+        None
+    );
+    assert_eq!(
+        exact_collection_value("{usersname}", data, Some("users")),
+        None
+    );
+    assert_eq!(exact_collection_value("{name}", data, None), None);
     assert_eq!(fill_cell("<c", data, None, &[], true), "<c");
     assert_eq!(fill_cell("<c></c>", data, None, &[], true), "<c></c>");
     assert_eq!(
@@ -802,6 +1089,66 @@ fn collection_parser_defensive_paths_are_deterministic() {
         ),
         "<c r=\"A1\" s=\"2\" t=\"inlineStr\"><is><t>X</t></is></c>"
     );
+    assert_eq!(
+        fill_cell(
+            "<c r=\"A1\" s=\"2\" t=\"inlineStr\"><is><t>Name {.name}</t></is></c>",
+            data,
+            None,
+            &[],
+            false
+        ),
+        "<c r=\"A1\" t=\"inlineStr\"><is><t>Name X</t></is></c>"
+    );
+    assert_eq!(render_typed_cell("<c", &CellValue::Int(1), true), "<c");
+    assert_eq!(
+        render_typed_cell(
+            "<c r=\"A1\"></c>",
+            &CellValue::RichText(easyexcel_core::RichTextStringData::new("rich")),
+            true
+        ),
+        "<c r=\"A1\" t=\"inlineStr\"><is><t>rich</t></is></c>"
+    );
+    assert_eq!(
+        render_typed_cell(
+            "<c r=\"A1\"></c>",
+            &CellValue::Comment {
+                value: Box::new(CellValue::String("commented".to_owned())),
+                text: "note".to_owned(),
+            },
+            true
+        ),
+        "<c r=\"A1\" t=\"inlineStr\"><is><t>commented</t></is></c>"
+    );
+    assert_eq!(
+        render_typed_cell(
+            "<c r=\"A1\"></c>",
+            &CellValue::Images {
+                value: Box::new(CellValue::Bool(false)),
+                images: Vec::new(),
+            },
+            true
+        ),
+        "<c r=\"A1\" t=\"b\"><v>0</v></c>"
+    );
+    assert_eq!(
+        render_typed_cell(
+            "<c r=\"A1\"></c>",
+            &CellValue::Hyperlink {
+                url: "https://example.com".to_owned(),
+                text: "link".to_owned(),
+            },
+            true
+        ),
+        "<c r=\"A1\" t=\"inlineStr\"><is><t>link</t></is></c>"
+    );
+    assert_eq!(
+        render_typed_cell("<c r=\"A1\"></c>", &CellValue::Image(vec![1]), true),
+        "<c r=\"A1\"></c>"
+    );
+    assert_eq!(
+        replace_scalar_cells_in_xml("<worksheet><sheetData><c", &TemplateData::new(), &[]),
+        "<worksheet><sheetData><c"
+    );
     assert_eq!(cell_value("<c t=\"s\"></c>", &[]), None);
     assert_eq!(cell_value("<c t=\"s\"><v>x</v></c>", &[]), None);
     assert_eq!(cell_value("<c t=\"s\"><v>9</v></c>", &[]), None);
@@ -811,6 +1158,7 @@ fn collection_parser_defensive_paths_are_deterministic() {
 
 #[test]
 fn collection_coordinate_helpers_and_missing_input_are_deterministic() -> Result<()> {
+    let directory = tempdir()?;
     assert_eq!(element_value("", "v"), None);
     assert_eq!(element_value("<v>1", "v"), None);
     assert_eq!(attribute_value("", "r"), None);
@@ -833,8 +1181,53 @@ fn collection_coordinate_helpers_and_missing_input_are_deterministic() -> Result
     assert_eq!(shift_cell_reference("A1x", 1, 0), "A1x");
     assert_eq!(column_name(0), "");
     assert_eq!(column_name(27), "AA");
+    assert_eq!(worksheet_max_row("<row"), 0);
+    assert_eq!(worksheet_max_row("<row><c/></row>"), 0);
+    assert!(append_rows_to_xml("<worksheet/>", &[vec![]]).is_err());
+    let mut no_sheet = Vec::new();
+    assert!(append_rows_to_first_sheet(&mut no_sheet, &[vec![]]).is_err());
+    let mut invalid_sheet = vec![TemplateEntry {
+        name: "xl/worksheets/sheet1.xml".to_owned(),
+        is_dir: false,
+        compression: CompressionMethod::Stored,
+        unix_mode: None,
+        bytes: vec![0xff],
+    }];
+    assert!(append_rows_to_first_sheet(&mut invalid_sheet, &[vec![]]).is_err());
+    invalid_sheet[0].bytes = vec![0xff];
+    assert!(replace_scalar_cells(&mut invalid_sheet, &TemplateData::new()).is_err());
+    invalid_sheet[0].bytes = vec![0xff];
+    let mut no_sheet_data = vec![TemplateEntry {
+        name: "xl/worksheets/sheet1.xml".to_owned(),
+        is_dir: false,
+        compression: CompressionMethod::Stored,
+        unix_mode: None,
+        bytes: b"<worksheet/>".to_vec(),
+    }];
+    assert!(append_rows_to_first_sheet(&mut no_sheet_data, &[vec![]]).is_err());
+    no_sheet_data[0].bytes = b"<worksheet/>".to_vec();
 
-    let directory = tempdir()?;
+    let mut invalid_scalar_writer = ExcelTemplateWriter {
+        output: directory.path().join("invalid-scalar.xlsx"),
+        entries: invalid_sheet,
+        scalar: TemplateData::new(),
+        collections: Vec::new(),
+        appended_rows: Vec::new(),
+        finished: false,
+    };
+    assert!(invalid_scalar_writer.finish().is_err());
+    assert!(!invalid_scalar_writer.is_finished());
+    let mut invalid_append_writer = ExcelTemplateWriter {
+        output: directory.path().join("invalid-append.xlsx"),
+        entries: no_sheet_data,
+        scalar: TemplateData::new(),
+        collections: Vec::new(),
+        appended_rows: vec![vec![]],
+        finished: false,
+    };
+    assert!(invalid_append_writer.finish().is_err());
+    assert!(!invalid_append_writer.is_finished());
+
     let wrapper = FillWrapper::new([TemplateData::new().with("name", "X")]);
     assert!(
         fill_xlsx_template_list(

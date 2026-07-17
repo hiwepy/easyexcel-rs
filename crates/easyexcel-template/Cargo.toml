@@ -8,7 +8,10 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bigdecimal.workspace = true
+chrono.workspace = true
 easyexcel-core = { path = "../easyexcel-core" }
+num-bigint.workspace = true
 zip.workspace = true
 
 [dev-dependencies]

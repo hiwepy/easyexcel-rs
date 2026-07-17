@@ -15,6 +15,7 @@ easyexcel-template = { path = "../easyexcel-template" }
 easyexcel-writer = { path = "../easyexcel-writer" }
 
 [dev-dependencies]
+bigdecimal.workspace = true
 calamine.workspace = true
 chrono.workspace = true
 tempfile.workspace = true

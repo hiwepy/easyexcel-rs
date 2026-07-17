@@ -4,6 +4,7 @@ use std::io::{self, Cursor, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use bigdecimal::BigDecimal;
 use chrono::NaiveDate;
 use tempfile::tempdir;
 use zip::ZipWriter;
@@ -819,6 +820,23 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
         vec![Value("Hello Rust".to_owned())]
     );
 
+    let typed_template = directory.path().join("typed-template.xlsx");
+    let typed_filled = directory.path().join("typed-filled.xlsx");
+    EasyExcel::write::<Value>(&typed_template)
+        .need_head(false)
+        .do_write(vec![Value("{number}".to_owned())])?;
+    EasyExcel::fill_template(
+        &typed_template,
+        &typed_filled,
+        &TemplateData::new().with("number", BigDecimal::from(42)),
+    )?;
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&typed_filled)
+            .head_row_number(0)
+            .do_read_sync()?,
+        vec![Value("42".to_owned())]
+    );
+
     let list_template = directory.path().join("list-template.xlsx");
     let list_filled = directory.path().join("list-filled.xlsx");
     EasyExcel::write::<Value>(&list_template)
@@ -853,7 +871,8 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
             &FillWrapper::new([TemplateData::new().with("name", "second")]),
             FillConfig::new(),
         )?
-        .fill_list(&FillWrapper::default(), FillConfig::new())?;
+        .fill_list(&FillWrapper::default(), FillConfig::new())?
+        .write_rows([vec![CellValue::String("summary".to_owned())]])?;
     assert!(
         template_writer
             .fill_list(
@@ -867,6 +886,11 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
     assert!(template_writer.fill(&TemplateData::new()).is_err());
     assert!(
         template_writer
+            .write_rows([Vec::<CellValue>::new()])
+            .is_err()
+    );
+    assert!(
+        template_writer
             .fill_list(&FillWrapper::default(), FillConfig::new())
             .is_err()
     );
@@ -874,7 +898,11 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
         EasyExcel::read_sync::<Value>(&repeated_filled)
             .head_row_number(0)
             .do_read_sync()?,
-        vec![Value("first".to_owned()), Value("second".to_owned())]
+        vec![
+            Value("first".to_owned()),
+            Value("second".to_owned()),
+            Value("summary".to_owned())
+        ]
     );
     assert!(
         EasyExcel::template_writer(

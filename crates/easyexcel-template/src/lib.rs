@@ -1,35 +1,147 @@
 //! OOXML-preserving XLSX template filling.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as FmtWrite;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
-use easyexcel_core::{ExcelError, Result};
+use bigdecimal::BigDecimal;
+use chrono::{NaiveDate, NaiveDateTime};
+use easyexcel_core::{CellValue, ExcelError, Result};
+use num_bigint::BigInt;
 use zip::CompressionMethod;
 use zip::read::ZipArchive;
 use zip::write::{SimpleFileOptions, ZipWriter};
 
 /// Value accepted by [`TemplateData`] placeholder insertion methods.
 pub trait IntoTemplateValue {
-    /// Converts the value to its scalar template representation.
-    fn into_template_value(self) -> String;
+    /// Converts the value to its typed template representation.
+    fn into_template_value(self) -> CellValue;
 }
 
-impl<T> IntoTemplateValue for T
+impl IntoTemplateValue for CellValue {
+    fn into_template_value(self) -> CellValue {
+        self
+    }
+}
+
+impl IntoTemplateValue for String {
+    fn into_template_value(self) -> CellValue {
+        CellValue::String(self)
+    }
+}
+
+impl IntoTemplateValue for &str {
+    fn into_template_value(self) -> CellValue {
+        CellValue::String(self.to_owned())
+    }
+}
+
+impl IntoTemplateValue for &String {
+    fn into_template_value(self) -> CellValue {
+        CellValue::String(self.clone())
+    }
+}
+
+impl IntoTemplateValue for bool {
+    fn into_template_value(self) -> CellValue {
+        CellValue::Bool(self)
+    }
+}
+
+macro_rules! impl_integer_template_value {
+    ($($type:ty),+ $(,)?) => {
+        $(
+            impl IntoTemplateValue for $type {
+                fn into_template_value(self) -> CellValue {
+                    CellValue::Int(i64::from(self))
+                }
+            }
+        )+
+    };
+}
+
+impl_integer_template_value!(i8, i16, i32, i64, u8, u16, u32);
+
+macro_rules! impl_decimal_integer_template_value {
+    ($($type:ty),+ $(,)?) => {
+        $(
+            impl IntoTemplateValue for $type {
+                fn into_template_value(self) -> CellValue {
+                    CellValue::Decimal(BigDecimal::from(self))
+                }
+            }
+        )+
+    };
+}
+
+impl_decimal_integer_template_value!(i128, u64, u128);
+
+impl IntoTemplateValue for isize {
+    fn into_template_value(self) -> CellValue {
+        CellValue::Int(i64::try_from(self).expect("Rust isize is at most 64 bits"))
+    }
+}
+
+impl IntoTemplateValue for usize {
+    fn into_template_value(self) -> CellValue {
+        CellValue::Decimal(BigDecimal::from(
+            u64::try_from(self).expect("Rust usize is at most 64 bits"),
+        ))
+    }
+}
+
+impl IntoTemplateValue for BigInt {
+    fn into_template_value(self) -> CellValue {
+        CellValue::Decimal(BigDecimal::from(self))
+    }
+}
+
+impl IntoTemplateValue for f32 {
+    fn into_template_value(self) -> CellValue {
+        CellValue::Float(f64::from(self))
+    }
+}
+
+impl IntoTemplateValue for f64 {
+    fn into_template_value(self) -> CellValue {
+        CellValue::Float(self)
+    }
+}
+
+impl IntoTemplateValue for BigDecimal {
+    fn into_template_value(self) -> CellValue {
+        CellValue::Decimal(self)
+    }
+}
+
+impl IntoTemplateValue for NaiveDate {
+    fn into_template_value(self) -> CellValue {
+        CellValue::Date(self)
+    }
+}
+
+impl IntoTemplateValue for NaiveDateTime {
+    fn into_template_value(self) -> CellValue {
+        CellValue::DateTime(self)
+    }
+}
+
+impl<T> IntoTemplateValue for Option<T>
 where
-    T: std::fmt::Display,
+    T: IntoTemplateValue,
 {
-    fn into_template_value(self) -> String {
-        self.to_string()
+    fn into_template_value(self) -> CellValue {
+        self.map_or(CellValue::Empty, IntoTemplateValue::into_template_value)
     }
 }
 
 /// Scalar values used to replace `{key}` placeholders in OOXML text nodes.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct TemplateData {
-    values: BTreeMap<String, String>,
+    values: BTreeMap<String, CellValue>,
 }
 
 /// Direction used when expanding a collection placeholder.
@@ -112,7 +224,7 @@ impl FillConfig {
 }
 
 /// Named or unnamed collection data corresponding to Java `EasyExcel`'s `FillWrapper`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct FillWrapper {
     name: Option<String>,
     rows: Vec<TemplateData>,
@@ -171,13 +283,13 @@ impl TemplateData {
         &mut self,
         key: impl Into<String>,
         value: impl IntoTemplateValue,
-    ) -> Option<String> {
+    ) -> Option<CellValue> {
         self.values.insert(key.into(), value.into_template_value())
     }
 
     /// Returns all values in deterministic key order.
     #[must_use]
-    pub const fn values(&self) -> &BTreeMap<String, String> {
+    pub const fn values(&self) -> &BTreeMap<String, CellValue> {
         &self.values
     }
 }
@@ -208,6 +320,7 @@ pub struct ExcelTemplateWriter {
     entries: Vec<TemplateEntry>,
     scalar: TemplateData,
     collections: Vec<PendingCollectionFill>,
+    appended_rows: Vec<Vec<CellValue>>,
     finished: bool,
 }
 
@@ -223,6 +336,7 @@ impl ExcelTemplateWriter {
             entries: load_entries(template.as_ref())?,
             scalar: TemplateData::new(),
             collections: Vec::new(),
+            appended_rows: Vec::new(),
             finished: false,
         })
     }
@@ -276,6 +390,24 @@ impl ExcelTemplateWriter {
         Ok(self)
     }
 
+    /// Queues ordinary rows after the template fill cursor.
+    ///
+    /// This corresponds to Java's `excelWriter.write(rows, writeSheet)` after
+    /// one or more `fill` calls. It is primarily intended for summary rows when
+    /// the collection placeholder is the final template row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after the writer has finished.
+    pub fn write_rows(
+        &mut self,
+        rows: impl IntoIterator<Item = Vec<CellValue>>,
+    ) -> Result<&mut Self> {
+        self.ensure_open()?;
+        self.appended_rows.extend(rows);
+        Ok(self)
+    }
+
     /// Writes the completed XLSX package. Repeated calls are no-ops.
     ///
     /// # Errors
@@ -288,7 +420,9 @@ impl ExcelTemplateWriter {
         for pending in &self.collections {
             replace_collection_placeholders(&mut self.entries, &pending.wrapper, pending.config);
         }
+        replace_scalar_cells(&mut self.entries, &self.scalar)?;
         replace_xml_placeholders(&mut self.entries, &self.scalar)?;
+        append_rows_to_first_sheet(&mut self.entries, &self.appended_rows)?;
         self.finished = true;
         write_entries(&self.output, &self.entries)
     }
@@ -923,6 +1057,9 @@ fn fill_cell(
     let Some(value) = cell_value(cell, shared_strings) else {
         return cell.to_owned();
     };
+    if let Some(typed_value) = exact_collection_value(&value, data, prefix) {
+        return render_typed_cell(cell, typed_value, auto_style);
+    }
     let filled = replace_collection_values(&value, data, prefix);
     if filled == value {
         return cell.to_owned();
@@ -937,6 +1074,80 @@ fn fill_cell(
         start.insert_str(start.len() - 1, " t=\"inlineStr\"");
     }
     format!("{start}<is><t>{}</t></is></c>", escape_xml(&filled))
+}
+
+fn exact_collection_value<'a>(
+    placeholder: &str,
+    data: &'a TemplateData,
+    prefix: Option<&str>,
+) -> Option<&'a CellValue> {
+    let variable = placeholder.strip_prefix('{')?.strip_suffix('}')?;
+    let key = match prefix {
+        Some(prefix) => variable.strip_prefix(prefix)?.strip_prefix('.')?,
+        None => variable.strip_prefix('.')?,
+    };
+    data.values().get(key)
+}
+
+fn exact_scalar_value<'a>(placeholder: &str, data: &'a TemplateData) -> Option<&'a CellValue> {
+    let key = placeholder.strip_prefix('{')?.strip_suffix('}')?;
+    (!key.starts_with('.') && !key.ends_with('.'))
+        .then(|| data.values().get(key))
+        .flatten()
+}
+
+fn render_typed_cell(cell: &str, value: &CellValue, auto_style: bool) -> String {
+    let Some(tag_end) = cell.find('>') else {
+        return cell.to_owned();
+    };
+    let mut start = cell[..=tag_end].to_owned();
+    if !auto_style {
+        start = remove_attribute(&start, "s");
+    }
+    start = remove_attribute(&start, "t");
+    match value {
+        CellValue::Empty | CellValue::Image(_) => format!("{start}</c>"),
+        CellValue::String(value) | CellValue::Hyperlink { text: value, .. } => {
+            insert_cell_type(&mut start, "inlineStr");
+            format!("{start}<is><t>{}</t></is></c>", escape_xml(value))
+        }
+        CellValue::Bool(value) => {
+            insert_cell_type(&mut start, "b");
+            format!("{start}<v>{}</v></c>", u8::from(*value))
+        }
+        CellValue::Int(value) => format!("{start}<v>{value}</v></c>"),
+        CellValue::Float(value) => format!("{start}<v>{value}</v></c>"),
+        CellValue::Decimal(value) => format!("{start}<v>{value}</v></c>"),
+        CellValue::Date(value) => {
+            insert_cell_type(&mut start, "d");
+            format!("{start}<v>{}</v></c>", value.format("%Y-%m-%d"))
+        }
+        CellValue::DateTime(value) => {
+            insert_cell_type(&mut start, "d");
+            format!("{start}<v>{}</v></c>", value.format("%Y-%m-%dT%H:%M:%S"))
+        }
+        CellValue::Error(value) => {
+            insert_cell_type(&mut start, "e");
+            format!("{start}<v>{}</v></c>", escape_xml(value))
+        }
+        CellValue::Formula(value) => {
+            format!("{start}<f>{}</f><v></v></c>", escape_xml(value))
+        }
+        CellValue::RichText(value) => {
+            insert_cell_type(&mut start, "inlineStr");
+            format!(
+                "{start}<is><t>{}</t></is></c>",
+                escape_xml(value.text_string())
+            )
+        }
+        CellValue::Comment { value, .. } | CellValue::Images { value, .. } => {
+            render_typed_cell(cell, value, auto_style)
+        }
+    }
+}
+
+fn insert_cell_type(start: &mut String, cell_type: &str) {
+    start.insert_str(start.len() - 1, &format!(" t=\"{cell_type}\""));
 }
 
 fn cell_value(cell: &str, shared_strings: &[String]) -> Option<String> {
@@ -957,6 +1168,123 @@ fn contains_collection_marker(value: &str, wrapper: &FillWrapper) -> bool {
 
 fn replace_collection_values(value: &str, data: &TemplateData, prefix: Option<&str>) -> String {
     replace_template_values(value, data.values(), prefix, false)
+}
+
+fn replace_scalar_cells(entries: &mut [TemplateEntry], data: &TemplateData) -> Result<()> {
+    let shared_strings = entries
+        .iter()
+        .find(|entry| entry.name == "xl/sharedStrings.xml")
+        .and_then(|entry| std::str::from_utf8(&entry.bytes).ok())
+        .map_or_else(Vec::new, shared_string_values);
+    for entry in entries.iter_mut().filter(|entry| {
+        !entry.is_dir
+            && entry.name.starts_with("xl/worksheets/")
+            && Path::new(&entry.name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+    }) {
+        let xml = String::from_utf8(std::mem::take(&mut entry.bytes))
+            .map_err(|error| ExcelError::Format(error.to_string()))?;
+        entry.bytes = replace_scalar_cells_in_xml(&xml, data, &shared_strings).into_bytes();
+    }
+    Ok(())
+}
+
+fn replace_scalar_cells_in_xml(
+    xml: &str,
+    data: &TemplateData,
+    shared_strings: &[String],
+) -> String {
+    let mut output = String::with_capacity(xml.len());
+    let mut offset = 0;
+    while let Some(relative_start) = xml[offset..].find("<c") {
+        let start = offset + relative_start;
+        let Some(relative_end) = xml[start..].find("</c>") else {
+            break;
+        };
+        let end = start + relative_end + 4;
+        let cell = &xml[start..end];
+        output.push_str(&xml[offset..start]);
+        let replacement = cell_value(cell, shared_strings)
+            .and_then(|placeholder| exact_scalar_value(&placeholder, data))
+            .filter(|value| !matches!(value, CellValue::String(_)))
+            .map_or_else(
+                || cell.to_owned(),
+                |value| render_typed_cell(cell, value, true),
+            );
+        output.push_str(&replacement);
+        offset = end;
+    }
+    output.push_str(&xml[offset..]);
+    output
+}
+
+fn append_rows_to_first_sheet(
+    entries: &mut [TemplateEntry],
+    rows: &[Vec<CellValue>],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let Some(entry) = entries
+        .iter_mut()
+        .find(|entry| entry.name == "xl/worksheets/sheet1.xml")
+    else {
+        return Err(ExcelError::Format(
+            "template does not contain xl/worksheets/sheet1.xml".to_owned(),
+        ));
+    };
+    let xml = String::from_utf8(std::mem::take(&mut entry.bytes))
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    entry.bytes = append_rows_to_xml(&xml, rows)?.into_bytes();
+    Ok(())
+}
+
+fn append_rows_to_xml(xml: &str, rows: &[Vec<CellValue>]) -> Result<String> {
+    let Some(sheet_data_end) = xml.find("</sheetData>") else {
+        return Err(ExcelError::Format(
+            "worksheet does not contain sheetData".to_owned(),
+        ));
+    };
+    let next_row = worksheet_max_row(&xml[..sheet_data_end]).saturating_add(1);
+    let mut appended = String::new();
+    for (row_offset, values) in rows.iter().enumerate() {
+        let row_index = next_row + row_offset;
+        write!(appended, "<row r=\"{row_index}\">").expect("writing to String cannot fail");
+        for (column, value) in values.iter().enumerate() {
+            let reference = format!("{}{row_index}", column_name(column + 1));
+            appended.push_str(&render_typed_cell(
+                &format!("<c r=\"{reference}\"></c>"),
+                value,
+                true,
+            ));
+        }
+        appended.push_str("</row>");
+    }
+    let expanded = format!(
+        "{}{}{}",
+        &xml[..sheet_data_end],
+        appended,
+        &xml[sheet_data_end..]
+    );
+    Ok(update_worksheet_dimension(&expanded))
+}
+
+fn worksheet_max_row(xml: &str) -> usize {
+    let mut maximum = 0;
+    let mut offset = 0;
+    while let Some(relative_start) = xml[offset..].find("<row") {
+        let start = offset + relative_start;
+        let Some(relative_end) = xml[start..].find('>') else {
+            break;
+        };
+        let end = start + relative_end + 1;
+        if let Some(row) = row_index(&xml[start..end]) {
+            maximum = maximum.max(row);
+        }
+        offset = end;
+    }
+    maximum
 }
 
 fn element_value<'a>(xml: &'a str, element: &str) -> Option<&'a str> {
@@ -1118,13 +1446,13 @@ fn replace_xml_placeholders(entries: &mut [TemplateEntry], data: &TemplateData) 
     Ok(())
 }
 
-fn replace_placeholders(xml: &str, values: &BTreeMap<String, String>) -> String {
+fn replace_placeholders(xml: &str, values: &BTreeMap<String, CellValue>) -> String {
     replace_template_values(xml, values, None, true)
 }
 
 fn replace_template_values(
     input: &str,
-    values: &BTreeMap<String, String>,
+    values: &BTreeMap<String, CellValue>,
     collection_prefix: Option<&str>,
     escape_values: bool,
 ) -> String {
@@ -1157,10 +1485,11 @@ fn replace_template_values(
                 }
             };
             if let Some(value) = key.and_then(|key| values.get(key)) {
+                let value = value.as_text();
                 if escape_values {
-                    output.push_str(&escape_xml(value));
+                    output.push_str(&escape_xml(&value));
                 } else {
-                    output.push_str(value);
+                    output.push_str(&value);
                 }
                 index = end + 1;
                 continue;

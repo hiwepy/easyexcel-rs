@@ -11,8 +11,8 @@ use easyexcel_reader::{
     ReadOptions, ScientificFormatMode, SheetSelector, read_csv, read_xls, read_xlsx,
 };
 pub use easyexcel_template::{
-    ExcelTemplateWriter, FillConfig, FillDirection, FillWrapper, TemplateData, fill_xlsx_template,
-    fill_xlsx_template_list,
+    ExcelTemplateWriter, FillConfig, FillDirection, FillWrapper, IntoTemplateValue, TemplateData,
+    fill_xlsx_template, fill_xlsx_template_list,
 };
 pub use easyexcel_writer::{
     CellStyle, CsvEncodingWriter, ExcelOutputStream, ExcelWriter, HorizontalAlignment,

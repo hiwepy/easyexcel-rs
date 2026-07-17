@@ -314,6 +314,7 @@ dependencies = [
 name = "easyexcel"
 version = "0.1.0"
 dependencies = [
+ "bigdecimal",
  "calamine",
  "chrono",
  "easyexcel-core",
@@ -376,9 +377,12 @@ name = "easyexcel-template"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "bigdecimal",
  "calamine",
+ "chrono",
  "easyexcel-core",
  "flate2",
+ "num-bigint",
  "rust_xlsxwriter",
  "tempfile",
  "zip 7.2.0",
