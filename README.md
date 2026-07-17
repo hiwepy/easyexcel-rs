@@ -238,12 +238,28 @@ The binary worksheet is materialized by Calamine before dispatch; writing
 `.xls` returns an explicit unsupported-operation error instead of emitting an
 XLSX package with the wrong extension.
 
-XLSX worksheet cells are read incrementally through Calamine's `quick-xml`
-cell stream rather than materializing the worksheet. Listener callbacks follow
-Java EasyExcel's ordering, including workbook-wide `has_next` termination and
-exception routing. With `ignore_empty_row(false)`, a row-metadata-only OOXML
-scan also preserves leading, intermediate, and trailing empty-row callbacks;
-the default path skips that extra scan. The remaining SAX compatibility work is
+XLSX worksheet cells and `sharedStrings.xml` are read incrementally by the
+`quick-xml` OOXML engine rather than materializing the worksheet. Listener
+callbacks follow Java EasyExcel's ordering, including workbook-wide `has_next`
+termination and exception routing. With `ignore_empty_row(false)`, a
+row-metadata-only OOXML scan also preserves leading, intermediate, and trailing
+empty-row callbacks;
+the default path skips that extra scan. Shared strings use Java EasyExcel's
+5,000,000-byte selection boundary: smaller XML parts stay in memory and larger
+parts spill to a temporary disk cache. The strategy can be forced when needed:
+
+```rust
+# use easyexcel::{DynamicRow, EasyExcel, ReadCacheMode};
+# fn example() -> easyexcel::Result<()> {
+let rows = EasyExcel::read_sync::<DynamicRow>("users.xlsx")
+    .read_cache(ReadCacheMode::Disk)
+    .do_read_sync()?;
+# let _ = rows;
+# Ok(())
+# }
+```
+
+The remaining SAX compatibility work is
 tracked in [the compatibility contract](docs/compatibility.md#xlsx-streaming-boundary).
 Shared and inline rich strings, booleans, numbers, cached formula results,
 error text, and 1900/1904 dates follow Java's typed read behavior. String cells
@@ -251,12 +267,12 @@ and headers are trimmed by default; call `.auto_trim(false)` to preserve their
 outer whitespace. The same option controls whitespace-tolerant sheet-name
 matching, using Java `String.trim()` semantics.
 
-Schema-less XLSX reads stream the worksheet XML a second time in lockstep with
-Calamine to reproduce Java's formatted `STRING`, exact `ACTUAL_DATA`, and
-`READ_CELL_DATA` behavior. The companion stream resolves built-in/custom number
+Schema-less XLSX reads use the same physical cell event to reproduce Java's
+formatted `STRING`, exact `ACTUAL_DATA`, and `READ_CELL_DATA` behavior. The
+stream resolves built-in/custom number
 formats and the 1900/1904 date system, normalizes Excel's 15-significant-digit
-numeric representation, and releases each cell immediately. A position or EOF
-mismatch between the two streams is a typed format error.
+numeric representation, and releases each cell immediately. Malformed input is
+reported as a typed format error.
 
 For formula cells, typed fields receive Excel's cached result. The original
 expression remains available separately through `RowData::formula()` and

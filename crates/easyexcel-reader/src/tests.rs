@@ -109,7 +109,7 @@ impl ReadListener<NamedRow> for NamedProbe {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct RawRow {
     cells: Vec<CellValue>,
     formulas: Vec<Option<String>>,
@@ -336,6 +336,7 @@ fn options() -> ReadOptions {
         password: None,
         charset: CsvCharset::default(),
         converters: easyexcel_core::ConverterRegistry::default(),
+        read_cache: ReadCacheMode::default(),
     }
 }
 
@@ -1240,7 +1241,7 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
                 "xl/sharedStrings.xml",
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1">
-  <si><r><t xml:space="preserve">  shared_x000D_</t></r><r><t xml:space="preserve">value  </t></r></si>
+  <si><r><t xml:space="preserve"><![CDATA[  shared_x000D_]]></t></r><rPh><t>ignored</t></rPh><r><t xml:space="preserve">value  </t></r></si>
 </sst>"#,
             ),
             (
@@ -1269,11 +1270,11 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
     </row>
     <row r="2">
       <c r="A2" t="s"><v>0</v></c>
-      <c r="B2" t="inlineStr"><is><r><t xml:space="preserve">  inline </t></r><r><t xml:space="preserve">value  </t></r></is></c>
+      <c r="B2" t="inlineStr"><is><r><t xml:space="preserve"><![CDATA[  inline ]]></t></r><rPh><t>ignored</t></rPh><r><t xml:space="preserve">value  </t></r></is></c>
       <c r="C2" t="b"><v>1</v></c>
       <c r="D2" t="n"><v>42</v></c>
       <c r="E2" t="n"><v>3.5</v></c>
-      <c r="F2"><f>SUM(D2:E2)</f><v>45.5</v></c>
+      <c r="F2"><f><![CDATA[SUM(D2:E2)]]></f><v>45.5</v></c>
       <c r="G2" t="str"><f>CONCAT("cache","d")</f><v>cached</v></c>
       <c r="H2" t="e"><v>#DIV/0!</v></c>
       <c r="I2" s="1"><v>1</v></c>
@@ -1323,6 +1324,21 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
             None,
         ]
     );
+
+    let expected = probe.0[0].clone();
+    for read_cache in [ReadCacheMode::Memory, ReadCacheMode::Disk] {
+        let mut cached = RawProbe::default();
+        read_xlsx::<RawRow, _>(
+            &path,
+            &ReadOptions {
+                use_1904_windowing: true,
+                read_cache,
+                ..options()
+            },
+            &mut cached,
+        )?;
+        assert_eq!(cached.0.as_slice(), std::slice::from_ref(&expected));
+    }
 
     let mut untrimmed = RawProbe::default();
     read_xlsx::<RawRow, _>(
@@ -1420,67 +1436,26 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
 }
 
 #[test]
-fn xlsx_display_stream_rejects_early_end_position_mismatch_and_extra_cells() -> Result<()> {
+fn xlsx_primary_cell_stream_rejects_malformed_xml() -> Result<()> {
     let (directory, base) = workbook_fixture()?;
     let cases = [
         (
-            "display-ended.xlsx",
-            r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Value</t></is></c></row></sheetData></worksheet>"#,
-            "ended before cell stream",
-        ),
-        (
-            "display-mismatch.xlsx",
-            r#"<worksheet><sheetData><row r="1"><c r="B1" t="inlineStr"><is><t>Value</t></is></c></row></sheetData></worksheet>"#,
-            "cell mismatch",
-        ),
-        (
-            "display-extra.xlsx",
-            r#"<worksheet><sheetData>
-<row r="1"><c r="A1" t="inlineStr"><is><t>Value</t></is></c></row>
-<row r="2"><c r="A2" t="inlineStr"><is><t>one</t></is></c></row>
-<row r="3"><c r="A3" t="inlineStr"><is><t>extra</t></is></c></row>
-</sheetData></worksheet>"#,
-            "cells missing from cell stream",
-        ),
-        (
             "display-cell-xml-error.xlsx",
             r#"<worksheet><sheetData><row r="1"><c r="A1"><v><"#,
-            "",
         ),
         (
             "display-tail-xml-error.xlsx",
             r#"<worksheet><sheetData>
 <row r="1"><c r="A1" t="inlineStr"><is><t>Value</t></is></c></row>
 <row r="2"><c r="A2" t="inlineStr"><is><t>one</t></is></c></row><"#,
-            "",
         ),
     ];
 
-    for (name, replacement, expected) in cases {
+    for (name, replacement) in cases {
         let metadata_path = directory.path().join(name);
         rewrite_first_sheet(&base, &metadata_path, replacement)?;
-        let workbook_source = XlsxSource::open(&base, None)?;
-        let mut workbook = Xlsx::new(workbook_source.reader()?).map_err(test_error)?;
-        let metadata_source = XlsxSource::open(&metadata_path, None)?;
-        let mut metadata = XlsxRowMetadata::new(metadata_source.reader()?)?;
-        let mut display_reader =
-            metadata.display_cells("First", false, false, ssfmt::Locale::default())?;
         let mut listener = DynamicProbe::default();
-        let mut consumer = TypedRowConsumer::<DynamicRow> {
-            listener: &mut listener,
-        };
-        let error = read_sheet(
-            &mut workbook,
-            0,
-            "First",
-            None,
-            &[],
-            Some(&mut display_reader),
-            &options(),
-            &mut consumer,
-        )
-        .expect_err("display and cell streams must agree");
-        assert!(error.to_string().contains(expected), "{error}");
+        assert!(read_xlsx::<DynamicRow, _>(&metadata_path, &options(), &mut listener).is_err());
     }
     Ok(())
 }
@@ -2194,41 +2169,12 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
     assert_eq!(stopped_final.rows, vec![TestRow("Value".to_owned())]);
     assert!(stopped_final.after.is_empty());
 
-    let mut opened: Xlsx<_> = open_workbook(&path).map_err(test_error)?;
-    let mut direct = Probe {
-        continue_reading: true,
-        ..Probe::default()
-    };
-    let mut consumer = TypedRowConsumer::<TestRow> {
-        listener: &mut direct,
-    };
-    assert!(
-        read_sheet(
-            &mut opened,
-            0,
-            "Missing",
-            None,
-            &[],
-            None,
-            &options(),
-            &mut consumer
-        )
-        .is_err()
-    );
     let source = XlsxSource::open(&path, None)?;
-    let mut public_opened = Xlsx::new(source.reader()?).map_err(test_error)?;
+    let mut metadata = XlsxRowMetadata::new(source.reader()?)?;
     assert!(
-        read_sheet(
-            &mut public_opened,
-            0,
-            "Missing",
-            None,
-            &[],
-            None,
-            &options(),
-            &mut consumer,
-        )
-        .is_err()
+        metadata
+            .display_cells("Missing", false, false, ssfmt::Locale::default())
+            .is_err()
     );
 
     let empty_path = fixture_directory.path().join("empty.xlsx");

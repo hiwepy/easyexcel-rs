@@ -19,13 +19,13 @@ pure-rust-locales.workspace = true
 quick-xml.workspace = true
 ssfmt.workspace = true
 sys-locale.workspace = true
+tempfile.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
 base64.workspace = true
 flate2.workspace = true
 rust_xlsxwriter.workspace = true
-tempfile.workspace = true
 zip.workspace = true
 
 [lints]

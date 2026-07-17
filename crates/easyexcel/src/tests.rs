@@ -229,6 +229,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .read_rows(5, 7)
         .header_alias("Source", "Value")
         .custom_object("event-context".to_owned())
+        .read_cache(ReadCacheMode::Disk)
         .read_default_return(ReadDefaultReturn::ActualData)
         .extra_read(CellExtraType::Comment)
         .extra_read(CellExtraType::Merge)
@@ -266,6 +267,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         read.options.read_default_return,
         ReadDefaultReturn::ActualData
     );
+    assert_eq!(read.options.read_cache, ReadCacheMode::Disk);
     assert!(read.options.extra_read.contains(&CellExtraType::Comment));
     assert!(read.options.extra_read.contains(&CellExtraType::Merge));
     assert_eq!(read.options.password.as_deref(), Some("read-secret"));
@@ -287,6 +289,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .read_rows(4, 6)
         .header_alias("Original", "Value")
         .custom_object(42_u32)
+        .read_cache(ReadCacheMode::Memory)
         .read_default_return(ReadDefaultReturn::ReadCellData)
         .extra_read(CellExtraType::Hyperlink)
         .password("sync-secret")
@@ -322,6 +325,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         sync.options.read_default_return,
         ReadDefaultReturn::ReadCellData
     );
+    assert_eq!(sync.options.read_cache, ReadCacheMode::Memory);
     assert!(sync.options.extra_read.contains(&CellExtraType::Hyperlink));
     assert_eq!(sync.options.password.as_deref(), Some("sync-secret"));
     assert_eq!(sync.options.charset.name(), "UTF-16BE");

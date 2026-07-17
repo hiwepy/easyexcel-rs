@@ -108,8 +108,10 @@ fn metadata_resolves_strict_case_insensitive_relationships_and_rows() -> Result<
     let mut missing_part = XlsxRowMetadata {
         archive: archive(&[]),
         path_cache: HashMap::new(),
+        sheet_names: vec!["MissingPart".to_owned()],
         sheet_paths: HashMap::from([("MissingPart".to_owned(), "missing.xml".to_owned())]),
         cell_formats: vec![XlsxNumberFormat::Builtin(0)],
+        shared_strings: create_cache(ReadCacheMode::Memory, 0)?,
     };
     assert!(
         missing_part
@@ -175,11 +177,19 @@ fn display_cell_stream_formats_exact_numbers_and_tracks_sparse_coordinates() -> 
         "sheet.xml",
         r#"<worksheet><sheetData>
 <row r="2"><c r="B2" s="1"><v><![CDATA[2087.0249999999996]]></v></c><c t="inlineStr"><is><t>text</t></is></c></row>
-<row><c><v>0</v></c><c s="99"><v>1</v></c><c t="n"></c></row>
+<row><c><v>0</v></c><c s="99"><v>1</v></c><c t="n"></c><c t="b"><v>true</v></c></row>
 </sheetData></worksheet>"#,
     )]);
     let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-    let mut cells = XlsxDisplayCellReader::new(reader, &formats, false, false, Locale::default())?;
+    let mut cache = create_cache(ReadCacheMode::Memory, 0)?;
+    let mut cells = XlsxDisplayCellReader::new(
+        reader,
+        &formats,
+        false,
+        false,
+        Locale::default(),
+        cache.as_mut(),
+    )?;
 
     let first = cells.next_cell()?.expect("first display cell");
     assert_eq!(first.position, (1, 1));
@@ -207,6 +217,8 @@ fn display_cell_stream_formats_exact_numbers_and_tracks_sparse_coordinates() -> 
     assert_eq!(empty_numeric.position, (2, 2));
     assert_eq!(empty_numeric.display_value, None);
     assert_eq!(empty_numeric.decimal_value, None);
+    let boolean = cells.next_cell()?.expect("boolean cell");
+    assert_eq!(boolean.value, CellValue::Bool(true));
     assert!(cells.next_cell()?.is_none());
     let infinity = excel_display_number(f64::INFINITY);
     assert!(infinity.is_infinite() && infinity.is_sign_positive());
@@ -248,8 +260,17 @@ fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()>
     for xml in ["<worksheet/>", "<worksheet><"] {
         let mut archive = archive(&[("sheet.xml", xml)]);
         let reader = display_xml_reader(&mut archive, "sheet.xml")?;
+        let mut cache = create_cache(ReadCacheMode::Memory, 0)?;
         assert!(
-            XlsxDisplayCellReader::new(reader, &formats, false, false, Locale::default()).is_err()
+            XlsxDisplayCellReader::new(
+                reader,
+                &formats,
+                false,
+                false,
+                Locale::default(),
+                cache.as_mut(),
+            )
+            .is_err()
         );
     }
 
@@ -262,14 +283,24 @@ fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()>
         "<worksheet><sheetData><row><c s=\"bad\"></c></row></sheetData></worksheet>",
         "<worksheet><sheetData><row><c><v>bad</v></c></row></sheetData></worksheet>",
         "<worksheet><sheetData><row><c><v>NaN</v></c></row></sheetData></worksheet>",
+        "<worksheet><sheetData><row><c t=\"s\"><v>bad</v></c></row></sheetData></worksheet>",
+        "<worksheet><sheetData><row><c t=\"s\"><v>999</v></c></row></sheetData></worksheet>",
+        "<worksheet><sheetData><row><c t=\"unsupported\"><v>1</v></c></row></sheetData></worksheet>",
         "<worksheet><sheetData><row><c><v><",
         "<worksheet><sheetData><row><c><v>1",
         "<worksheet><sheetData><",
     ] {
         let mut archive = archive(&[("sheet.xml", xml)]);
         let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-        let mut cells =
-            XlsxDisplayCellReader::new(reader, &formats, false, false, Locale::default())?;
+        let mut cache = create_cache(ReadCacheMode::Memory, 0)?;
+        let mut cells = XlsxDisplayCellReader::new(
+            reader,
+            &formats,
+            false,
+            false,
+            Locale::default(),
+            cache.as_mut(),
+        )?;
         assert!(cells.next_cell().is_err(), "{xml}");
     }
 
@@ -277,15 +308,88 @@ fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()>
         b"<worksheet><sheetData><row><c><v>\xff</v></c></row></sheetData></worksheet>".as_slice(),
         b"<worksheet><sheetData><row><c><v><![CDATA[\xff]]></v></c></row></sheetData></worksheet>"
             .as_slice(),
+        b"<worksheet><sheetData><row><c><f>\xff</f></c></row></sheetData></worksheet>".as_slice(),
+        b"<worksheet><sheetData><row><c><f><![CDATA[\xff]]></f></c></row></sheetData></worksheet>"
+            .as_slice(),
+        b"<worksheet><sheetData><row><c t=\"inlineStr\"><is><t>\xff</t></is></c></row></sheetData></worksheet>"
+            .as_slice(),
+        b"<worksheet><sheetData><row><c t=\"inlineStr\"><is><t><![CDATA[\xff]]></t></is></c></row></sheetData></worksheet>"
+            .as_slice(),
     ] {
         let mut archive =
             ZipArchive::new(package_bytes(&[("sheet.xml", bytes)])).expect("ZIP archive");
         let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-        let mut cells =
-            XlsxDisplayCellReader::new(reader, &formats, false, false, Locale::default())?;
+        let mut cache = create_cache(ReadCacheMode::Memory, 0)?;
+        let mut cells = XlsxDisplayCellReader::new(
+            reader,
+            &formats,
+            false,
+            false,
+            Locale::default(),
+            cache.as_mut(),
+        )?;
         assert!(cells.next_cell().is_err());
     }
     Ok(())
+}
+
+struct RejectingSharedStringCache;
+
+impl SharedStringCache for RejectingSharedStringCache {
+    fn put(&mut self, _value: String) -> Result<()> {
+        Err(ExcelError::Format(
+            "injected shared-string cache failure".to_owned(),
+        ))
+    }
+
+    fn get(&mut self, _index: usize) -> Result<String> {
+        Err(ExcelError::Format("unused shared-string lookup".to_owned()))
+    }
+
+    fn len(&self) -> usize {
+        0
+    }
+}
+
+#[test]
+fn shared_string_stream_propagates_package_xml_utf8_factory_and_cache_failures() {
+    let mut missing = archive(&[]);
+    let cache = path_cache(&missing);
+    assert!(
+        read_shared_strings(&mut missing, &cache, "missing.xml", ReadCacheMode::Memory).is_err()
+    );
+
+    let mut malformed = archive(&[("shared.xml", "<sst><si><")]);
+    let cache = path_cache(&malformed);
+    assert!(
+        read_shared_strings(&mut malformed, &cache, "shared.xml", ReadCacheMode::Memory).is_err()
+    );
+
+    for bytes in [
+        b"<sst><si><t>\xff</t></si></sst>".as_slice(),
+        b"<sst><si><t><![CDATA[\xff]]></t></si></sst>".as_slice(),
+    ] {
+        let mut archive = ZipArchive::new(package_bytes(&[("shared.xml", bytes)]))
+            .expect("shared-string ZIP archive");
+        let cache = path_cache(&archive);
+        assert!(
+            read_shared_strings(&mut archive, &cache, "shared.xml", ReadCacheMode::Memory).is_err()
+        );
+    }
+
+    let mut archive = archive(&[("shared.xml", "<sst><si><t>value</t></si></sst>")]);
+    let cache = path_cache(&archive);
+    let mut failing_factory = |_| Err(ExcelError::Format("injected factory failure".to_owned()));
+    assert!(
+        read_shared_strings_with_factory(&mut archive, &cache, "shared.xml", &mut failing_factory,)
+            .is_err()
+    );
+
+    let mut rejecting = RejectingSharedStringCache;
+    let mut input = Cursor::new(b"<sst><si><t>value</t></si></sst>".as_slice());
+    assert!(parse_shared_strings(&mut input, &mut rejecting).is_err());
+    assert!(rejecting.get(0).is_err());
+    assert_eq!(rejecting.len(), 0);
 }
 
 #[test]
@@ -582,6 +686,32 @@ fn metadata_constructor_reports_each_package_boundary() {
         if let Some(styles_xml) = styles_xml {
             entries.push(("custom/styles.xml", styles_xml));
         }
+        assert!(XlsxRowMetadata::new(package(&entries)).is_err());
+        assert!(XlsxRowMetadata::new(xlsx_input(&entries)).is_err());
+    }
+
+    for shared_target in ["../../../outside.xml", "missing.xml"] {
+        let workbook_relationships = format!(
+            "{base_relationships}<Relationship Id=\"shared\" Type=\"x/sharedStrings\" Target=\"{shared_target}\"/></Relationships>"
+        );
+        let entries = [
+            (
+                "_rels/.rels",
+                "<Relationships><Relationship Id=\"office\" Type=\"x/officeDocument\" Target=\"custom/workbook.xml\"/></Relationships>",
+            ),
+            (
+                "custom/workbook.xml",
+                "<workbook><sheets><sheet name=\"A\" id=\"sheet\"/></sheets></workbook>",
+            ),
+            (
+                "custom/sheets/First.XML",
+                "<worksheet><sheetData/></worksheet>",
+            ),
+            (
+                "custom/_rels/workbook.xml.rels",
+                workbook_relationships.as_str(),
+            ),
+        ];
         assert!(XlsxRowMetadata::new(package(&entries)).is_err());
         assert!(XlsxRowMetadata::new(xlsx_input(&entries)).is_err());
     }

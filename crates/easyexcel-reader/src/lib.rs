@@ -1,4 +1,4 @@
-//! XLSX, XLS, and CSV readers backed by Calamine and the Rust CSV engine.
+//! Streaming OOXML XLSX, Calamine-backed XLS, and Rust CSV readers.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -6,9 +6,9 @@ use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 
-use calamine::{
-    Data, DataRef, ExcelDateTime, ExcelDateTimeType, Range, Reader, Xls, Xlsx, open_workbook,
-};
+use calamine::{Data, ExcelDateTime, ExcelDateTimeType, Range, Reader, Xls, open_workbook};
+#[cfg(test)]
+use calamine::{DataRef, Xlsx};
 use easyexcel_core::{
     AnalysisContext, CellExtra, CellExtraType, CellValue, ConverterRegistry, CsvCharset,
     CustomReadObject, ErrorAction, ExcelError, ExcelRow, FormulaData, ReadDefaultReturn,
@@ -19,9 +19,11 @@ use encoding_rs_io::DecodeReaderBytesBuilder;
 
 mod locale;
 mod locale_generated;
+mod read_cache;
 mod xlsx_rows;
 
 pub use locale::ExcelLocale;
+pub use read_cache::ReadCacheMode;
 
 use xlsx_rows::{XlsxDisplayCellReader, XlsxRowMetadata};
 
@@ -97,6 +99,8 @@ pub struct ReadOptions {
     pub charset: CsvCharset,
     /// Java-style globally registered converters.
     pub converters: ConverterRegistry,
+    /// Shared-string cache strategy used by the XLSX SAX reader.
+    pub read_cache: ReadCacheMode,
 }
 
 impl Default for ReadOptions {
@@ -118,6 +122,7 @@ impl Default for ReadOptions {
             password: None,
             charset: CsvCharset::default(),
             converters: ConverterRegistry::default(),
+            read_cache: ReadCacheMode::default(),
         }
     }
 }
@@ -151,50 +156,39 @@ where
     L: ReadListener<T>,
 {
     let mut consumer = TypedRowConsumer::<T> { listener };
-    read_xlsx_source_with_consumer(source, options, T::schema().is_empty(), &mut consumer)
+    read_xlsx_source_with_consumer(source, options, &mut consumer)
 }
 
 fn read_xlsx_source_with_consumer(
     source: &XlsxSource,
     options: &ReadOptions,
-    needs_cell_metadata: bool,
     consumer: &mut dyn RowConsumer,
 ) -> Result<()> {
-    let mut workbook = Xlsx::new(source.reader()?).map_err(format_error)?;
-    let mut row_metadata =
-        (!options.ignore_empty_row || !options.extra_read.is_empty() || needs_cell_metadata)
-            .then(|| source.reader().and_then(XlsxRowMetadata::new))
-            .transpose()?;
-    let names = selected_sheet_names(&workbook, &options.sheet, options.auto_trim)?;
+    let mut row_metadata = XlsxRowMetadata::new_with_cache(source.reader()?, options.read_cache)?;
+    let names = select_sheet_names(
+        row_metadata.sheet_names(),
+        &options.sheet,
+        options.auto_trim,
+    )?;
     for (sheet_no, sheet_name) in names {
         let (last_explicit_row, extras) = xlsx_sheet_metadata(
-            row_metadata.as_mut(),
+            &mut row_metadata,
             &sheet_name,
             options.ignore_empty_row,
             &options.extra_read,
         )?;
-        let mut display_reader = if needs_cell_metadata {
-            Some(
-                row_metadata
-                    .as_mut()
-                    .expect("display metadata was initialized")
-                    .display_cells(
-                        &sheet_name,
-                        options.use_1904_windowing,
-                        options.scientific_format.is_enabled(),
-                        options.locale.formatter(),
-                    )?,
-            )
-        } else {
-            None
-        };
+        let mut cell_reader = row_metadata.display_cells(
+            &sheet_name,
+            options.use_1904_windowing,
+            options.scientific_format.is_enabled(),
+            options.locale.formatter(),
+        )?;
         if read_sheet(
-            &mut workbook,
+            &mut cell_reader,
             sheet_no,
             &sheet_name,
             last_explicit_row,
             &extras,
-            display_reader.as_mut(),
             options,
             consumer,
         )? == ReadFlow::Stop
@@ -206,14 +200,11 @@ fn read_xlsx_source_with_consumer(
 }
 
 fn xlsx_sheet_metadata(
-    metadata: Option<&mut XlsxRowMetadata>,
+    metadata: &mut XlsxRowMetadata,
     sheet_name: &str,
     ignore_empty_row: bool,
     enabled_extras: &HashSet<CellExtraType>,
 ) -> Result<(Option<u32>, Vec<CellExtra>)> {
-    let Some(metadata) = metadata else {
-        return Ok((None, Vec::new()));
-    };
     let last_explicit_row = if ignore_empty_row {
         None
     } else {
@@ -466,14 +457,6 @@ impl<T: ExcelRow> RowConsumer for TypedRowConsumer<'_, T> {
     }
 }
 
-fn selected_sheet_names<RS: std::io::Read + std::io::Seek>(
-    workbook: &Xlsx<RS>,
-    selector: &SheetSelector,
-    auto_trim: bool,
-) -> Result<Vec<(usize, String)>> {
-    select_sheet_names(workbook.sheet_names(), selector, auto_trim)
-}
-
 fn select_sheet_names(
     names: Vec<String>,
     selector: &SheetSelector,
@@ -498,6 +481,15 @@ fn select_sheet_names(
             .ok_or_else(|| ExcelError::SheetNotFound(name.clone())),
         SheetSelector::All => Ok(names.into_iter().enumerate().collect()),
     }
+}
+
+#[cfg(test)]
+fn selected_sheet_names<RS: std::io::Read + std::io::Seek>(
+    workbook: &Xlsx<RS>,
+    selector: &SheetSelector,
+    auto_trim: bool,
+) -> Result<Vec<(usize, String)>> {
+    select_sheet_names(workbook.sheet_names(), selector, auto_trim)
 }
 
 fn select_xls_sheets(
@@ -531,22 +523,15 @@ fn select_xls_sheets(
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn read_sheet<RS>(
-    workbook: &mut Xlsx<RS>,
+fn read_sheet(
+    reader: &mut XlsxDisplayCellReader<'_>,
     sheet_no: usize,
     sheet_name: &str,
     last_explicit_row: Option<u32>,
     extras: &[CellExtra],
-    mut display_reader: Option<&mut XlsxDisplayCellReader<'_>>,
     options: &ReadOptions,
     consumer: &mut dyn RowConsumer,
-) -> Result<ReadFlow>
-where
-    RS: std::io::Read + std::io::Seek,
-{
-    let mut reader = workbook
-        .worksheet_cells_reader(sheet_name)
-        .map_err(format_error)?;
+) -> Result<ReadFlow> {
     let mut current_index = None;
     let mut current_cells = Vec::new();
     let mut current_formulas = HashMap::new();
@@ -556,8 +541,8 @@ where
     let mut headers = Arc::new(HashMap::new());
     let mut next_row_index = 0;
 
-    while let Some(cell) = reader.next_cell_with_formula().map_err(format_error)? {
-        let (row, column) = cell.pos;
+    while let Some(cell) = reader.next_cell()? {
+        let (row, column) = cell.position;
         if current_index != Some(row) {
             if let Some(current) = current_index {
                 if dispatch_row(
@@ -594,31 +579,19 @@ where
             }
             current_index = Some(row);
         }
-        let column = to_column_index(column)?;
-        if let Some(display_reader) = display_reader.as_deref_mut() {
-            let display_cell = display_reader.next_cell()?.ok_or_else(|| {
-                ExcelError::Format("display-value stream ended before cell stream".to_owned())
-            })?;
-            if display_cell.position != (row, column) {
-                return Err(ExcelError::Format(format!(
-                    "display-value stream cell mismatch: expected ({row}, {column}), found ({}, {})",
-                    display_cell.position.0, display_cell.position.1
-                )));
-            }
-            if let Some(value) = display_cell.display_value {
-                current_display_values.insert(column, value);
-            }
-            if let Some(value) = display_cell.decimal_value {
-                current_decimal_values.insert(column, value);
-            }
+        if let Some(value) = cell.display_value {
+            current_display_values.insert(column, value);
+        }
+        if let Some(value) = cell.decimal_value {
+            current_decimal_values.insert(column, value);
         }
         if current_cells.len() <= column {
             current_cells.resize(column + 1, CellValue::Empty);
         }
         current_present_columns.insert(column);
-        current_cells[column] = from_calamine(&cell.value, options.use_1904_windowing);
+        current_cells[column] = cell.value;
         if let Some(formula) = cell.formula {
-            current_formulas.insert(column, FormulaData::new(formula));
+            current_formulas.insert(column, formula);
         }
     }
 
@@ -640,14 +613,6 @@ where
         )? == ReadFlow::Stop
     {
         return Ok(ReadFlow::Stop);
-    }
-
-    if let Some(display_reader) = display_reader
-        && display_reader.next_cell()?.is_some()
-    {
-        return Err(ExcelError::Format(
-            "display-value stream contains cells missing from cell stream".to_owned(),
-        ));
     }
 
     if let Some(last_row) = last_explicit_row {
@@ -958,6 +923,7 @@ fn header_map(
         .collect()
 }
 
+#[cfg(test)]
 fn from_calamine(value: &DataRef<'_>, use_1904_windowing: bool) -> CellValue {
     match value {
         DataRef::Empty => CellValue::Empty,

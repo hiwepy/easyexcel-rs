@@ -2,12 +2,15 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Seek};
 
 use bigdecimal::BigDecimal;
-use easyexcel_core::{CellExtra, CellExtraType, ExcelError, Result};
+use calamine::{ExcelDateTime, ExcelDateTimeType};
+use easyexcel_core::{CellExtra, CellExtraType, CellValue, ExcelError, FormulaData, Result};
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Decoder, Reader as XmlReader, XmlVersion};
-use ssfmt::{DateSystem, FormatOptions, Locale, format, format_code_from_id};
+use ssfmt::{DateSystem, FormatOptions, Locale, NumberFormat, format, format_code_from_id};
 use zip::ZipArchive;
+
+use crate::read_cache::{ReadCacheMode, SharedStringCache, create_cache, memory_cache};
 
 const MAX_XLSX_ROW_NUMBER: u32 = 1_048_576;
 const MAX_XLSX_COLUMN_NUMBER: usize = 16_384;
@@ -23,7 +26,9 @@ pub(crate) struct XlsxRowMetadata {
     archive: ZipArchive<Box<dyn ReadSeek>>,
     path_cache: HashMap<String, String>,
     sheet_paths: HashMap<String, String>,
+    sheet_names: Vec<String>,
     cell_formats: Vec<XlsxNumberFormat>,
+    shared_strings: Box<dyn SharedStringCache>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,13 +75,31 @@ impl XlsxNumberFormat {
             Self::Custom(code) => code.trim().eq_ignore_ascii_case("general"),
         }
     }
+
+    fn is_date_format(&self) -> bool {
+        let code = match self {
+            Self::Builtin(id) => format_code_from_id(*id),
+            Self::Custom(code) => Some(code.as_str()),
+        };
+        code.and_then(|code| NumberFormat::parse(code).ok())
+            .is_some_and(|format| format.is_date_format())
+    }
 }
 
 pub(crate) struct XlsxDisplayCell {
     pub(crate) position: (u32, usize),
+    pub(crate) value: CellValue,
+    pub(crate) formula: Option<FormulaData>,
     pub(crate) display_value: Option<String>,
     pub(crate) decimal_value: Option<BigDecimal>,
 }
+
+type ParsedCell = (
+    CellValue,
+    Option<FormulaData>,
+    Option<String>,
+    Option<BigDecimal>,
+);
 
 pub(crate) struct XlsxDisplayCellReader<'a> {
     reader: XmlReader<Box<dyn BufRead + 'a>>,
@@ -88,14 +111,23 @@ pub(crate) struct XlsxDisplayCellReader<'a> {
     column_index: usize,
     buffer: Vec<u8>,
     cell_buffer: Vec<u8>,
+    shared_strings: &'a mut dyn SharedStringCache,
 }
 
 impl XlsxRowMetadata {
+    #[cfg(test)]
     pub(crate) fn new(input: impl Read + Seek + 'static) -> Result<Self> {
-        Self::new_boxed(Box::new(input))
+        Self::new_with_cache(input, ReadCacheMode::default())
     }
 
-    fn new_boxed(input: Box<dyn ReadSeek>) -> Result<Self> {
+    pub(crate) fn new_with_cache(
+        input: impl Read + Seek + 'static,
+        cache_mode: ReadCacheMode,
+    ) -> Result<Self> {
+        Self::new_boxed(Box::new(input), cache_mode)
+    }
+
+    fn new_boxed(input: Box<dyn ReadSeek>, cache_mode: ReadCacheMode) -> Result<Self> {
         let mut archive = ZipArchive::new(input).map_err(format_error)?;
         let path_cache = path_cache(&archive);
         let package_relationships = read_relationships(&mut archive, &path_cache, "_rels/.rels")?;
@@ -110,12 +142,14 @@ impl XlsxRowMetadata {
         let workbook_relationships_path = relationship_part_name(&workbook_path);
         let workbook_relationships =
             read_relationships(&mut archive, &path_cache, &workbook_relationships_path)?;
-        let (sheet_paths, _) = read_workbook_metadata(
+        let (sheets, _) = read_workbook_metadata(
             &mut archive,
             &path_cache,
             &workbook_path,
             &workbook_relationships,
         )?;
+        let sheet_names = sheets.iter().map(|(name, _)| name.clone()).collect();
+        let sheet_paths = sheets.into_iter().collect::<HashMap<_, _>>();
         let cell_formats = workbook_relationships
             .values()
             .find(|(_, relationship_type)| relationship_type.ends_with("/styles"))
@@ -124,6 +158,15 @@ impl XlsxRowMetadata {
             .map(|styles_path| read_cell_formats(&mut archive, &path_cache, &styles_path))
             .transpose()?
             .unwrap_or_else(|| vec![XlsxNumberFormat::Builtin(0)]);
+        let shared_strings_path = workbook_relationships
+            .values()
+            .find(|(_, relationship_type)| relationship_type.ends_with("/sharedStrings"))
+            .map(|(target, _)| resolve_target(&workbook_path, target))
+            .transpose()?;
+        let shared_strings = match shared_strings_path {
+            Some(path) => read_shared_strings(&mut archive, &path_cache, &path, cache_mode)?,
+            None => memory_cache(),
+        };
         for path in sheet_paths.values() {
             if !path_cache.contains_key(&path.to_ascii_lowercase()) {
                 return Err(ExcelError::Format(format!(
@@ -135,8 +178,14 @@ impl XlsxRowMetadata {
             archive,
             path_cache,
             sheet_paths,
+            sheet_names,
             cell_formats,
+            shared_strings,
         })
+    }
+
+    pub(crate) fn sheet_names(&self) -> Vec<String> {
+        self.sheet_names.clone()
     }
 
     pub(crate) fn display_cells(
@@ -160,6 +209,7 @@ impl XlsxRowMetadata {
             use_1904_windowing,
             use_scientific_format,
             locale,
+            self.shared_strings.as_mut(),
         )
     }
 
@@ -222,6 +272,7 @@ impl<'a> XlsxDisplayCellReader<'a> {
         date_1904: bool,
         use_scientific_format: bool,
         locale: Locale,
+        shared_strings: &'a mut dyn SharedStringCache,
     ) -> Result<Self> {
         let mut buffer = Vec::with_capacity(256);
         loop {
@@ -246,6 +297,7 @@ impl<'a> XlsxDisplayCellReader<'a> {
             column_index: 0,
             buffer,
             cell_buffer: Vec::with_capacity(256),
+            shared_strings,
         })
     }
 
@@ -276,13 +328,15 @@ impl<'a> XlsxDisplayCellReader<'a> {
                         .map(|value| value.parse::<usize>().map_err(format_error))
                         .transpose()?
                         .unwrap_or_default();
-                    let numeric = values.get("t").is_none_or(|value| value == "n");
-                    let (display_value, decimal_value) =
-                        self.read_cell_display(style_index, numeric)?;
+                    let cell_type = values.get("t").map(String::as_str);
+                    let (value, formula, display_value, decimal_value) =
+                        self.read_cell(style_index, cell_type)?;
                     self.row_index = position.0;
                     self.column_index = position.1.saturating_add(1);
                     return Ok(Some(XlsxDisplayCell {
                         position,
+                        value,
+                        formula,
                         display_value,
                         decimal_value,
                     }));
@@ -304,13 +358,14 @@ impl<'a> XlsxDisplayCellReader<'a> {
         }
     }
 
-    fn read_cell_display(
-        &mut self,
-        style_index: usize,
-        numeric: bool,
-    ) -> Result<(Option<String>, Option<BigDecimal>)> {
+    fn read_cell(&mut self, style_index: usize, cell_type: Option<&str>) -> Result<ParsedCell> {
         let mut in_value = false;
+        let mut in_formula = false;
+        let mut in_text = false;
+        let mut phonetic_depth = 0_u32;
         let mut raw_value = String::new();
+        let mut inline_value = String::new();
+        let mut formula = String::new();
         loop {
             self.cell_buffer.clear();
             match self
@@ -321,6 +376,17 @@ impl<'a> XlsxDisplayCellReader<'a> {
                 Event::Start(element) if element.local_name().as_ref() == b"v" => {
                     in_value = true;
                 }
+                Event::Start(element) if element.local_name().as_ref() == b"f" => {
+                    in_formula = true;
+                }
+                Event::Start(element) if element.local_name().as_ref() == b"rPh" => {
+                    phonetic_depth = phonetic_depth.saturating_add(1);
+                }
+                Event::Start(element)
+                    if phonetic_depth == 0 && element.local_name().as_ref() == b"t" =>
+                {
+                    in_text = true;
+                }
                 Event::Text(value) if in_value => {
                     raw_value.push_str(
                         &value
@@ -328,6 +394,16 @@ impl<'a> XlsxDisplayCellReader<'a> {
                             .map_err(format_error)?,
                     );
                 }
+                Event::Text(value) if in_formula => formula.push_str(
+                    &value
+                        .xml_content(XmlVersion::Implicit1_0)
+                        .map_err(format_error)?,
+                ),
+                Event::Text(value) if in_text => inline_value.push_str(
+                    &value
+                        .xml_content(XmlVersion::Implicit1_0)
+                        .map_err(format_error)?,
+                ),
                 Event::CData(value) if in_value => {
                     raw_value.push_str(
                         &value
@@ -335,33 +411,37 @@ impl<'a> XlsxDisplayCellReader<'a> {
                             .map_err(format_error)?,
                     );
                 }
+                Event::CData(value) if in_formula => formula.push_str(
+                    &value
+                        .xml_content(XmlVersion::Implicit1_0)
+                        .map_err(format_error)?,
+                ),
+                Event::CData(value) if in_text => inline_value.push_str(
+                    &value
+                        .xml_content(XmlVersion::Implicit1_0)
+                        .map_err(format_error)?,
+                ),
                 Event::End(element) if element.local_name().as_ref() == b"v" => {
                     in_value = false;
                 }
+                Event::End(element) if element.local_name().as_ref() == b"f" => {
+                    in_formula = false;
+                }
+                Event::End(element) if element.local_name().as_ref() == b"t" => {
+                    in_text = false;
+                }
+                Event::End(element) if element.local_name().as_ref() == b"rPh" => {
+                    phonetic_depth = phonetic_depth.saturating_sub(1);
+                }
                 Event::End(element) if element.local_name().as_ref() == b"c" => {
-                    if !numeric || raw_value.is_empty() {
-                        return Ok((None, None));
-                    }
-                    let number =
-                        excel_display_number(raw_value.parse::<f64>().map_err(format_error)?);
-                    if !number.is_finite() {
-                        return Err(ExcelError::Format(
-                            "non-finite XLSX numeric cell value".to_owned(),
-                        ));
-                    }
-                    let decimal = number
-                        .to_string()
-                        .parse::<BigDecimal>()
-                        .expect("a finite f64 string is always a valid decimal");
-                    let display_value = self.cell_formats.get(style_index).and_then(|format| {
-                        format.display(
-                            number,
-                            self.date_1904,
-                            self.use_scientific_format,
-                            &self.locale,
-                        )
-                    });
-                    return Ok((display_value, Some(decimal)));
+                    let formula = (!formula.is_empty()).then(|| FormulaData::new(formula));
+                    return self.finish_cell(
+                        style_index,
+                        cell_type,
+                        &raw_value,
+                        &inline_value,
+                        formula,
+                    );
                 }
                 Event::Eof => {
                     return Err(ExcelError::Format(
@@ -371,6 +451,87 @@ impl<'a> XlsxDisplayCellReader<'a> {
                 _ => {}
             }
         }
+    }
+
+    fn finish_cell(
+        &mut self,
+        style_index: usize,
+        cell_type: Option<&str>,
+        raw_value: &str,
+        inline_value: &str,
+        formula: Option<FormulaData>,
+    ) -> Result<ParsedCell> {
+        let number = if matches!(cell_type, Some("n") | None) && !raw_value.is_empty() {
+            let number = excel_display_number(raw_value.parse::<f64>().map_err(format_error)?);
+            if !number.is_finite() {
+                return Err(ExcelError::Format(
+                    "non-finite XLSX numeric cell value".to_owned(),
+                ));
+            }
+            Some(number)
+        } else {
+            None
+        };
+        let value = match cell_type {
+            Some("s") => {
+                if raw_value.is_empty() {
+                    return Ok((CellValue::Empty, formula, None, None));
+                }
+                let index = raw_value.parse::<usize>().map_err(format_error)?;
+                CellValue::String(self.shared_strings.get(index)?)
+            }
+            Some("inlineStr" | "str") => {
+                CellValue::String(decode_excel_escapes(if inline_value.is_empty() {
+                    raw_value
+                } else {
+                    inline_value
+                }))
+            }
+            Some("b") => CellValue::Bool(matches!(raw_value, "1" | "true")),
+            Some("e" | "d") => CellValue::String(raw_value.to_owned()),
+            Some("n") | None => {
+                if raw_value.is_empty() {
+                    CellValue::Empty
+                } else {
+                    self.numeric_cell(style_index, number.expect("numeric value was parsed"))
+                }
+            }
+            Some(other) => {
+                return Err(ExcelError::Format(format!(
+                    "unsupported XLSX cell type: {other}"
+                )));
+            }
+        };
+        let (display_value, decimal_value) = if let Some(number) = number {
+            let decimal = number
+                .to_string()
+                .parse::<BigDecimal>()
+                .expect("a finite f64 string is always a valid decimal");
+            let display = self.cell_formats.get(style_index).and_then(|format| {
+                format.display(
+                    number,
+                    self.date_1904,
+                    self.use_scientific_format,
+                    &self.locale,
+                )
+            });
+            (display, Some(decimal))
+        } else {
+            (None, None)
+        };
+        Ok((value, formula, display_value, decimal_value))
+    }
+
+    fn numeric_cell(&self, style_index: usize, number: f64) -> CellValue {
+        if self
+            .cell_formats
+            .get(style_index)
+            .is_some_and(XlsxNumberFormat::is_date_format)
+        {
+            let date = ExcelDateTime::new(number, ExcelDateTimeType::DateTime, self.date_1904);
+            return super::excel_datetime_cell(&date, self.date_1904);
+        }
+        CellValue::Float(number)
     }
 }
 
@@ -788,14 +949,121 @@ fn read_cell_formats<R: Read + Seek>(
     Ok(cell_formats)
 }
 
+fn read_shared_strings<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    path_cache: &HashMap<String, String>,
+    path: &str,
+    mode: ReadCacheMode,
+) -> Result<Box<dyn SharedStringCache>> {
+    let mut cache_factory = |xml_size| create_cache(mode, xml_size);
+    read_shared_strings_with_factory(archive, path_cache, path, &mut cache_factory)
+}
+
+fn read_shared_strings_with_factory<R>(
+    archive: &mut ZipArchive<R>,
+    path_cache: &HashMap<String, String>,
+    path: &str,
+    cache_factory: &mut dyn FnMut(u64) -> Result<Box<dyn SharedStringCache>>,
+) -> Result<Box<dyn SharedStringCache>>
+where
+    R: Read + Seek,
+{
+    let actual_path = cached_path(path_cache, path);
+    let file = archive.by_name(actual_path).map_err(format_error)?;
+    let xml_size = file.size();
+    let mut cache = cache_factory(xml_size)?;
+    let mut input = BufReader::new(file);
+    parse_shared_strings(&mut input, cache.as_mut())?;
+    Ok(cache)
+}
+
+fn parse_shared_strings(input: &mut dyn BufRead, cache: &mut dyn SharedStringCache) -> Result<()> {
+    let mut reader = XmlReader::from_reader(input);
+    reader.config_mut().expand_empty_elements = true;
+    let mut buffer = Vec::with_capacity(256);
+    let mut current = String::new();
+    let mut in_item = false;
+    let mut in_text = false;
+    let mut phonetic_depth = 0_u32;
+    loop {
+        buffer.clear();
+        match reader.read_event_into(&mut buffer).map_err(format_error)? {
+            Event::Start(element) if element.local_name().as_ref() == b"si" => {
+                current.clear();
+                in_item = true;
+            }
+            Event::Start(element) if in_item && element.local_name().as_ref() == b"rPh" => {
+                phonetic_depth = phonetic_depth.saturating_add(1);
+            }
+            Event::Start(element)
+                if in_item && phonetic_depth == 0 && element.local_name().as_ref() == b"t" =>
+            {
+                in_text = true;
+            }
+            Event::Text(value) if in_text => current.push_str(
+                &value
+                    .xml_content(XmlVersion::Implicit1_0)
+                    .map_err(format_error)?,
+            ),
+            Event::CData(value) if in_text => current.push_str(
+                &value
+                    .xml_content(XmlVersion::Implicit1_0)
+                    .map_err(format_error)?,
+            ),
+            Event::End(element) if element.local_name().as_ref() == b"t" => {
+                in_text = false;
+            }
+            Event::End(element) if element.local_name().as_ref() == b"rPh" => {
+                phonetic_depth = phonetic_depth.saturating_sub(1);
+            }
+            Event::End(element) if element.local_name().as_ref() == b"si" => {
+                cache.put(decode_excel_escapes(&current))?;
+                in_item = false;
+                in_text = false;
+                phonetic_depth = 0;
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn decode_excel_escapes(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut output = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if index + 7 <= bytes.len()
+            && bytes[index] == b'_'
+            && bytes[index + 1] == b'x'
+            && bytes[index + 6] == b'_'
+            && let Ok(hex) = std::str::from_utf8(&bytes[index + 2..index + 6])
+            && let Ok(code) = u16::from_str_radix(hex, 16)
+            && let Some(character) = char::from_u32(u32::from(code))
+        {
+            output.push(character);
+            index += 7;
+        } else {
+            let character = value[index..]
+                .chars()
+                .next()
+                .expect("index is inside the UTF-8 string");
+            output.push(character);
+            index += character.len_utf8();
+        }
+    }
+    output
+}
+
 fn read_workbook_metadata<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     cache: &HashMap<String, String>,
     workbook_path: &str,
     relationships: &Relationships,
-) -> Result<(HashMap<String, String>, bool)> {
+) -> Result<(Vec<(String, String)>, bool)> {
     let mut reader = xml_reader(archive, cache, workbook_path)?;
-    let mut sheets = HashMap::new();
+    let mut sheets = Vec::new();
     let mut date_1904 = false;
     let mut buffer = Vec::with_capacity(256);
     loop {
@@ -822,7 +1090,7 @@ fn read_workbook_metadata<R: Read + Seek>(
                         ))
                     })?;
                 if relationship_type.ends_with("/worksheet") {
-                    sheets.insert(name.clone(), resolve_target(workbook_path, target)?);
+                    sheets.push((name.clone(), resolve_target(workbook_path, target)?));
                 }
             }
             Event::End(element) if element.local_name().as_ref() == b"workbook" => break,

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
-pub use easyexcel_reader::ExcelLocale;
+pub use easyexcel_reader::{ExcelLocale, ReadCacheMode};
 use easyexcel_reader::{
     ReadOptions, ScientificFormatMode, SheetSelector, read_csv, read_xls, read_xlsx,
 };
@@ -233,6 +233,13 @@ where
         self
     }
 
+    /// Selects the XLSX shared-string cache backend.
+    #[must_use]
+    pub const fn read_cache(mut self, mode: ReadCacheMode) -> Self {
+        self.options.read_cache = mode;
+        self
+    }
+
     /// Sets the first physical data row to dispatch, zero-based and inclusive.
     ///
     /// Configured header rows are still analysed for name-based mapping.
@@ -401,6 +408,13 @@ where
         C: Converter<V> + Send + Sync + 'static,
     {
         self.options.converters.register::<V, C>(converter);
+        self
+    }
+
+    /// Selects the XLSX shared-string cache backend while collecting rows.
+    #[must_use]
+    pub const fn read_cache(mut self, mode: ReadCacheMode) -> Self {
+        self.options.read_cache = mode;
         self
     }
 
