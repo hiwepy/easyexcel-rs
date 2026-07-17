@@ -48,6 +48,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
 | CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, stateful same-sheet multi-write, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; JVM-only charset providers remain |
+| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, row conversion, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; explicit empty `<row>` elements, comments, hyperlinks, merged-cell extras, and disk-backed shared-string caching remain |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
@@ -62,6 +63,24 @@ This document is the release gate, not a marketing checklist. A row is marked
 5. Million-row read/write benchmarks record time, peak RSS, and temporary disk.
 6. `cargo llvm-cov` reports 100% lines, regions, and functions.
 7. Formatting, Clippy, tests, docs, MSRV, and security audit are green in CI.
+
+## XLSX streaming boundary
+
+The XLSX reader does not build a worksheet `Range`. It uses Calamine's
+`worksheet_cells_reader`, whose implementation incrementally parses worksheet
+XML with `quick-xml`, groups only the current row, dispatches it, and releases
+that row before reading the next one. The Rust listener sequence follows Java
+EasyExcel: each header row invokes `invoke_head`; a successful header or data
+callback is followed by `has_next`; `false` stops the complete workbook; and a
+stopped sheet does not invoke `do_after_all_analysed`. Conversion and listener
+callback failures both pass through `on_exception`.
+
+This is not yet the complete Java `XlsxSaxAnalyser` contract. Calamine loads
+the workbook shared-string table in memory, whereas Java can select a
+disk-backed cache. Its cell stream also omits explicit empty `<row>` elements
+and does not expose Java's comments, hyperlinks, and merged-cell extra-data
+events. Those gaps require a row-event extension around the OOXML stream, not
+a second implementation of the already-streaming basic cell path.
 
 ## Encryption boundary
 

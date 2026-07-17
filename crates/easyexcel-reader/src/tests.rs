@@ -67,12 +67,17 @@ impl ExcelRow for TestRow {
 }
 
 #[derive(Default)]
+#[allow(clippy::struct_excessive_bools)]
 struct Probe {
     heads: Vec<HashMap<String, usize>>,
     rows: Vec<TestRow>,
     after: Vec<(String, usize, u32)>,
     continue_reading: bool,
     fail_head: bool,
+    fail_invoke: bool,
+    fail_after: bool,
+    error_action: Option<ErrorAction>,
+    errors: usize,
 }
 
 impl ReadListener<TestRow> for Probe {
@@ -89,11 +94,22 @@ impl ReadListener<TestRow> for Probe {
     }
 
     fn invoke(&mut self, data: TestRow, _context: &AnalysisContext) -> Result<()> {
+        if self.fail_invoke {
+            return Err(ExcelError::Format("invoke failed".to_owned()));
+        }
         self.rows.push(data);
         Ok(())
     }
 
+    fn on_exception(&mut self, _error: &ExcelError, _context: &AnalysisContext) -> ErrorAction {
+        self.errors += 1;
+        self.error_action.unwrap_or(ErrorAction::Stop)
+    }
+
     fn do_after_all_analysed(&mut self, context: &AnalysisContext) -> Result<()> {
+        if self.fail_after {
+            return Err(ExcelError::Format("after failed".to_owned()));
+        }
         self.after.push((
             context.sheet_name().to_owned(),
             context.sheet_no(),
@@ -276,6 +292,7 @@ fn helpers_preserve_diagnostics_and_xlsx_column_limits() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<()> {
     let mut range = Range::new((2, 1), (3, 1));
     range.set_value((2, 1), Data::String("Value".to_owned()));
@@ -300,6 +317,26 @@ fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<
     assert_eq!(probe.rows, vec![TestRow(String::new())]);
     assert_eq!(probe.after, vec![("Legacy".to_owned(), 2, 3)]);
 
+    let mut stopped = Probe::default();
+    assert_eq!(
+        read_range(
+            &range,
+            2,
+            "Legacy",
+            &ReadOptions {
+                head_row_number: 3,
+                ..options()
+            },
+            &mut TypedRowConsumer::<TestRow> {
+                listener: &mut stopped,
+            },
+        )?,
+        ReadFlow::Stop
+    );
+    assert_eq!(stopped.heads.len(), 1);
+    assert!(stopped.rows.is_empty());
+    assert!(stopped.after.is_empty());
+
     read_range(
         &Range::empty(),
         3,
@@ -310,6 +347,45 @@ fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<
         },
     )?;
     assert_eq!(probe.after.last(), Some(&("Empty".to_owned(), 3, 0)));
+
+    let mut failing_empty_after = Probe {
+        continue_reading: true,
+        fail_after: true,
+        ..Probe::default()
+    };
+    assert!(
+        read_range(
+            &Range::empty(),
+            3,
+            "Empty",
+            &options(),
+            &mut TypedRowConsumer::<TestRow> {
+                listener: &mut failing_empty_after,
+            },
+        )
+        .is_err()
+    );
+
+    let mut failing_range_after = Probe {
+        continue_reading: true,
+        fail_after: true,
+        ..Probe::default()
+    };
+    assert!(
+        read_range(
+            &range,
+            2,
+            "Legacy",
+            &ReadOptions {
+                head_row_number: 3,
+                ..options()
+            },
+            &mut TypedRowConsumer::<TestRow> {
+                listener: &mut failing_range_after,
+            },
+        )
+        .is_err()
+    );
 
     let invalid_column = Range::new((0, u32::from(u16::MAX) + 1), (0, u32::from(u16::MAX) + 1));
     assert!(
@@ -387,6 +463,18 @@ fn reads_java_easyexcel_legacy_multisheet_fixture() -> Result<()> {
     for (index, head) in probe.heads.iter().enumerate() {
         assert_eq!(head.get(&format!("表{}头", index + 1)), Some(&0));
     }
+    let mut stopped = Probe::default();
+    read_xls::<TestRow, _>(
+        &path,
+        &ReadOptions {
+            sheet: SheetSelector::All,
+            ..options()
+        },
+        &mut stopped,
+    )?;
+    assert_eq!(stopped.heads.len(), 1);
+    assert!(stopped.rows.is_empty());
+    assert!(stopped.after.is_empty());
     assert!(
         read_xls::<TestRow, _>(
             &path,
@@ -582,6 +670,19 @@ fn csv_read_uses_typed_lifecycle_single_sheet_selection_and_flexible_rows() -> R
         &mut record_probe,
     )?;
     assert_eq!(record_probe.rows.len(), 3);
+    let mut stopped = Probe::default();
+    read_csv_records::<TestRow, _>(
+        &mut [Ok(record.clone()), Ok(record.clone())].into_iter(),
+        0,
+        "Sheet1",
+        &ReadOptions {
+            head_row_number: 0,
+            ..options()
+        },
+        &mut stopped,
+    )?;
+    assert_eq!(stopped.rows, vec![TestRow("value".to_owned())]);
+    assert!(stopped.after.is_empty());
     let mut invalid_utf8_reader = csv::ReaderBuilder::new()
         .has_headers(false)
         .from_reader([0xFF].as_slice());
@@ -722,6 +823,7 @@ fn reads_java_easyexcel_official_csv_bom_fixtures() -> Result<()> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn row_processing_handles_headers_skips_data_and_listener_failures() -> Result<()> {
     let mut headers = Arc::new(HashMap::new());
     let mut probe = Probe {
@@ -765,15 +867,30 @@ fn row_processing_handles_headers_skips_data_and_listener_failures() -> Result<(
         head_row_number: 2,
         ..options()
     };
+    assert_eq!(
+        process_row::<TestRow>(
+            0,
+            "First",
+            0,
+            vec![CellValue::String("ignored".to_owned())],
+            &two_header_rows,
+            &mut headers,
+            &mut probe,
+        )?,
+        ReadFlow::Continue
+    );
+    assert_eq!(probe.heads.len(), 2);
     process_row::<TestRow>(
         0,
         "First",
-        0,
-        vec![CellValue::String("ignored".to_owned())],
+        1,
+        vec![CellValue::String("Final".to_owned())],
         &two_header_rows,
         &mut headers,
         &mut probe,
     )?;
+    assert_eq!(probe.heads.len(), 3);
+    assert_eq!(headers.get("Final"), Some(&0));
     assert_eq!(probe.rows.len(), 1);
 
     probe.continue_reading = false;
@@ -781,16 +898,19 @@ fn row_processing_handles_headers_skips_data_and_listener_failures() -> Result<(
         ignore_empty_row: false,
         ..options()
     };
-    process_row::<TestRow>(
-        0,
-        "First",
-        3,
-        vec![CellValue::Empty],
-        &include_empty,
-        &mut headers,
-        &mut probe,
-    )?;
-    assert_eq!(probe.rows.len(), 1);
+    assert_eq!(
+        process_row::<TestRow>(
+            0,
+            "First",
+            3,
+            vec![CellValue::Empty],
+            &include_empty,
+            &mut headers,
+            &mut probe,
+        )?,
+        ReadFlow::Stop
+    );
+    assert_eq!(probe.rows.len(), 2);
 
     let mut failing_head = Probe {
         continue_reading: true,
@@ -809,6 +929,31 @@ fn row_processing_handles_headers_skips_data_and_listener_failures() -> Result<(
         )
         .is_err()
     );
+    assert_eq!(failing_head.errors, 1);
+
+    let no_head = ReadOptions {
+        head_row_number: 0,
+        ..options()
+    };
+    let mut tolerated_invoke = Probe {
+        continue_reading: true,
+        fail_invoke: true,
+        error_action: Some(ErrorAction::Continue),
+        ..Probe::default()
+    };
+    assert_eq!(
+        process_row::<TestRow>(
+            0,
+            "First",
+            0,
+            vec![CellValue::String("value".to_owned())],
+            &no_head,
+            &mut headers,
+            &mut tolerated_invoke,
+        )?,
+        ReadFlow::Continue
+    );
+    assert_eq!(tolerated_invoke.errors, 1);
     Ok(())
 }
 
@@ -878,6 +1023,26 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
         vec![("First".to_owned(), 0, 1), ("Second".to_owned(), 1, 1)]
     );
 
+    let mut failing_after = Probe {
+        continue_reading: true,
+        fail_after: true,
+        ..Probe::default()
+    };
+    assert!(read_xlsx::<TestRow, _>(&path, &options(), &mut failing_after).is_err());
+
+    let mut stopped = Probe::default();
+    read_xlsx::<TestRow, _>(
+        &path,
+        &ReadOptions {
+            sheet: SheetSelector::All,
+            ..options()
+        },
+        &mut stopped,
+    )?;
+    assert_eq!(stopped.heads.len(), 1);
+    assert!(stopped.rows.is_empty());
+    assert!(stopped.after.is_empty());
+
     let mut missing = Probe {
         continue_reading: true,
         ..Probe::default()
@@ -920,6 +1085,17 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
         read_xlsx::<TestRow, _>(&single_path, &options(), &mut failing_final).is_err(),
         "a header error emitted at end-of-sheet must propagate"
     );
+    let mut stopped_final = Probe::default();
+    read_xlsx::<TestRow, _>(
+        &single_path,
+        &ReadOptions {
+            head_row_number: 0,
+            ..options()
+        },
+        &mut stopped_final,
+    )?;
+    assert_eq!(stopped_final.rows, vec![TestRow("Value".to_owned())]);
+    assert!(stopped_final.after.is_empty());
 
     let mut opened: Xlsx<_> = open_workbook(&path).map_err(test_error)?;
     let mut direct = Probe {

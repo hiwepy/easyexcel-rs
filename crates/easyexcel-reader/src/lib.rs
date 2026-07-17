@@ -69,7 +69,11 @@ where
     let names = selected_sheet_names(&workbook, &options.sheet)?;
     for (sheet_no, sheet_name) in names {
         let mut consumer = TypedRowConsumer::<T> { listener };
-        read_sheet(&mut workbook, sheet_no, &sheet_name, options, &mut consumer)?;
+        if read_sheet(&mut workbook, sheet_no, &sheet_name, options, &mut consumer)?
+            == ReadFlow::Stop
+        {
+            break;
+        }
     }
     Ok(())
 }
@@ -144,7 +148,9 @@ where
     let sheets = select_xls_sheets(workbook.worksheets(), &options.sheet)?;
     for (sheet_no, sheet_name, range) in sheets {
         let mut consumer = TypedRowConsumer::<T> { listener };
-        read_range(&range, sheet_no, &sheet_name, options, &mut consumer)?;
+        if read_range(&range, sheet_no, &sheet_name, options, &mut consumer)? == ReadFlow::Stop {
+            break;
+        }
     }
     Ok(())
 }
@@ -202,7 +208,7 @@ where
             .iter()
             .map(|value| CellValue::String(value.to_owned()))
             .collect();
-        process_row::<T>(
+        if process_row::<T>(
             0,
             sheet_name,
             row_index,
@@ -210,7 +216,10 @@ where
             options,
             &mut headers,
             listener,
-        )?;
+        )? == ReadFlow::Stop
+        {
+            return Ok(());
+        }
     }
     listener.do_after_all_analysed(&AnalysisContext::new(sheet_name, 0, final_row))
 }
@@ -229,6 +238,12 @@ fn csv_sheet_name(selector: &SheetSelector) -> Result<String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadFlow {
+    Continue,
+    Stop,
+}
+
 trait RowConsumer {
     fn process(
         &mut self,
@@ -238,7 +253,7 @@ trait RowConsumer {
         cells: Vec<CellValue>,
         options: &ReadOptions,
         headers: &mut Arc<HashMap<String, usize>>,
-    ) -> Result<()>;
+    ) -> Result<ReadFlow>;
 
     fn after(&mut self, context: &AnalysisContext) -> Result<()>;
 }
@@ -256,7 +271,7 @@ impl<T: ExcelRow> RowConsumer for TypedRowConsumer<'_, T> {
         cells: Vec<CellValue>,
         options: &ReadOptions,
         headers: &mut Arc<HashMap<String, usize>>,
-    ) -> Result<()> {
+    ) -> Result<ReadFlow> {
         process_row::<T>(
             sheet_no,
             sheet_name,
@@ -339,7 +354,7 @@ fn read_sheet<RS>(
     sheet_name: &str,
     options: &ReadOptions,
     consumer: &mut dyn RowConsumer,
-) -> Result<()>
+) -> Result<ReadFlow>
 where
     RS: std::io::Read + std::io::Seek,
 {
@@ -352,15 +367,17 @@ where
 
     while let Some(cell) = reader.next_cell().map_err(format_error)? {
         let (row, column) = cell.get_position();
-        if current_index.is_some_and(|current| current != row) {
-            consumer.process(
+        if current_index.is_some_and(|current| current != row)
+            && consumer.process(
                 sheet_no,
                 sheet_name,
                 current_index.expect("row index exists"),
                 std::mem::take(&mut current_cells),
                 options,
                 &mut headers,
-            )?;
+            )? == ReadFlow::Stop
+        {
+            return Ok(ReadFlow::Stop);
         }
         current_index = Some(row);
         let column = to_column_index(column)?;
@@ -370,19 +387,22 @@ where
         current_cells[column] = from_calamine(cell.get_value());
     }
 
-    if let Some(row) = current_index {
-        consumer.process(
+    if let Some(row) = current_index
+        && consumer.process(
             sheet_no,
             sheet_name,
             row,
             current_cells,
             options,
             &mut headers,
-        )?;
+        )? == ReadFlow::Stop
+    {
+        return Ok(ReadFlow::Stop);
     }
 
     let final_row = current_index.unwrap_or_default();
-    consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))
+    consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))?;
+    Ok(ReadFlow::Continue)
 }
 
 fn read_range(
@@ -391,10 +411,11 @@ fn read_range(
     sheet_name: &str,
     options: &ReadOptions,
     consumer: &mut dyn RowConsumer,
-) -> Result<()> {
+) -> Result<ReadFlow> {
     let mut headers = Arc::new(HashMap::new());
     let Some((start_row, start_column)) = range.start() else {
-        return consumer.after(&AnalysisContext::new(sheet_name, sheet_no, 0));
+        consumer.after(&AnalysisContext::new(sheet_name, sheet_no, 0))?;
+        return Ok(ReadFlow::Continue);
     };
     let start_column = to_column_index(start_column)?;
     let mut row_index = start_row;
@@ -403,17 +424,21 @@ fn read_range(
         final_row = row_index;
         let mut cells = vec![CellValue::Empty; start_column];
         cells.extend(row.iter().map(from_data));
-        consumer.process(
+        if consumer.process(
             sheet_no,
             sheet_name,
             row_index,
             cells,
             options,
             &mut headers,
-        )?;
+        )? == ReadFlow::Stop
+        {
+            return Ok(ReadFlow::Stop);
+        }
         row_index = row_index.saturating_add(1);
     }
-    consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))
+    consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))?;
+    Ok(ReadFlow::Continue)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -425,29 +450,53 @@ fn process_row<T>(
     options: &ReadOptions,
     headers: &mut Arc<HashMap<String, usize>>,
     listener: &mut dyn ReadListener<T>,
-) -> Result<()>
+) -> Result<ReadFlow>
 where
     T: ExcelRow,
 {
     let context = AnalysisContext::new(sheet_name, sheet_no, row_index);
-    if options.head_row_number > 0 && row_index + 1 == options.head_row_number {
-        *headers = Arc::new(header_map(&cells));
-        return listener.invoke_head(headers, &context);
+    if row_index < options.head_row_number {
+        let current_headers = Arc::new(header_map(&cells));
+        if row_index + 1 == options.head_row_number {
+            *headers = Arc::clone(&current_headers);
+        }
+        let result = listener.invoke_head(&current_headers, &context);
+        return listener_result(result, listener, &context);
     }
-    if row_index < options.head_row_number
-        || (options.ignore_empty_row && cells.iter().all(CellValue::is_empty))
-        || !listener.has_next(&context)
-    {
-        return Ok(());
+    if options.ignore_empty_row && cells.iter().all(CellValue::is_empty) {
+        return Ok(ReadFlow::Continue);
     }
 
     let row = RowData::new(sheet_name, row_index, cells, Arc::clone(headers));
     match T::from_row(&row) {
-        Ok(data) => listener.invoke(data, &context),
-        Err(error) => match listener.on_exception(&error, &context) {
-            ErrorAction::Continue | ErrorAction::SkipRow => Ok(()),
-            ErrorAction::Stop => Err(error),
-        },
+        Ok(data) => {
+            let result = listener.invoke(data, &context);
+            listener_result(result, listener, &context)
+        }
+        Err(error) => listener_error(error, listener, &context),
+    }
+}
+
+fn listener_result<T>(
+    result: Result<()>,
+    listener: &mut dyn ReadListener<T>,
+    context: &AnalysisContext,
+) -> Result<ReadFlow> {
+    match result {
+        Ok(()) if listener.has_next(context) => Ok(ReadFlow::Continue),
+        Ok(()) => Ok(ReadFlow::Stop),
+        Err(error) => listener_error(error, listener, context),
+    }
+}
+
+fn listener_error<T>(
+    error: ExcelError,
+    listener: &mut dyn ReadListener<T>,
+    context: &AnalysisContext,
+) -> Result<ReadFlow> {
+    match listener.on_exception(&error, context) {
+        ErrorAction::Continue | ErrorAction::SkipRow => Ok(ReadFlow::Continue),
+        ErrorAction::Stop => Err(error),
     }
 }
 

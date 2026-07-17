@@ -155,6 +155,12 @@ The binary worksheet is materialized by Calamine before dispatch; writing
 `.xls` returns an explicit unsupported-operation error instead of emitting an
 XLSX package with the wrong extension.
 
+XLSX worksheet cells are read incrementally through Calamine's `quick-xml`
+cell stream rather than materializing the worksheet. Listener callbacks follow
+Java EasyExcel's ordering, including workbook-wide `has_next` termination and
+exception routing. The remaining SAX compatibility work is tracked explicitly
+in [the compatibility contract](docs/compatibility.md#xlsx-streaming-boundary).
+
 Password-protected `.xlsx` files use the same Java-style builder call on both
 read and write paths:
 
