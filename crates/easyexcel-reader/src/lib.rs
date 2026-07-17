@@ -35,6 +35,22 @@ pub enum SheetSelector {
     All,
 }
 
+/// Controls how General-format extreme numbers are displayed while reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScientificFormatMode {
+    /// Match Java `EasyExcel`'s default and avoid scientific notation.
+    #[default]
+    Plain,
+    /// Use Java `EasyExcel`'s `0.#####E0` scientific representation.
+    Scientific,
+}
+
+impl ScientificFormatMode {
+    const fn is_enabled(self) -> bool {
+        matches!(self, Self::Scientific)
+    }
+}
+
 /// Workbook read configuration shared by XLSX, XLS, and CSV engines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReadOptions {
@@ -48,6 +64,8 @@ pub struct ReadOptions {
     pub auto_trim: bool,
     /// Whether numeric dates use Excel's 1904 windowing system.
     pub use_1904_windowing: bool,
+    /// General-format rendering mode for extreme numbers.
+    pub scientific_format: ScientificFormatMode,
     /// Physical first row dispatched as data, zero-based and inclusive.
     ///
     /// Header rows are still analysed so name-based mapping remains available.
@@ -81,6 +99,7 @@ impl Default for ReadOptions {
             ignore_empty_row: true,
             auto_trim: true,
             use_1904_windowing: false,
+            scientific_format: ScientificFormatMode::Plain,
             start_row: None,
             end_row: None,
             header_aliases: HashMap::new(),
@@ -149,7 +168,11 @@ fn read_xlsx_source_with_consumer(
                 row_metadata
                     .as_mut()
                     .expect("display metadata was initialized")
-                    .display_cells(&sheet_name, options.use_1904_windowing)?,
+                    .display_cells(
+                        &sheet_name,
+                        options.use_1904_windowing,
+                        options.scientific_format.is_enabled(),
+                    )?,
             )
         } else {
             None

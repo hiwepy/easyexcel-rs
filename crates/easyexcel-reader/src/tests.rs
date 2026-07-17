@@ -325,6 +325,7 @@ fn options() -> ReadOptions {
         ignore_empty_row: true,
         auto_trim: true,
         use_1904_windowing: false,
+        scientific_format: ScientificFormatMode::Plain,
         start_row: None,
         end_row: None,
         header_aliases: HashMap::new(),
@@ -1460,7 +1461,7 @@ fn xlsx_display_stream_rejects_early_end_position_mismatch_and_extra_cells() -> 
         let mut workbook = Xlsx::new(workbook_source.reader()?).map_err(test_error)?;
         let metadata_source = XlsxSource::open(&metadata_path, None)?;
         let mut metadata = XlsxRowMetadata::new(metadata_source.reader()?)?;
-        let mut display_reader = metadata.display_cells("First", false)?;
+        let mut display_reader = metadata.display_cells("First", false, false)?;
         let mut listener = DynamicProbe::default();
         let mut consumer = TypedRowConsumer::<DynamicRow> {
             listener: &mut listener,

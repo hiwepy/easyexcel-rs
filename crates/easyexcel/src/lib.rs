@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
-use easyexcel_reader::{ReadOptions, SheetSelector, read_csv, read_xls, read_xlsx};
+use easyexcel_reader::{
+    ReadOptions, ScientificFormatMode, SheetSelector, read_csv, read_xls, read_xlsx,
+};
 pub use easyexcel_template::{
     FillConfig, FillDirection, FillWrapper, TemplateData, fill_xlsx_template,
     fill_xlsx_template_list,
@@ -201,6 +203,17 @@ where
         self
     }
 
+    /// Controls scientific notation for extreme General-format numeric cells.
+    #[must_use]
+    pub const fn use_scientific_format(mut self, enabled: bool) -> Self {
+        self.options.scientific_format = if enabled {
+            ScientificFormatMode::Scientific
+        } else {
+            ScientificFormatMode::Plain
+        };
+        self
+    }
+
     /// Sets the first physical data row to dispatch, zero-based and inclusive.
     ///
     /// Configured header rows are still analysed for name-based mapping.
@@ -340,6 +353,17 @@ where
     #[must_use]
     pub const fn use_1904_windowing(mut self, enabled: bool) -> Self {
         self.options.use_1904_windowing = enabled;
+        self
+    }
+
+    /// Controls scientific notation while collecting extreme General-format numbers.
+    #[must_use]
+    pub const fn use_scientific_format(mut self, enabled: bool) -> Self {
+        self.options.scientific_format = if enabled {
+            ScientificFormatMode::Scientific
+        } else {
+            ScientificFormatMode::Plain
+        };
         self
     }
 

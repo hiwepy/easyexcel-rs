@@ -33,7 +33,14 @@ enum XlsxNumberFormat {
 }
 
 impl XlsxNumberFormat {
-    fn display(&self, value: f64, date_1904: bool) -> Option<String> {
+    fn display(&self, value: f64, date_1904: bool, use_scientific_format: bool) -> Option<String> {
+        if self.is_general() && is_scientific_magnitude(value) {
+            return Some(if use_scientific_format {
+                java_scientific_format(value)
+            } else {
+                java_plain_extreme_format(value)
+            });
+        }
         let options = FormatOptions {
             date_system: if date_1904 {
                 DateSystem::Date1904
@@ -50,6 +57,13 @@ impl XlsxNumberFormat {
         }
         .map(|value| value.trim().to_owned())
     }
+
+    fn is_general(&self) -> bool {
+        match self {
+            Self::Builtin(id) => *id == 0,
+            Self::Custom(code) => code.trim().eq_ignore_ascii_case("general"),
+        }
+    }
 }
 
 pub(crate) struct XlsxDisplayCell {
@@ -62,6 +76,7 @@ pub(crate) struct XlsxDisplayCellReader<'a> {
     reader: XmlReader<Box<dyn BufRead + 'a>>,
     cell_formats: &'a [XlsxNumberFormat],
     date_1904: bool,
+    use_scientific_format: bool,
     row_index: u32,
     column_index: usize,
     buffer: Vec<u8>,
@@ -121,6 +136,7 @@ impl XlsxRowMetadata {
         &mut self,
         sheet_name: &str,
         use_1904_windowing: bool,
+        use_scientific_format: bool,
     ) -> Result<XlsxDisplayCellReader<'_>> {
         let path = self
             .sheet_paths
@@ -130,7 +146,12 @@ impl XlsxRowMetadata {
         let actual_path = cached_path(&self.path_cache, &path);
         let file = self.archive.by_name(actual_path).map_err(format_error)?;
         let reader = boxed_xml_reader(BufReader::new(file));
-        XlsxDisplayCellReader::new(reader, &self.cell_formats, use_1904_windowing)
+        XlsxDisplayCellReader::new(
+            reader,
+            &self.cell_formats,
+            use_1904_windowing,
+            use_scientific_format,
+        )
     }
 
     pub(crate) fn last_explicit_row(&mut self, sheet_name: &str) -> Result<Option<u32>> {
@@ -190,6 +211,7 @@ impl<'a> XlsxDisplayCellReader<'a> {
         mut reader: XmlReader<Box<dyn BufRead + 'a>>,
         cell_formats: &'a [XlsxNumberFormat],
         date_1904: bool,
+        use_scientific_format: bool,
     ) -> Result<Self> {
         let mut buffer = Vec::with_capacity(256);
         loop {
@@ -208,6 +230,7 @@ impl<'a> XlsxDisplayCellReader<'a> {
             reader,
             cell_formats,
             date_1904,
+            use_scientific_format,
             row_index: 0,
             column_index: 0,
             buffer,
@@ -319,10 +342,9 @@ impl<'a> XlsxDisplayCellReader<'a> {
                         .to_string()
                         .parse::<BigDecimal>()
                         .expect("a finite f64 string is always a valid decimal");
-                    let display_value = self
-                        .cell_formats
-                        .get(style_index)
-                        .and_then(|format| format.display(number, self.date_1904));
+                    let display_value = self.cell_formats.get(style_index).and_then(|format| {
+                        format.display(number, self.date_1904, self.use_scientific_format)
+                    });
                     return Ok((display_value, Some(decimal)));
                 }
                 Event::Eof => {
@@ -341,6 +363,32 @@ fn excel_display_number(value: f64) -> f64 {
         return value;
     }
     format!("{value:.14e}").parse().unwrap_or(value)
+}
+
+fn is_scientific_magnitude(value: f64) -> bool {
+    let absolute = value.abs();
+    absolute >= 1E11 || (absolute <= 1E-10 && absolute > 0.0)
+}
+
+fn java_plain_extreme_format(value: f64) -> String {
+    let rounded = value.round();
+    if rounded == 0.0 {
+        "0".to_owned()
+    } else {
+        format!("{rounded:.0}")
+    }
+}
+
+fn java_scientific_format(value: f64) -> String {
+    let formatted = format!("{value:.5e}");
+    let (mantissa, exponent) = formatted
+        .split_once('e')
+        .expect("Rust scientific formatting always contains an exponent");
+    let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
+    let exponent = exponent
+        .parse::<i32>()
+        .expect("Rust scientific formatting always emits a numeric exponent");
+    format!("{mantissa}E{exponent}")
 }
 
 fn path_cache<R: Read + Seek>(archive: &ZipArchive<R>) -> HashMap<String, String> {

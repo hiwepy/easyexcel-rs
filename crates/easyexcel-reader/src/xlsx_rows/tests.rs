@@ -96,7 +96,7 @@ fn valid_entries() -> Vec<(&'static str, &'static str)> {
 #[test]
 fn metadata_resolves_strict_case_insensitive_relationships_and_rows() -> Result<()> {
     let mut metadata = XlsxRowMetadata::new(package(&valid_entries()))?;
-    assert!(metadata.display_cells("Missing", false).is_err());
+    assert!(metadata.display_cells("Missing", false, false).is_err());
     assert_eq!(metadata.last_explicit_row("A&B")?, Some(4));
     assert!(metadata.last_explicit_row("Chart").is_err());
     assert!(metadata.last_explicit_row("Missing").is_err());
@@ -107,7 +107,11 @@ fn metadata_resolves_strict_case_insensitive_relationships_and_rows() -> Result<
         sheet_paths: HashMap::from([("MissingPart".to_owned(), "missing.xml".to_owned())]),
         cell_formats: vec![XlsxNumberFormat::Builtin(0)],
     };
-    assert!(missing_part.display_cells("MissingPart", false).is_err());
+    assert!(
+        missing_part
+            .display_cells("MissingPart", false, false)
+            .is_err()
+    );
     assert!(missing_part.last_explicit_row("MissingPart").is_err());
 
     let mut missing_sheet_entries = valid_entries();
@@ -122,12 +126,35 @@ fn display_cell_stream_formats_exact_numbers_and_tracks_sparse_coordinates() -> 
         XlsxNumberFormat::Builtin(0),
         XlsxNumberFormat::Custom("0.00_ ".to_owned()),
     ];
-    assert_eq!(formats[0].display(1.0, false).as_deref(), Some("1"));
+    assert_eq!(formats[0].display(1.0, false, false).as_deref(), Some("1"));
     assert_eq!(
-        formats[1].display(24.199_812_4, false).as_deref(),
+        formats[1].display(24.199_812_4, false, false).as_deref(),
         Some("24.20")
     );
-    assert_eq!(XlsxNumberFormat::Builtin(999).display(1.0, false), None);
+    assert_eq!(
+        XlsxNumberFormat::Builtin(999).display(1.0, false, false),
+        None
+    );
+    assert_eq!(
+        XlsxNumberFormat::Custom(" General ".to_owned())
+            .display(123_456_789_012.0, false, false)
+            .as_deref(),
+        Some("123456789012")
+    );
+    assert_eq!(
+        formats[0]
+            .display(123_456_789_012.0, false, true)
+            .as_deref(),
+        Some("1.23457E11")
+    );
+    assert_eq!(
+        formats[0].display(1E-11, false, false).as_deref(),
+        Some("0")
+    );
+    assert_eq!(
+        formats[0].display(-1E-11, false, true).as_deref(),
+        Some("-1E-11")
+    );
 
     let mut archive = archive(&[(
         "sheet.xml",
@@ -137,7 +164,7 @@ fn display_cell_stream_formats_exact_numbers_and_tracks_sparse_coordinates() -> 
 </sheetData></worksheet>"#,
     )]);
     let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-    let mut cells = XlsxDisplayCellReader::new(reader, &formats, false)?;
+    let mut cells = XlsxDisplayCellReader::new(reader, &formats, false, false)?;
 
     let first = cells.next_cell()?.expect("first display cell");
     assert_eq!(first.position, (1, 1));
@@ -177,7 +204,7 @@ fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()>
     for xml in ["<worksheet/>", "<worksheet><"] {
         let mut archive = archive(&[("sheet.xml", xml)]);
         let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-        assert!(XlsxDisplayCellReader::new(reader, &formats, false).is_err());
+        assert!(XlsxDisplayCellReader::new(reader, &formats, false, false).is_err());
     }
 
     for xml in [
@@ -195,7 +222,7 @@ fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()>
     ] {
         let mut archive = archive(&[("sheet.xml", xml)]);
         let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-        let mut cells = XlsxDisplayCellReader::new(reader, &formats, false)?;
+        let mut cells = XlsxDisplayCellReader::new(reader, &formats, false, false)?;
         assert!(cells.next_cell().is_err(), "{xml}");
     }
 
@@ -207,7 +234,7 @@ fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()>
         let mut archive =
             ZipArchive::new(package_bytes(&[("sheet.xml", bytes)])).expect("ZIP archive");
         let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-        let mut cells = XlsxDisplayCellReader::new(reader, &formats, false)?;
+        let mut cells = XlsxDisplayCellReader::new(reader, &formats, false, false)?;
         assert!(cells.next_cell().is_err());
     }
     Ok(())

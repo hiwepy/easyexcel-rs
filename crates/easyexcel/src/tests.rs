@@ -139,6 +139,9 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .ignore_empty_row(false)
         .auto_trim(false)
         .use_1904_windowing(true)
+        .use_scientific_format(true)
+        .use_scientific_format(false)
+        .use_scientific_format(true)
         .start_row(4)
         .end_row(8)
         .read_rows(5, 7)
@@ -155,6 +158,10 @@ fn factories_and_builder_options_match_java_style_chaining() {
     assert!(!read.options.ignore_empty_row);
     assert!(!read.options.auto_trim);
     assert!(read.options.use_1904_windowing);
+    assert_eq!(
+        read.options.scientific_format,
+        ScientificFormatMode::Scientific
+    );
     assert_eq!(read.options.start_row, Some(5));
     assert_eq!(read.options.end_row, Some(7));
     assert_eq!(
@@ -188,6 +195,9 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .ignore_empty_row(false)
         .auto_trim(false)
         .use_1904_windowing(true)
+        .use_scientific_format(true)
+        .use_scientific_format(false)
+        .use_scientific_format(true)
         .start_row(3)
         .end_row(9)
         .read_rows(4, 6)
@@ -203,6 +213,10 @@ fn factories_and_builder_options_match_java_style_chaining() {
     assert!(!sync.options.ignore_empty_row);
     assert!(!sync.options.auto_trim);
     assert!(sync.options.use_1904_windowing);
+    assert_eq!(
+        sync.options.scientific_format,
+        ScientificFormatMode::Scientific
+    );
     assert_eq!(sync.options.start_row, Some(4));
     assert_eq!(sync.options.end_row, Some(6));
     assert_eq!(

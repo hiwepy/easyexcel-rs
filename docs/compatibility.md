@@ -20,6 +20,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `ignoreEmptyRow` | `ignore_empty_row` | implemented |
 | `autoTrim` | `auto_trim` | implemented: defaults to `true`; sheet-name matching, content/header strings, and trim-to-empty row handling match Java |
 | `use1904windowing` | `use_1904_windowing` | implemented: Java-compatible default is `false`; explicit 1900/1904 selection controls typed dates and formatted values |
+| `useScientificFormat` | `use_scientific_format` | implemented: Java-compatible default is `false`; General-format extreme numbers switch between plain and `0.#####E0` notation |
 | `customObject` / `AnalysisContext.getCustom()` | `custom_object(value)` / `AnalysisContext::custom::<T>()` | implemented with shared, type-safe downcasting across every callback |
 | Hutool POI header aliases and row slices | `header_alias` / `start_row` / `end_row` / `read_rows` | additive enhancement: aliases are applied before typed mapping; physical bounds are inclusive and retain header analysis |
 | `sheet(Integer/String)` | `sheet(index/name)` | implemented |
