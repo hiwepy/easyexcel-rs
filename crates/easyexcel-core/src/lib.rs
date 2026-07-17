@@ -121,6 +121,31 @@ impl CellValue {
     }
 }
 
+/// Formula metadata associated with a cached cell value while reading.
+///
+/// This mirrors Java `EasyExcel`'s `FormulaData`: the formula is kept separately
+/// so typed conversion continues to consume Excel's cached result.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FormulaData {
+    formula_value: String,
+}
+
+impl FormulaData {
+    /// Creates formula metadata from the expression stored in the workbook.
+    #[must_use]
+    pub fn new(formula_value: impl Into<String>) -> Self {
+        Self {
+            formula_value: formula_value.into(),
+        }
+    }
+
+    /// Returns the formula expression without adding a leading equals sign.
+    #[must_use]
+    pub fn formula_value(&self) -> &str {
+        &self.formula_value
+    }
+}
+
 /// Horizontal alignment used by annotation-driven cell styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExcelHorizontalAlignment {
@@ -583,6 +608,7 @@ pub struct RowData {
     row_index: u32,
     cells: Vec<CellValue>,
     headers: Arc<HashMap<String, usize>>,
+    formulas: HashMap<usize, FormulaData>,
 }
 
 impl RowData {
@@ -599,7 +625,15 @@ impl RowData {
             row_index,
             cells,
             headers,
+            formulas: HashMap::new(),
         }
+    }
+
+    /// Attaches formula metadata indexed by zero-based physical column.
+    #[must_use]
+    pub fn with_formulas(mut self, formulas: HashMap<usize, FormulaData>) -> Self {
+        self.formulas = formulas;
+        self
     }
 
     /// Returns the physical zero-based row index.
@@ -621,6 +655,15 @@ impl RowData {
             .index
             .or_else(|| self.headers.get(column.name).copied())?;
         self.cells.get(index)
+    }
+
+    /// Resolves formula metadata using the same index-before-name priority as [`Self::cell`].
+    #[must_use]
+    pub fn formula(&self, column: &ExcelColumn) -> Option<&FormulaData> {
+        let index = column
+            .index
+            .or_else(|| self.headers.get(column.name).copied())?;
+        self.formulas.get(&index)
     }
 
     /// Creates a conversion context for a column.
@@ -691,6 +734,7 @@ pub trait IntoExcelCell {
 #[derive(Debug, Clone, Copy)]
 pub struct ReadConverterContext<'a> {
     cell: Option<&'a CellValue>,
+    formula: Option<&'a FormulaData>,
     column: &'a ExcelColumn,
     context: &'a ConvertContext,
 }
@@ -705,6 +749,23 @@ impl<'a> ReadConverterContext<'a> {
     ) -> Self {
         Self {
             cell,
+            formula: None,
+            column,
+            context,
+        }
+    }
+
+    /// Creates a read conversion context with optional formula metadata.
+    #[must_use]
+    pub const fn with_formula(
+        cell: Option<&'a CellValue>,
+        formula: Option<&'a FormulaData>,
+        column: &'a ExcelColumn,
+        context: &'a ConvertContext,
+    ) -> Self {
+        Self {
+            cell,
+            formula,
             column,
             context,
         }
@@ -714,6 +775,12 @@ impl<'a> ReadConverterContext<'a> {
     #[must_use]
     pub const fn cell(&self) -> Option<&'a CellValue> {
         self.cell
+    }
+
+    /// Returns formula metadata when the source cell contains a formula.
+    #[must_use]
+    pub const fn formula(&self) -> Option<&'a FormulaData> {
+        self.formula
     }
 
     /// Returns the field's static column metadata.

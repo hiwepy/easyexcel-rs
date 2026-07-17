@@ -67,7 +67,10 @@ impl ExcelRow for TestRow {
 }
 
 #[derive(Debug, PartialEq)]
-struct RawRow(Vec<CellValue>);
+struct RawRow {
+    cells: Vec<CellValue>,
+    formulas: Vec<Option<String>>,
+}
 
 impl ExcelRow for RawRow {
     fn schema() -> &'static [ExcelColumn] {
@@ -86,16 +89,23 @@ impl ExcelRow for RawRow {
     }
 
     fn from_row(row: &RowData) -> Result<Self> {
-        Ok(Self(
-            Self::schema()
+        Ok(Self {
+            cells: Self::schema()
                 .iter()
                 .map(|column| row.cell(column).cloned().unwrap_or(CellValue::Empty))
                 .collect(),
-        ))
+            formulas: Self::schema()
+                .iter()
+                .map(|column| {
+                    row.formula(column)
+                        .map(|formula| formula.formula_value().to_owned())
+                })
+                .collect(),
+        })
     }
 
     fn to_row(&self) -> Result<Vec<CellValue>> {
-        Ok(self.0.clone())
+        Ok(self.cells.clone())
     }
 }
 
@@ -739,20 +749,34 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
     read_xlsx::<RawRow, _>(&path, &options(), &mut probe)?;
     assert_eq!(probe.0.len(), 1);
     assert_eq!(
-        probe.0[0].0[0],
+        probe.0[0].cells[0],
         CellValue::String("shared\rvalue".to_owned())
     );
     assert_eq!(
-        probe.0[0].0[1],
+        probe.0[0].cells[1],
         CellValue::String("inline value".to_owned())
     );
-    assert_eq!(probe.0[0].0[2], CellValue::Bool(true));
-    assert_eq!(probe.0[0].0[3], CellValue::Float(42.0));
-    assert_eq!(probe.0[0].0[4], CellValue::Float(3.5));
-    assert_eq!(probe.0[0].0[5], CellValue::Float(45.5));
-    assert_eq!(probe.0[0].0[6], CellValue::String("cached".to_owned()));
-    assert_eq!(probe.0[0].0[7], CellValue::String("#DIV/0!".to_owned()));
-    assert_eq!(probe.0[0].0[8].as_text(), "1904-01-02 00:00:00");
+    assert_eq!(probe.0[0].cells[2], CellValue::Bool(true));
+    assert_eq!(probe.0[0].cells[3], CellValue::Float(42.0));
+    assert_eq!(probe.0[0].cells[4], CellValue::Float(3.5));
+    assert_eq!(probe.0[0].cells[5], CellValue::Float(45.5));
+    assert_eq!(probe.0[0].cells[6], CellValue::String("cached".to_owned()));
+    assert_eq!(probe.0[0].cells[7], CellValue::String("#DIV/0!".to_owned()));
+    assert_eq!(probe.0[0].cells[8].as_text(), "1904-01-02 00:00:00");
+    assert_eq!(
+        probe.0[0].formulas,
+        vec![
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("SUM(D2:E2)".to_owned()),
+            Some("CONCAT(\"cache\",\"d\")".to_owned()),
+            None,
+            None,
+        ]
+    );
 
     let mut untrimmed = RawProbe::default();
     read_xlsx::<RawRow, _>(
@@ -764,11 +788,11 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
         &mut untrimmed,
     )?;
     assert_eq!(
-        untrimmed.0[0].0[0],
+        untrimmed.0[0].cells[0],
         CellValue::String("  shared\rvalue  ".to_owned())
     );
     assert_eq!(
-        untrimmed.0[0].0[1],
+        untrimmed.0[0].cells[1],
         CellValue::String("  inline value  ".to_owned())
     );
     Ok(())

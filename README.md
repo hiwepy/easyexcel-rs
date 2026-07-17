@@ -169,6 +169,11 @@ and headers are trimmed by default; call `.auto_trim(false)` to preserve their
 outer whitespace. The same option controls whitespace-tolerant sheet-name
 matching, using Java `String.trim()` semantics.
 
+For formula cells, typed fields receive Excel's cached result. The original
+expression remains available separately through `RowData::formula()` and
+`ReadConverterContext::formula()`, mirroring Java `ReadCellData.formulaData`
+without changing ordinary scalar conversion.
+
 Run `./scripts/benchmark-million-rows.sh` for the release-scale streaming
 benchmark. It writes and reads one million typed rows and reports elapsed time,
 peak RSS, and XLSX size; pass a smaller row count as the first argument for a

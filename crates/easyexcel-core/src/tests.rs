@@ -72,7 +72,11 @@ fn row_data_resolves_index_before_header_name() {
         7,
         vec![CellValue::String("name".to_owned()), CellValue::Int(9)],
         headers,
-    );
+    )
+    .with_formulas(HashMap::from([
+        (0, FormulaData::new("LOWER(A1)")),
+        (1, FormulaData::new("1+8")),
+    ]));
 
     assert_eq!(row.sheet_name(), "Users");
     assert_eq!(row.row_index(), 7);
@@ -82,6 +86,16 @@ fn row_data_resolves_index_before_header_name() {
         Some(&CellValue::String("name".to_owned()))
     );
     assert_eq!(row.cell(&missing), None);
+    assert_eq!(
+        row.formula(&explicit).map(FormulaData::formula_value),
+        Some("1+8")
+    );
+    assert_eq!(
+        row.formula(&named).map(FormulaData::formula_value),
+        Some("LOWER(A1)")
+    );
+    assert_eq!(row.formula(&missing), None);
+    assert_eq!(FormulaData::default().formula_value(), "");
     assert_eq!(row.convert_context(&explicit).column_index, Some(1));
     assert_eq!(row.convert_context(&named).column_index, Some(0));
     assert_eq!(row.convert_context(&missing).column_index, None);
@@ -370,7 +384,15 @@ fn custom_converter_contexts_support_both_directions_and_defaults() -> Result<()
     let context = context(Some("text"));
     let cell = CellValue::String("alice".to_owned());
     let read = ReadConverterContext::new(Some(&cell), &column, &context);
+    assert_eq!(read.formula(), None);
     assert_eq!(PrefixConverter.convert_to_rust_data(&read)?, "name:2:alice");
+    let formula = FormulaData::new("CONCAT(A1,B1)");
+    let formula_read =
+        ReadConverterContext::with_formula(Some(&cell), Some(&formula), &column, &context);
+    assert_eq!(
+        formula_read.formula().map(FormulaData::formula_value),
+        Some("CONCAT(A1,B1)")
+    );
     let value = "bob".to_owned();
     let write = WriteConverterContext::new(&value, &column, &context);
     assert_eq!(

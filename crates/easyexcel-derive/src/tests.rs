@@ -398,7 +398,8 @@ fn expansion_generates_schema_readers_writers_defaults_and_generics() {
         .to_string();
     for expected in [
         "Converter :: < String > :: convert_to_rust_data",
-        "ReadConverterContext :: new",
+        "ReadConverterContext :: with_formula",
+        "row . formula (column)",
         "NameConverter as :: core :: default :: Default",
         "Converter :: < String > :: convert_to_excel_data",
         "WriteConverterContext :: new",

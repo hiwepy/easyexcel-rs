@@ -44,6 +44,24 @@ impl Converter<String> for NameConverter {
     }
 }
 
+#[derive(Default)]
+struct FormulaConverter;
+
+impl Converter<String> for FormulaConverter {
+    fn convert_to_rust_data(&self, context: &ReadConverterContext<'_>) -> Result<String> {
+        Ok(context
+            .formula()
+            .map_or_else(String::new, |formula| formula.formula_value().to_owned()))
+    }
+
+    fn convert_to_excel_data(
+        &self,
+        context: &WriteConverterContext<'_, String>,
+    ) -> Result<CellValue> {
+        Ok(CellValue::Formula(context.value().clone()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
 struct ConvertedName {
     #[excel(name = "姓名", index = 0, converter = NameConverter)]
@@ -54,6 +72,18 @@ struct ConvertedName {
 struct RawName {
     #[excel(name = "姓名", index = 0)]
     name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
+struct FormulaExpression {
+    #[excel(name = "Formula", index = 0, converter = FormulaConverter)]
+    formula: String,
+}
+
+#[derive(Debug, Clone, PartialEq, ExcelRow)]
+struct CachedFormulaValue {
+    #[excel(name = "Formula", index = 0)]
+    value: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
@@ -267,6 +297,26 @@ fn derive_selected_converter_transforms_read_and_write_values() -> Result<()> {
     assert_eq!(
         EasyExcel::read_sync::<ConvertedName>(&path).do_read_sync()?,
         expected
+    );
+    Ok(())
+}
+
+#[test]
+fn formula_converter_receives_expression_while_scalar_receives_cached_value() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("formula.xlsx");
+    let expected = vec![FormulaExpression {
+        formula: "SUM(1,2)".to_owned(),
+    }];
+    EasyExcel::write::<FormulaExpression>(&path).do_write(expected.clone())?;
+
+    assert_eq!(
+        EasyExcel::read_sync::<FormulaExpression>(&path).do_read_sync()?,
+        expected
+    );
+    assert_eq!(
+        EasyExcel::read_sync::<CachedFormulaValue>(&path).do_read_sync()?,
+        vec![CachedFormulaValue { value: 0.0 }]
     );
     Ok(())
 }

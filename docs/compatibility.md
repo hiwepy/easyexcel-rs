@@ -49,7 +49,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
 | CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, stateful same-sheet multi-write, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; JVM-only charset providers remain |
-| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, numbers, dates, cached formula results, error text, row conversion, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; raw formula metadata, comments, hyperlinks, merged-cell extras, and disk-backed shared-string caching remain |
+| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, numbers, dates, cached formula results plus `FormulaData`, error text, row conversion, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; raw-map listeners, comments, hyperlinks, merged-cell extras, and disk-backed shared-string caching remain |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
@@ -85,7 +85,9 @@ only leading and trailing characters at or below U+0020 are removed. Shared stri
 and inline rich-text runs are concatenated, Excel `_xHHHH_` escapes are
 decoded, formula cells expose their cached typed value, error cells expose
 their literal text, and date values honor the workbook's 1900/1904 windowing.
-Raw formula metadata remains a separate compatibility gap.
+The original formula expression is retained separately as `FormulaData`, just
+like Java `ReadCellData.formulaData`; `RowData::formula` and custom converter
+contexts can inspect it without replacing the cached value.
 
 Like Java's `RowTagHandler`, the dispatcher synthesizes every missing row before
 the first cell-bearing row and between later cell-bearing rows. This preserves

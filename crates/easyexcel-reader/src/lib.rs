@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use calamine::{Data, DataRef, Range, Reader, Xls, Xlsx, open_workbook};
 use easyexcel_core::{
-    AnalysisContext, CellValue, CsvCharset, ErrorAction, ExcelError, ExcelRow, ReadListener,
-    Result, RowData,
+    AnalysisContext, CellValue, CsvCharset, ErrorAction, ExcelError, ExcelRow, FormulaData,
+    ReadListener, Result, RowData,
 };
 use encoding_rs::Encoding;
 use encoding_rs_io::DecodeReaderBytesBuilder;
@@ -301,6 +301,18 @@ trait RowConsumer {
         headers: &mut Arc<HashMap<String, usize>>,
     ) -> Result<ReadFlow>;
 
+    #[allow(clippy::too_many_arguments)]
+    fn process_with_formulas(
+        &mut self,
+        sheet_no: usize,
+        sheet_name: &str,
+        row_index: u32,
+        cells: Vec<CellValue>,
+        formulas: HashMap<usize, FormulaData>,
+        options: &ReadOptions,
+        headers: &mut Arc<HashMap<String, usize>>,
+    ) -> Result<ReadFlow>;
+
     fn after(&mut self, context: &AnalysisContext) -> Result<()>;
 }
 
@@ -318,11 +330,34 @@ impl<T: ExcelRow> RowConsumer for TypedRowConsumer<'_, T> {
         options: &ReadOptions,
         headers: &mut Arc<HashMap<String, usize>>,
     ) -> Result<ReadFlow> {
-        process_row::<T>(
+        process_row_with_formulas::<T>(
             sheet_no,
             sheet_name,
             row_index,
             cells,
+            HashMap::new(),
+            options,
+            headers,
+            self.listener,
+        )
+    }
+
+    fn process_with_formulas(
+        &mut self,
+        sheet_no: usize,
+        sheet_name: &str,
+        row_index: u32,
+        cells: Vec<CellValue>,
+        formulas: HashMap<usize, FormulaData>,
+        options: &ReadOptions,
+        headers: &mut Arc<HashMap<String, usize>>,
+    ) -> Result<ReadFlow> {
+        process_row_with_formulas::<T>(
+            sheet_no,
+            sheet_name,
+            row_index,
+            cells,
+            formulas,
             options,
             headers,
             self.listener,
@@ -414,18 +449,20 @@ where
         .map_err(format_error)?;
     let mut current_index = None;
     let mut current_cells = Vec::new();
+    let mut current_formulas = HashMap::new();
     let mut headers = Arc::new(HashMap::new());
     let mut next_row_index = 0;
 
-    while let Some(cell) = reader.next_cell().map_err(format_error)? {
-        let (row, column) = cell.get_position();
+    while let Some(cell) = reader.next_cell_with_formula().map_err(format_error)? {
+        let (row, column) = cell.pos;
         if current_index != Some(row) {
             if let Some(current) = current_index {
-                if consumer.process(
+                if consumer.process_with_formulas(
                     sheet_no,
                     sheet_name,
                     current,
                     std::mem::take(&mut current_cells),
+                    std::mem::take(&mut current_formulas),
                     options,
                     &mut headers,
                 )? == ReadFlow::Stop
@@ -452,15 +489,19 @@ where
         if current_cells.len() <= column {
             current_cells.resize(column + 1, CellValue::Empty);
         }
-        current_cells[column] = from_calamine(cell.get_value());
+        current_cells[column] = from_calamine(&cell.value);
+        if let Some(formula) = cell.formula {
+            current_formulas.insert(column, FormulaData::new(formula));
+        }
     }
 
     if let Some(row) = current_index
-        && consumer.process(
+        && consumer.process_with_formulas(
             sheet_no,
             sheet_name,
             row,
             current_cells,
+            current_formulas,
             options,
             &mut headers,
         )? == ReadFlow::Stop
@@ -556,7 +597,33 @@ fn process_row<T>(
     sheet_no: usize,
     sheet_name: &str,
     row_index: u32,
+    cells: Vec<CellValue>,
+    options: &ReadOptions,
+    headers: &mut Arc<HashMap<String, usize>>,
+    listener: &mut dyn ReadListener<T>,
+) -> Result<ReadFlow>
+where
+    T: ExcelRow,
+{
+    process_row_with_formulas(
+        sheet_no,
+        sheet_name,
+        row_index,
+        cells,
+        HashMap::new(),
+        options,
+        headers,
+        listener,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_row_with_formulas<T>(
+    sheet_no: usize,
+    sheet_name: &str,
+    row_index: u32,
     mut cells: Vec<CellValue>,
+    formulas: HashMap<usize, FormulaData>,
     options: &ReadOptions,
     headers: &mut Arc<HashMap<String, usize>>,
     listener: &mut dyn ReadListener<T>,
@@ -580,7 +647,8 @@ where
         return Ok(ReadFlow::Continue);
     }
 
-    let row = RowData::new(sheet_name, row_index, cells, Arc::clone(headers));
+    let row =
+        RowData::new(sheet_name, row_index, cells, Arc::clone(headers)).with_formulas(formulas);
     match T::from_row(&row) {
         Ok(data) => {
             let result = listener.invoke(data, &context);

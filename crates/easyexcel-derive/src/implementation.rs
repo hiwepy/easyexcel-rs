@@ -201,8 +201,9 @@ fn field_read_conversion(
             quote! {
                 #crate_path::Converter::<#ty>::convert_to_rust_data(
                     &<#converter as ::core::default::Default>::default(),
-                    &#crate_path::ReadConverterContext::new(
+                    &#crate_path::ReadConverterContext::with_formula(
                         row.cell(column),
+                        row.formula(column),
                         column,
                         &context,
                     ),
