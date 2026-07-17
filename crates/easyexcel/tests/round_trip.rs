@@ -32,6 +32,15 @@ struct User {
     transient: String,
 }
 
+fn test_user(name: &str, age: u32) -> User {
+    User {
+        name: name.to_owned(),
+        age: Some(age),
+        registered_on: NaiveDate::from_ymd_opt(2026, 7, 17).expect("valid test date"),
+        transient: String::new(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
 struct ImageConverterRow {
     #[excel(name = "Primitive bytes", index = 0)]
@@ -299,6 +308,25 @@ fn writes_and_reads_typed_rows_with_java_style_builders() -> Result<()> {
 }
 
 #[test]
+fn stateful_csv_finishes_a_real_multi_batch_public_workflow() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("users.csv");
+    let sheet = EasyExcel::writer_sheet::<User>("用户");
+    let mut writer = EasyExcel::write::<User>(&path).with_bom(false).build();
+    writer
+        .write([test_user("张三", 30)], &sheet)?
+        .write([test_user("李四", 31)], &sheet)?;
+    writer.finish()?;
+    writer.finish()?;
+    let mut empty_writer = EasyExcel::write::<User>(directory.path().join("empty.csv")).build();
+    empty_writer.finish()?;
+
+    let rows = EasyExcel::read_sync::<User>(&path).do_read_sync()?;
+    assert_eq!(rows, [test_user("张三", 30), test_user("李四", 31)]);
+    Ok(())
+}
+
+#[test]
 fn integers_beyond_excels_exact_number_range_round_trip_as_text() -> Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("large-integers.xlsx");
@@ -493,10 +521,18 @@ fn public_facade_round_trips_scalar_write_cell_data_and_emits_multiple_images() 
         .right(5)
         .bottom(6)
         .anchor_type(AnchorType::DontMoveAndResize);
+    let absolute_anchor = ClientAnchorData::new().coordinates(
+        CoordinateData::new()
+            .first_row_index(1)
+            .first_column_index(1)
+            .last_row_index(1)
+            .last_column_index(1),
+    );
     let row = MultiImageRow {
-        cell: WriteCellData::new(CellValue::String("two images".to_owned())).image_data_list([
+        cell: WriteCellData::new(CellValue::String("three images".to_owned())).image_data_list([
             ImageData::new(bytes.clone()),
-            ImageData::new(bytes).anchor(second_anchor),
+            ImageData::new(bytes.clone()).anchor(second_anchor),
+            ImageData::new(bytes).anchor(absolute_anchor),
         ]),
     };
     let directory = tempdir()?;
@@ -513,7 +549,7 @@ fn public_facade_round_trips_scalar_write_cell_data_and_emits_multiple_images() 
     assert_eq!(rows.len(), 1);
     assert_eq!(
         rows[0].cell.value(),
-        &CellValue::String("two images".to_owned())
+        &CellValue::String("three images".to_owned())
     );
     assert!(rows[0].cell.images().is_empty());
 
@@ -524,7 +560,7 @@ fn public_facade_round_trips_scalar_write_cell_data_and_emits_multiple_images() 
         .by_name("xl/drawings/drawing1.xml")
         .map_err(|error| ExcelError::Format(error.to_string()))?
         .read_to_string(&mut drawing_xml)?;
-    assert_eq!(drawing_xml.matches("<xdr:twoCellAnchor").count(), 2);
+    assert_eq!(drawing_xml.matches("<xdr:twoCellAnchor").count(), 3);
     assert_eq!(drawing_xml.matches("editAs=\"absolute\"").count(), 1);
     Ok(())
 }
@@ -532,7 +568,12 @@ fn public_facade_round_trips_scalar_write_cell_data_and_emits_multiple_images() 
 #[test]
 fn public_facade_writes_rich_text_and_reads_its_plain_value() -> Result<()> {
     let rich = RichTextStringData::new("红色😀下标")
-        .apply_font(WriteFont::new().font_name("Aptos").bold(true))
+        .apply_font(
+            WriteFont::new()
+                .font_name("Aptos")
+                .bold(true)
+                .type_offset(ExcelFontScript::None),
+        )
         .apply_font_range(
             0,
             2,
@@ -546,6 +587,11 @@ fn public_facade_writes_rich_text_and_reads_its_plain_value() -> Result<()> {
             WriteFont::new()
                 .color(ExcelColor::Rgb(0x00_80_00))
                 .type_offset(ExcelFontScript::Subscript),
+        )
+        .apply_font_range(
+            0,
+            1,
+            WriteFont::new().type_offset(ExcelFontScript::Superscript),
         );
     let directory = tempdir()?;
     let path = directory.path().join("rich-text.xlsx");
@@ -554,6 +600,24 @@ fn public_facade_writes_rich_text_and_reads_its_plain_value() -> Result<()> {
         .do_write([RichTextFacadeRow {
             value: rich.clone(),
         }])?;
+
+    for (name, value) in [
+        (
+            "outside.xlsx",
+            RichTextStringData::new("a").apply_font_range(0, 2, WriteFont::new()),
+        ),
+        (
+            "surrogate.xlsx",
+            RichTextStringData::new("😀").apply_font_range(0, 1, WriteFont::new()),
+        ),
+    ] {
+        assert!(
+            EasyExcel::write::<RichTextFacadeRow>(directory.path().join(name))
+                .sheet("Rich")
+                .do_write([RichTextFacadeRow { value }])
+                .is_err()
+        );
+    }
 
     let rows = EasyExcel::read_sync::<RichTextFacadeRow>(&path)
         .sheet("Rich")
@@ -568,7 +632,8 @@ fn public_facade_writes_rich_text_and_reads_its_plain_value() -> Result<()> {
         .map_err(|error| ExcelError::Format(error.to_string()))?
         .read_to_string(&mut shared_strings)?;
     assert!(shared_strings.contains("<r>"));
-    assert!(shared_strings.contains("红色"));
+    assert!(shared_strings.contains('红'));
+    assert!(shared_strings.contains('色'));
     assert!(shared_strings.contains("😀"));
     Ok(())
 }

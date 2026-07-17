@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Cursor;
+use std::io::{self, Cursor, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use chrono::NaiveDate;
@@ -26,6 +27,79 @@ impl ExcelRow for Value {
 
     fn to_row(&self) -> Result<Vec<CellValue>> {
         Ok(vec![CellValue::String(self.0.clone())])
+    }
+}
+
+#[derive(Clone)]
+struct FallibleValue {
+    value: &'static str,
+    fail: bool,
+}
+
+#[derive(Default)]
+struct FacadeProbeWrite {
+    bytes: Vec<u8>,
+    fail_write: bool,
+    fail_flush: bool,
+    fail_flush_at: Option<usize>,
+    flushes: usize,
+}
+
+impl Write for FacadeProbeWrite {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.fail_write {
+            Err(io::Error::other("injected facade write failure"))
+        } else {
+            self.bytes.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let flush = self.flushes;
+        self.flushes += 1;
+        if self.fail_flush || self.fail_flush_at == Some(flush) {
+            Err(io::Error::other("injected facade flush failure"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ToggleFacadeWrite {
+    fail: Arc<AtomicBool>,
+}
+
+impl Write for ToggleFacadeWrite {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.fail.load(Ordering::SeqCst) {
+            Err(io::Error::other("injected final encoding failure"))
+        } else {
+            Ok(buffer.len())
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl ExcelRow for FallibleValue {
+    fn schema() -> &'static [ExcelColumn] {
+        Value::schema()
+    }
+
+    fn from_row(_row: &RowData) -> Result<Self> {
+        Err(ExcelError::Unsupported("write-only test row".to_owned()))
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        if self.fail {
+            Err(ExcelError::Format("injected conversion failure".to_owned()))
+        } else {
+            Ok(vec![CellValue::String(self.value.to_owned())])
+        }
     }
 }
 
@@ -159,6 +233,33 @@ struct DynamicListener(Arc<Mutex<Vec<DynamicRow>>>);
 struct ConverterListener(Arc<Mutex<Vec<ConverterRow>>>);
 
 impl WriteHandler for NoopWriteHandler {}
+
+struct FailingFacadeWriteHandler {
+    before_workbook: bool,
+    before_cell: bool,
+}
+
+impl WriteHandler for FailingFacadeWriteHandler {
+    fn before_workbook(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+        if self.before_workbook {
+            Err(ExcelError::Format(
+                "injected before-workbook failure".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn before_cell(&mut self, _context: &mut WriteCellContext) -> Result<()> {
+        if self.before_cell {
+            Err(ExcelError::Format(
+                "injected before-cell failure".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
 
 impl ReadListener<Value> for Listener {
     fn invoke(&mut self, data: Value, _context: &AnalysisContext) -> Result<()> {
@@ -464,6 +565,17 @@ fn facade_reads_and_writes_java_style_dynamic_rows() -> Result<()> {
         no_head_rows[0].get(3),
         Some(&DynamicValue::String("tail".to_owned()))
     );
+    assert!(matches!(
+        EasyExcel::write::<DynamicRow>(directory.path().join("invalid-charset.csv"))
+            .charset("not-a-charset")
+            .do_write([source.clone()]),
+        Err(ExcelError::Unsupported(_))
+    ));
+    assert!(
+        EasyExcel::write::<DynamicRow>(directory.path().join("missing/dynamic.csv"))
+            .do_write([source.clone()])
+            .is_err()
+    );
 
     let csv = directory.path().join("dynamic.csv");
     EasyExcel::write::<DynamicRow>(&csv)
@@ -717,6 +829,9 @@ fn facade_builds_stateful_gbk_csv_and_appends_without_repeating_head() -> Result
         .write(vec![Value("第一批".to_owned())], &sheet)?
         .write(vec![Value("第二批".to_owned())], &sheet)?;
     writer.finish()?;
+    writer.finish()?;
+    let mut empty_writer = EasyExcel::write::<Value>(directory.path().join("empty.csv")).build();
+    empty_writer.finish()?;
 
     assert_eq!(
         EasyExcel::read_sync::<Value>(&path)
@@ -764,6 +879,443 @@ fn facade_csv_stream_writer_propagates_validation_and_io_failures() {
         ),
         Err(ExcelError::Unsupported(_))
     ));
+    assert!(
+        write_csv_to_writer::<Value, _, _>(
+            Path::new("stream.csv"),
+            FacadeProbeWrite {
+                fail_write: true,
+                ..FacadeProbeWrite::default()
+            },
+            &WriteOptions::default(),
+            [Value("bom failure".to_owned())],
+            &mut [],
+        )
+        .is_err()
+    );
+    for fail_flush_at in [0, 1] {
+        assert!(matches!(
+            write_csv_to_writer::<Value, _, _>(
+                Path::new("stream.csv"),
+                FacadeProbeWrite {
+                    fail_flush_at: Some(fail_flush_at),
+                    ..FacadeProbeWrite::default()
+                },
+                &WriteOptions {
+                    with_bom: false,
+                    ..WriteOptions::default()
+                },
+                [Value("flush failure".to_owned())],
+                &mut [],
+            ),
+            Err(ExcelError::Io(_) | ExcelError::Format(_))
+        ));
+    }
+
+    let mut incomplete =
+        CsvEncodingWriter::with_charset(FacadeProbeWrite::default(), &CsvCharset::new("UTF-8"))
+            .expect("UTF-8 transcoder");
+    assert!(matches!(
+        CsvEncodingWriter::with_charset(
+            FacadeProbeWrite::default(),
+            &CsvCharset::new("not-a-real-charset"),
+        ),
+        Err(ExcelError::Unsupported(_))
+    ));
+    incomplete.write_all(&[0xE2]).expect("partial UTF-8 chunk");
+    assert_eq!(
+        incomplete
+            .finish()
+            .expect_err("incomplete UTF-8 fails")
+            .kind(),
+        io::ErrorKind::InvalidData
+    );
+
+    let fail = Arc::new(AtomicBool::new(false));
+    let mut finalizing = CsvEncodingWriter::with_charset(
+        ToggleFacadeWrite {
+            fail: Arc::clone(&fail),
+        },
+        &CsvCharset::new("ISO-2022-JP"),
+    )
+    .expect("ISO-2022-JP transcoder");
+    finalizing
+        .write_all("日本".as_bytes())
+        .expect("initial encoded bytes");
+    fail.store(true, Ordering::SeqCst);
+    assert!(finalizing.finish().is_err());
+}
+
+#[test]
+fn facade_borrowed_xlsx_stream_is_real_and_remains_caller_owned() -> Result<()> {
+    let mut output = FacadeProbeWrite::default();
+    EasyExcel::write::<Value>("response.xlsx")
+        .sheet("Values")
+        .to_writer(&mut output)
+        .do_write([Value("streamed".to_owned())])?;
+    assert!(output.bytes.starts_with(b"PK"));
+    output.write_all(b"caller-still-owns-stream")?;
+    assert!(output.bytes.ends_with(b"caller-still-owns-stream"));
+
+    let mut encrypted = FacadeProbeWrite::default();
+    EasyExcel::write::<Value>("response.xlsx")
+        .password("123456")
+        .to_writer(&mut encrypted)
+        .do_write([Value("secret".to_owned())])?;
+    assert!(encrypted.bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]));
+
+    let mut csv = FacadeProbeWrite::default();
+    EasyExcel::write::<Value>("response.csv")
+        .with_bom(false)
+        .to_writer(&mut csv)
+        .do_write([Value("csv-stream".to_owned())])?;
+    assert_eq!(csv.bytes, b"Value\ncsv-stream\n");
+
+    for charset in ["UTF-16LE", "UTF-16BE"] {
+        let mut encoded = FacadeProbeWrite::default();
+        EasyExcel::write::<Value>("response.csv")
+            .charset(charset)
+            .to_writer(&mut encoded)
+            .do_write([Value("encoded".to_owned())])?;
+        assert!(!encoded.bytes.is_empty());
+    }
+
+    let mut invalid_csv = FacadeProbeWrite::default();
+    assert!(matches!(
+        EasyExcel::write::<Value>("response.csv")
+            .charset("not-a-charset")
+            .to_writer(&mut invalid_csv)
+            .do_write([Value("invalid".to_owned())]),
+        Err(ExcelError::Unsupported(_))
+    ));
+
+    for mut output in [
+        FacadeProbeWrite {
+            fail_write: true,
+            ..FacadeProbeWrite::default()
+        },
+        FacadeProbeWrite {
+            fail_flush: true,
+            ..FacadeProbeWrite::default()
+        },
+    ] {
+        assert!(
+            EasyExcel::write::<Value>("response.csv")
+                .with_bom(false)
+                .to_writer(&mut output)
+                .do_write([Value("failure".to_owned())])
+                .is_err()
+        );
+    }
+    for mut output in [
+        FacadeProbeWrite {
+            fail_write: true,
+            ..FacadeProbeWrite::default()
+        },
+        FacadeProbeWrite {
+            fail_flush: true,
+            ..FacadeProbeWrite::default()
+        },
+    ] {
+        assert!(
+            EasyExcel::write::<Value>("response.xlsx")
+                .to_writer(&mut output)
+                .do_write([Value("failure".to_owned())])
+                .is_err()
+        );
+    }
+    let mut encrypted_failure = FacadeProbeWrite {
+        fail_write: true,
+        ..FacadeProbeWrite::default()
+    };
+    assert!(
+        EasyExcel::write::<Value>("response.xlsx")
+            .password("123456")
+            .to_writer(&mut encrypted_failure)
+            .do_write([Value("failure".to_owned())])
+            .is_err()
+    );
+    for (before_workbook, before_cell) in [(true, false), (false, true)] {
+        let mut output = FacadeProbeWrite::default();
+        assert!(
+            EasyExcel::write::<Value>("response.xlsx")
+                .register_write_handler(FailingFacadeWriteHandler {
+                    before_workbook,
+                    before_cell,
+                })
+                .to_writer(&mut output)
+                .do_write([Value("failure".to_owned())])
+                .is_err()
+        );
+    }
+
+    let mut unsupported = FacadeProbeWrite::default();
+    assert!(matches!(
+        EasyExcel::write::<Value>("response.xls")
+            .to_writer(&mut unsupported)
+            .do_write([Value("unsupported".to_owned())]),
+        Err(ExcelError::Unsupported(_))
+    ));
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn facade_owned_stream_matches_close_and_exception_finish_semantics() -> Result<()> {
+    let xlsx = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let inspect_xlsx = xlsx.clone();
+    let sheet = EasyExcel::writer_sheet::<Value>("Values");
+    let mut writer = EasyExcel::write::<Value>("response.xlsx")
+        .auto_close_stream(false)
+        .to_output_stream(xlsx)
+        .build();
+    writer.write([Value("one".to_owned())], &sheet)?;
+    writer.write([Value("two".to_owned())], &sheet)?;
+    writer.finish()?;
+    writer.finish()?;
+    assert!(writer.is_finished());
+    assert!(!inspect_xlsx.is_closed());
+    assert!(
+        inspect_xlsx
+            .with_inner(|output| output.bytes.starts_with(b"PK"))
+            .unwrap_or(false)
+    );
+
+    let csv = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let inspect_csv = csv.clone();
+    let csv_sheet = EasyExcel::writer_sheet::<Value>("Values");
+    let mut csv_writer = EasyExcel::write::<Value>("response.csv")
+        .with_bom(false)
+        .auto_close_stream(false)
+        .to_output_stream(csv)
+        .build();
+    csv_writer.write([Value("one".to_owned())], &csv_sheet)?;
+    csv_writer.write([Value("two".to_owned())], &csv_sheet)?;
+    csv_writer.finish()?;
+    assert_eq!(
+        inspect_csv.with_inner(|output| output.bytes.clone()),
+        Some(b"Value\none\ntwo\n".to_vec())
+    );
+    let mut invalid_csv_writer = EasyExcel::write::<Value>("response.csv")
+        .charset("not-a-charset")
+        .to_output_stream(ExcelOutputStream::new(FacadeProbeWrite::default()))
+        .build();
+    assert!(matches!(
+        invalid_csv_writer.finish(),
+        Err(ExcelError::Unsupported(_))
+    ));
+
+    let discarded = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let inspect_discarded = discarded.clone();
+    let mut discarded_writer = EasyExcel::write::<FallibleValue>("response.xlsx")
+        .auto_close_stream(false)
+        .to_output_stream(discarded)
+        .build();
+    let fallible_sheet = EasyExcel::writer_sheet::<FallibleValue>("Values");
+    discarded_writer.write(
+        [FallibleValue {
+            value: "kept-in-workbook",
+            fail: false,
+        }],
+        &fallible_sheet,
+    )?;
+    assert!(
+        discarded_writer
+            .write(
+                [FallibleValue {
+                    value: "fail",
+                    fail: true,
+                }],
+                &fallible_sheet,
+            )
+            .is_err()
+    );
+    discarded_writer.finish_on_exception()?;
+    assert_eq!(
+        inspect_discarded.with_inner(|output| output.bytes.len()),
+        Some(0)
+    );
+
+    let emitted = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let inspect_emitted = emitted.clone();
+    let mut emitted_writer = EasyExcel::write::<FallibleValue>("response.xlsx")
+        .auto_close_stream(false)
+        .write_excel_on_exception(true)
+        .to_output_stream(emitted)
+        .build();
+    emitted_writer.write(
+        [FallibleValue {
+            value: "emitted",
+            fail: false,
+        }],
+        &fallible_sheet,
+    )?;
+    emitted_writer.finish_on_exception()?;
+    assert!(
+        inspect_emitted
+            .with_inner(|output| output.bytes.starts_with(b"PK"))
+            .unwrap_or(false)
+    );
+
+    let discarded_csv = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let inspect_discarded_csv = discarded_csv.clone();
+    let mut discarded_csv_writer = EasyExcel::write::<FallibleValue>("response.csv")
+        .with_bom(false)
+        .auto_close_stream(false)
+        .to_output_stream(discarded_csv)
+        .build();
+    discarded_csv_writer.write(
+        [FallibleValue {
+            value: "discarded",
+            fail: false,
+        }],
+        &fallible_sheet,
+    )?;
+    discarded_csv_writer.finish_on_exception()?;
+    assert_eq!(
+        inspect_discarded_csv.with_inner(|output| output.bytes.len()),
+        Some(0)
+    );
+
+    let emitted_csv = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let inspect_emitted_csv = emitted_csv.clone();
+    let mut emitted_csv_writer = EasyExcel::write::<FallibleValue>("response.csv")
+        .with_bom(false)
+        .auto_close_stream(false)
+        .write_excel_on_exception(true)
+        .to_output_stream(emitted_csv)
+        .build();
+    emitted_csv_writer.write(
+        [FallibleValue {
+            value: "emitted",
+            fail: false,
+        }],
+        &fallible_sheet,
+    )?;
+    emitted_csv_writer.finish_on_exception()?;
+    assert_eq!(
+        inspect_emitted_csv.with_inner(|output| output.bytes.clone()),
+        Some(b"Value\nemitted\n".to_vec())
+    );
+
+    for output in [
+        FacadeProbeWrite {
+            fail_write: true,
+            ..FacadeProbeWrite::default()
+        },
+        FacadeProbeWrite {
+            fail_flush: true,
+            ..FacadeProbeWrite::default()
+        },
+    ] {
+        let mut failed_commit = EasyExcel::write::<Value>("response.csv")
+            .with_bom(false)
+            .auto_close_stream(false)
+            .to_output_stream(ExcelOutputStream::new(output))
+            .build();
+        failed_commit.write([Value("failure".to_owned())], &csv_sheet)?;
+        assert!(failed_commit.finish().is_err());
+    }
+
+    let one_shot = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let inspect_one_shot = one_shot.clone();
+    assert!(
+        EasyExcel::write::<FallibleValue>("response.xlsx")
+            .auto_close_stream(false)
+            .write_excel_on_exception(true)
+            .to_output_stream(one_shot)
+            .do_write([
+                FallibleValue {
+                    value: "emitted-before-error",
+                    fail: false,
+                },
+                FallibleValue {
+                    value: "error",
+                    fail: true,
+                },
+            ])
+            .is_err()
+    );
+    assert!(
+        inspect_one_shot
+            .with_inner(|output| output.bytes.starts_with(b"PK"))
+            .unwrap_or(false)
+    );
+
+    let cleanup_failure = ExcelOutputStream::new(FacadeProbeWrite {
+        fail_write: true,
+        ..FacadeProbeWrite::default()
+    });
+    assert!(
+        EasyExcel::write::<FallibleValue>("response.xlsx")
+            .auto_close_stream(false)
+            .write_excel_on_exception(true)
+            .to_output_stream(cleanup_failure)
+            .do_write([
+                FallibleValue {
+                    value: "emitted-before-error",
+                    fail: false,
+                },
+                FallibleValue {
+                    value: "error",
+                    fail: true,
+                },
+            ])
+            .is_err()
+    );
+
+    let mut invalid_encrypted = EasyExcel::write::<Value>("response.xlsx")
+        .password("123456")
+        .auto_close_stream(false)
+        .to_output_stream(ExcelOutputStream::new(FacadeProbeWrite::default()))
+        .build();
+    invalid_encrypted
+        .workbook_mut()
+        .add_worksheet()
+        .set_name("Duplicate")
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    invalid_encrypted
+        .workbook_mut()
+        .add_worksheet()
+        .set_name("Duplicate")
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    assert!(invalid_encrypted.finish().is_err());
+
+    let closed = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let inspect_closed = closed.clone();
+    EasyExcel::write::<FallibleValue>("response.xlsx")
+        .to_output_stream(closed)
+        .do_write([
+            FallibleValue {
+                value: "closed-one",
+                fail: false,
+            },
+            FallibleValue {
+                value: "closed-two",
+                fail: false,
+            },
+        ])?;
+    assert!(inspect_closed.is_closed());
+    inspect_closed.close()?;
+    let mut closed_writer = inspect_closed.clone();
+    assert!(closed_writer.write_all(b"rejected").is_err());
+    assert!(closed_writer.flush().is_err());
+
+    let failed_close = ExcelOutputStream::new(FacadeProbeWrite {
+        fail_flush: true,
+        ..FacadeProbeWrite::default()
+    });
+    assert!(failed_close.close().is_err());
+
+    let poisoned_close = ExcelOutputStream::new(FacadeProbeWrite::default());
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        poisoned_close.with_inner(|_| panic!("poison facade output lock"));
+    }));
+    assert!(panic_result.is_err());
+    assert!(poisoned_close.close().is_err());
+    let mut poisoned_writer = poisoned_close.clone();
+    assert!(poisoned_writer.write_all(b"rejected").is_err());
+    assert!(poisoned_writer.flush().is_err());
+    Ok(())
 }
 
 #[test]

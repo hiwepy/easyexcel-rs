@@ -1,5 +1,6 @@
 //! Public facade for typed, event-driven Excel reading and writing.
 
+use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
@@ -14,8 +15,9 @@ pub use easyexcel_template::{
     fill_xlsx_template_list,
 };
 pub use easyexcel_writer::{
-    CellStyle, ExcelWriter, HorizontalAlignment, LoopMergeStrategy, MergeRange, VerticalAlignment,
-    WriteOptions, WriteSheet, write_csv_to_writer,
+    CellStyle, CsvEncodingWriter, ExcelOutputStream, ExcelWriter, HorizontalAlignment,
+    LoopMergeStrategy, MergeRange, VerticalAlignment, WriteOptions, WriteSheet,
+    write_csv_to_buffer, write_csv_to_writer, write_xlsx_to_writer,
 };
 use easyexcel_writer::{write_csv_with_handlers, write_xlsx_with_handlers};
 
@@ -711,6 +713,55 @@ where
         self
     }
 
+    /// Redirects this write from its logical path to a caller-owned XLSX stream.
+    ///
+    /// The path remains available to handler contexts but no file is created.
+    /// Borrowing the stream makes ownership explicit and corresponds to Java
+    /// `EasyExcel`'s `autoCloseStream(false)` behavior: the caller retains and
+    /// may continue using the stream after [`ExcelOutputStreamBuilder::do_write`].
+    #[must_use]
+    pub fn to_writer<W>(self, output: &mut W) -> ExcelOutputStreamBuilder<'_, T, W>
+    where
+        W: Write + Send,
+    {
+        ExcelOutputStreamBuilder {
+            builder: self,
+            output,
+        }
+    }
+
+    /// Redirects this builder to a cloneable, explicitly closeable stream.
+    ///
+    /// This form supports both one-shot writes and stateful multi-batch writes,
+    /// including Java-compatible `autoCloseStream` behavior.
+    #[must_use]
+    pub fn to_output_stream<W>(
+        self,
+        output: ExcelOutputStream<W>,
+    ) -> ExcelOwnedOutputStreamBuilder<T, W>
+    where
+        W: Write + Send + 'static,
+    {
+        ExcelOwnedOutputStreamBuilder {
+            builder: self,
+            output,
+        }
+    }
+
+    /// Enables or disables closing an owned output stream during finish.
+    #[must_use]
+    pub const fn auto_close_stream(mut self, enabled: bool) -> Self {
+        self.options.auto_close_stream = enabled;
+        self
+    }
+
+    /// Controls whether accumulated rows are emitted by `finish_on_exception`.
+    #[must_use]
+    pub const fn write_excel_on_exception(mut self, enabled: bool) -> Self {
+        self.options.write_excel_on_exception = enabled;
+        self
+    }
+
     /// Builds a stateful writer for multiple `.write(rows, &sheet)` calls.
     #[must_use]
     pub fn build(self) -> ExcelWriter {
@@ -764,6 +815,93 @@ where
         I: IntoIterator<Item = T>,
     {
         self.do_write(rows)
+    }
+}
+
+/// Caller-owned XLSX output stream builder.
+pub struct ExcelOutputStreamBuilder<'a, T, W> {
+    builder: ExcelWriterBuilder<T>,
+    output: &'a mut W,
+}
+
+impl<T, W> ExcelOutputStreamBuilder<'_, T, W>
+where
+    T: ExcelRow,
+    W: Write + Send,
+{
+    /// Writes a complete OOXML package to the borrowed stream and flushes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a conversion, handler, workbook, encryption, or stream I/O error.
+    pub fn do_write<I>(mut self, rows: I) -> Result<()>
+    where
+        I: IntoIterator<Item = T>,
+    {
+        if is_csv_path(&self.builder.path) {
+            let bytes = write_csv_to_buffer::<T, I>(
+                &self.builder.path,
+                &self.builder.options,
+                rows,
+                &mut self.builder.handlers,
+            )?;
+            self.output.write_all(&bytes)?;
+            self.output.flush()?;
+            return Ok(());
+        }
+        if is_xls_path(&self.builder.path) {
+            return Err(ExcelError::Unsupported(
+                "legacy XLS writing is not supported".to_owned(),
+            ));
+        }
+        write_xlsx_to_writer::<T, I, _>(
+            &self.builder.path,
+            self.output,
+            &self.builder.options,
+            rows,
+            &mut self.builder.handlers,
+        )
+    }
+}
+
+/// Owned, cloneable output-stream builder for one-shot or stateful writes.
+pub struct ExcelOwnedOutputStreamBuilder<T, W> {
+    builder: ExcelWriterBuilder<T>,
+    output: ExcelOutputStream<W>,
+}
+
+impl<T, W> ExcelOwnedOutputStreamBuilder<T, W>
+where
+    T: ExcelRow,
+    W: Write + Send + 'static,
+{
+    /// Builds a stateful writer for repeated `write` calls.
+    #[must_use]
+    pub fn build(self) -> ExcelWriter {
+        ExcelWriter::with_output_stream(
+            self.builder.path,
+            self.output,
+            self.builder.handlers,
+            self.builder.options,
+        )
+    }
+
+    /// Writes one batch and completes the output-stream lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a conversion, handler, workbook, close, or stream I/O error.
+    pub fn do_write<I>(self, rows: I) -> Result<()>
+    where
+        I: IntoIterator<Item = T>,
+    {
+        let sheet = WriteSheet::from_options(self.builder.options.clone());
+        let mut writer = self.build();
+        if let Err(error) = writer.write(rows, &sheet) {
+            writer.finish_on_exception()?;
+            return Err(error);
+        }
+        writer.finish()
     }
 }
 

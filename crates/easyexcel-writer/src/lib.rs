@@ -5,6 +5,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use bigdecimal::ToPrimitive;
 use easyexcel_core::{
@@ -21,6 +22,109 @@ use rust_xlsxwriter::{
     Color, Format, FormatAlign, FormatBorder, FormatPattern, FormatScript, FormatUnderline, Image,
     Note, ObjectMovement, Workbook, Worksheet,
 };
+
+/// Cloneable, explicitly closeable output stream used by stateful writers.
+///
+/// Clones address the same underlying writer. Closing any clone drops the
+/// underlying writer and makes subsequent writes fail with `BrokenPipe`, which
+/// gives Rust callers an observable equivalent of Java `OutputStream.close()`.
+pub struct ExcelOutputStream<W> {
+    inner: Arc<Mutex<Option<W>>>,
+}
+
+impl<W> ExcelOutputStream<W> {
+    /// Wraps an owned byte writer.
+    #[must_use]
+    pub fn new(writer: W) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(Some(writer))),
+        }
+    }
+
+    /// Closes the shared stream, flushing it before ownership is released.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lock is poisoned or the final flush fails.
+    pub fn close(&self) -> std::io::Result<()>
+    where
+        W: Write,
+    {
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|_| std::io::Error::other("output stream lock poisoned"))?;
+        if let Some(mut writer) = guard.take() {
+            writer.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Returns whether the stream has been closed.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.inner.lock().map_or(true, |writer| writer.is_none())
+    }
+
+    /// Runs a read-only callback against the underlying writer.
+    ///
+    /// Returns `None` after the stream is closed or if its lock was poisoned.
+    pub fn with_inner<R>(&self, inspect: impl FnOnce(&W) -> R) -> Option<R> {
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|writer| writer.as_ref().map(inspect))
+    }
+
+    /// Recovers the underlying writer when this is its only handle and it is open.
+    ///
+    /// # Errors
+    ///
+    /// Returns the handle when another clone exists, the stream is closed, or
+    /// its lock was poisoned.
+    pub fn into_inner(self) -> std::result::Result<W, Self> {
+        match Arc::try_unwrap(self.inner) {
+            Ok(inner) => match inner.into_inner() {
+                Ok(Some(writer)) => Ok(writer),
+                Ok(None) | Err(_) => Err(Self {
+                    inner: Arc::new(Mutex::new(None)),
+                }),
+            },
+            Err(inner) => Err(Self { inner }),
+        }
+    }
+}
+
+impl<W> Clone for ExcelOutputStream<W> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<W> Write for ExcelOutputStream<W>
+where
+    W: Write,
+{
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.inner
+            .lock()
+            .map_err(|_| std::io::Error::other("output stream lock poisoned"))?
+            .as_mut()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stream closed"))?
+            .write(buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner
+            .lock()
+            .map_err(|_| std::io::Error::other("output stream lock poisoned"))?
+            .as_mut()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "stream closed"))?
+            .flush()
+    }
+}
 
 /// Horizontal cell alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,6 +377,10 @@ pub struct WriteOptions {
     pub charset: CsvCharset,
     /// Whether CSV output starts with the encoding's byte-order mark.
     pub with_bom: bool,
+    /// Whether a stateful [`ExcelOutputStream`] is closed by `finish`.
+    pub auto_close_stream: bool,
+    /// Whether `finish_on_exception` emits rows accumulated before an error.
+    pub write_excel_on_exception: bool,
     /// Java-style globally registered converters.
     pub converters: ConverterRegistry,
 }
@@ -301,6 +409,8 @@ impl Default for WriteOptions {
             password: None,
             charset: CsvCharset::default(),
             with_bom: true,
+            auto_close_stream: true,
+            write_excel_on_exception: false,
             converters: ConverterRegistry::default(),
         }
     }
@@ -314,6 +424,15 @@ pub struct WriteSheet<T> {
 }
 
 impl<T> WriteSheet<T> {
+    /// Creates worksheet metadata from a complete option set.
+    #[must_use]
+    pub fn from_options(options: WriteOptions) -> Self {
+        Self {
+            options,
+            marker: PhantomData,
+        }
+    }
+
     /// Creates worksheet metadata with the supplied name.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
@@ -460,17 +579,23 @@ struct StatefulSheetState {
 }
 
 /// Stateful XLSX or single-sheet CSV writer matching Java `ExcelWriter`'s lifecycle.
+#[allow(clippy::struct_excessive_bools)]
 pub struct ExcelWriter {
     path: PathBuf,
+    output_stream: Option<Box<dyn Write + Send>>,
+    close_stream: Option<Box<dyn FnOnce() -> std::io::Result<()> + Send>>,
     workbook: Workbook,
     handlers: Vec<Box<dyn WriteHandler>>,
     sheets: HashMap<String, StatefulSheetState>,
     sheet_indexes: HashMap<usize, String>,
     csv_writer: Option<csv::Writer<CsvEncodingWriter>>,
+    csv_capture: Option<CapturedOutput>,
     csv_charset: CsvCharset,
     csv_with_bom: bool,
     started: bool,
     finished: bool,
+    auto_close_stream: bool,
+    write_excel_on_exception: bool,
     password: Option<String>,
     converters: ConverterRegistry,
 }
@@ -514,15 +639,54 @@ impl ExcelWriter {
     ) -> Self {
         Self {
             path: path.into(),
+            output_stream: None,
+            close_stream: None,
             workbook: Workbook::new(),
             handlers,
             sheets: HashMap::new(),
             sheet_indexes: HashMap::new(),
             csv_writer: None,
+            csv_capture: None,
             csv_charset: options.charset,
             csv_with_bom: options.with_bom,
             started: false,
             finished: false,
+            auto_close_stream: options.auto_close_stream,
+            write_excel_on_exception: options.write_excel_on_exception,
+            password: options.password,
+            converters: options.converters,
+        }
+    }
+
+    /// Creates a stateful writer backed by a cloneable output stream.
+    #[must_use]
+    pub fn with_output_stream<W>(
+        logical_path: impl Into<PathBuf>,
+        output: ExcelOutputStream<W>,
+        handlers: Vec<Box<dyn WriteHandler>>,
+        options: WriteOptions,
+    ) -> Self
+    where
+        W: Write + Send + 'static,
+    {
+        let write_output = output.clone();
+        let close_stream = Box::new(move || output.close());
+        Self {
+            path: logical_path.into(),
+            output_stream: Some(Box::new(write_output)),
+            close_stream: Some(close_stream),
+            workbook: Workbook::new(),
+            handlers,
+            sheets: HashMap::new(),
+            sheet_indexes: HashMap::new(),
+            csv_writer: None,
+            csv_capture: None,
+            csv_charset: options.charset,
+            csv_with_bom: options.with_bom,
+            started: false,
+            finished: false,
+            auto_close_stream: options.auto_close_stream,
+            write_excel_on_exception: options.write_excel_on_exception,
             password: options.password,
             converters: options.converters,
         }
@@ -562,25 +726,92 @@ impl ExcelWriter {
     ///
     /// Returns an output or handler error.
     pub fn finish(&mut self) -> Result<()> {
+        self.finish_with_exception(false)
+    }
+
+    /// Finishes after a write-side exception.
+    ///
+    /// By default accumulated workbook data is discarded. Set
+    /// [`WriteOptions::write_excel_on_exception`] to emit it, matching Java
+    /// `EasyExcel`'s `writeExcelOnException` switch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an output, close, or handler error.
+    pub fn finish_on_exception(&mut self) -> Result<()> {
+        self.finish_with_exception(true)
+    }
+
+    fn finish_with_exception(&mut self, on_exception: bool) -> Result<()> {
         if self.finished {
             return Ok(());
         }
         self.start()?;
+        self.finished = true;
+        let write_excel = !on_exception || self.write_excel_on_exception;
+        let mut result = Ok(());
         if is_csv_path(&self.path) {
-            finish_stateful_csv_writer(&mut self.csv_writer)?;
-        } else {
-            save_workbook(&mut self.workbook, &self.path, self.password.as_deref())?;
+            let writer = self
+                .csv_writer
+                .take()
+                .expect("a successfully started CSV writer must own its record writer");
+            if let Err(error) = finish_csv_record_writer(writer) {
+                result = Err(error);
+            }
+            if write_excel && let Some(capture) = self.csv_capture.take() {
+                match take_captured_output(&capture).and_then(|bytes| {
+                    let output = self
+                        .output_stream
+                        .as_mut()
+                        .expect("CSV capture requires an output stream");
+                    output.write_all(&bytes)?;
+                    output.flush()?;
+                    Ok(())
+                }) {
+                    Ok(()) => {}
+                    Err(error) => result = Err(error),
+                }
+            }
+        } else if write_excel {
+            let save_result = if let Some(output) = self.output_stream.as_mut() {
+                save_workbook_to_writer(
+                    &mut self.workbook,
+                    output.as_mut(),
+                    self.password.as_deref(),
+                )
+            } else {
+                save_workbook(&mut self.workbook, &self.path, self.password.as_deref())
+            };
+            if let Err(error) = save_result {
+                result = Err(error);
+            }
         }
         let context = WriteWorkbookContext::new(&self.path);
-        after_workbook(&mut self.handlers, &context)?;
-        self.finished = true;
-        Ok(())
+        if let Err(error) = after_workbook(&mut self.handlers, &context) {
+            result = Err(error);
+        }
+        if self.auto_close_stream
+            && let Some(close) = self.close_stream.take()
+            && let Err(error) = close()
+        {
+            result = Err(ExcelError::Io(error));
+        }
+        result
     }
 
     /// Returns whether [`Self::finish`] completed successfully.
     #[must_use]
     pub const fn is_finished(&self) -> bool {
         self.finished
+    }
+
+    /// Returns the underlying `rust_xlsxwriter` workbook for advanced XLSX customization.
+    ///
+    /// Callers are responsible for preserving valid worksheet names and
+    /// workbook invariants. CSV writers do not use this workbook.
+    #[must_use]
+    pub fn workbook_mut(&mut self) -> &mut Workbook {
+        &mut self.workbook
     }
 
     fn start(&mut self) -> Result<()> {
@@ -592,11 +823,21 @@ impl ExcelWriter {
         let context = WriteWorkbookContext::new(&self.path);
         before_workbook(&mut self.handlers, &context)?;
         if is_csv_path(&self.path) {
-            self.csv_writer = Some(create_stateful_csv_writer(
-                &self.path,
-                &self.csv_charset,
-                self.csv_with_bom,
-            )?);
+            if self.output_stream.is_some() {
+                let capture = CapturedOutput::default();
+                self.csv_writer = Some(create_csv_record_writer(
+                    Box::new(capture.clone()),
+                    &self.csv_charset,
+                    self.csv_with_bom,
+                )?);
+                self.csv_capture = Some(capture);
+            } else {
+                self.csv_writer = Some(create_stateful_csv_writer(
+                    &self.path,
+                    &self.csv_charset,
+                    self.csv_with_bom,
+                )?);
+            }
         }
         self.started = true;
         Ok(())
@@ -821,6 +1062,38 @@ where
     Ok(())
 }
 
+/// Writes typed rows to an arbitrary XLSX byte stream.
+///
+/// `logical_path` is used only by write-handler contexts. Unlike the path
+/// entry point this function writes the OOXML package to `output` itself, so
+/// it is suitable for HTTP response bodies and in-memory buffers.
+///
+/// # Errors
+///
+/// Returns a conversion, handler, worksheet-configuration, XLSX-format,
+/// encryption, or stream I/O error.
+pub fn write_xlsx_to_writer<T, I, W>(
+    logical_path: &Path,
+    mut output: W,
+    options: &WriteOptions,
+    rows: I,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<()>
+where
+    T: ExcelRow,
+    I: IntoIterator<Item = T>,
+    W: Write + Send,
+{
+    sort_handlers(handlers);
+    let workbook_context = WriteWorkbookContext::new(logical_path);
+    before_workbook(handlers, &workbook_context)?;
+
+    let mut workbook = Workbook::new();
+    write_sheet_to_workbook::<T, I>(&mut workbook, options, rows, handlers)?;
+    save_workbook_to_writer(&mut workbook, &mut output, options.password.as_deref())?;
+    after_workbook(handlers, &workbook_context)
+}
+
 /// Writes typed rows to CSV while preserving the `EasyExcel` handler lifecycle.
 ///
 /// UTF-8 BOM output matches Java `EasyExcel`'s default CSV behavior.
@@ -862,15 +1135,63 @@ pub fn write_csv_to_writer<T, I, W>(
 where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
-    W: Write + 'static,
+    W: Write + Send + 'static,
 {
     validate_csv_options(options)?;
     write_csv_to::<T, I>(logical_path, Box::new(output), options, rows, handlers)
 }
 
+/// Builds a complete CSV document in memory.
+///
+/// This is primarily used when a borrowed output stream must not receive a
+/// partial document if row conversion or a handler fails.
+///
+/// # Errors
+///
+/// Returns a conversion, handler, CSV-format, or charset error.
+pub fn write_csv_to_buffer<T, I>(
+    logical_path: &Path,
+    options: &WriteOptions,
+    rows: I,
+    handlers: &mut [Box<dyn WriteHandler>],
+) -> Result<Vec<u8>>
+where
+    T: ExcelRow,
+    I: IntoIterator<Item = T>,
+{
+    let output = CapturedOutput::default();
+    write_csv_to_writer::<T, I, _>(logical_path, output.clone(), options, rows, handlers)?;
+    take_captured_output(&output)
+}
+
+#[derive(Clone, Default)]
+struct CapturedOutput(Arc<Mutex<Vec<u8>>>);
+
+impl Write for CapturedOutput {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|_| std::io::Error::other("CSV capture lock poisoned"))?
+            .extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn take_captured_output(output: &CapturedOutput) -> Result<Vec<u8>> {
+    let mut bytes = output
+        .0
+        .lock()
+        .map_err(|_| ExcelError::Io(std::io::Error::other("CSV capture lock poisoned")))?;
+    Ok(std::mem::take(&mut *bytes))
+}
+
 fn write_csv_to<T, I>(
     path: &Path,
-    output: Box<dyn Write>,
+    output: Box<dyn Write + Send>,
     options: &WriteOptions,
     rows: I,
     handlers: &mut [Box<dyn WriteHandler>],
@@ -896,7 +1217,7 @@ where
 
 fn write_csv_records(
     path: &Path,
-    output: Box<dyn Write>,
+    output: Box<dyn Write + Send>,
     options: &WriteOptions,
     columns: &[(usize, usize, &'static ExcelColumn)],
     schema_is_empty: bool,
@@ -1024,7 +1345,7 @@ where
 }
 
 fn create_csv_record_writer(
-    mut output: Box<dyn Write>,
+    mut output: Box<dyn Write + Send>,
     charset: &CsvCharset,
     with_bom: bool,
 ) -> Result<csv::Writer<CsvEncodingWriter>> {
@@ -1047,13 +1368,6 @@ fn finish_csv_record_writer(mut writer: csv::Writer<CsvEncodingWriter>) -> Resul
     writer.flush()?;
     let mut output = writer.into_inner().map_err(format_error)?;
     output.finish()?;
-    Ok(())
-}
-
-fn finish_stateful_csv_writer(writer: &mut Option<csv::Writer<CsvEncodingWriter>>) -> Result<()> {
-    if let Some(writer) = writer.take() {
-        finish_csv_record_writer(writer)?;
-    }
     Ok(())
 }
 
@@ -1102,14 +1416,31 @@ enum CsvEncoder {
     Utf16Be,
 }
 
-struct CsvEncodingWriter {
-    output: Box<dyn Write>,
+/// Incremental UTF-8 to configured CSV charset transcoder.
+///
+/// This is the low-level counterpart of Java's charset-aware CSV output path.
+/// Call [`Self::finish`] after the last chunk so incomplete UTF-8 and encoder
+/// finalization errors are reported.
+pub struct CsvEncodingWriter {
+    output: Box<dyn Write + Send>,
     encoder: CsvEncoder,
     pending_utf8: Vec<u8>,
 }
 
 impl CsvEncodingWriter {
-    fn new(output: Box<dyn Write>, encoding: CsvEncoding) -> Self {
+    /// Creates a transcoding writer for a Java-style charset name.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the charset is unsupported.
+    pub fn with_charset<W>(output: W, charset: &CsvCharset) -> Result<Self>
+    where
+        W: Write + Send + 'static,
+    {
+        Ok(Self::new(Box::new(output), csv_encoding(charset)?))
+    }
+
+    fn new(output: Box<dyn Write + Send>, encoding: CsvEncoding) -> Self {
         Self {
             output,
             encoder: match encoding {
@@ -1171,7 +1502,12 @@ impl CsvEncodingWriter {
         output.write_all(&encoded[..length])
     }
 
-    fn finish(&mut self) -> std::io::Result<()> {
+    /// Finalizes the charset encoder and flushes the underlying output.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for incomplete UTF-8 or an underlying output failure.
+    pub fn finish(&mut self) -> std::io::Result<()> {
         if !self.pending_utf8.is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -1217,6 +1553,24 @@ fn save_workbook(workbook: &mut Workbook, path: &Path, password: Option<&str>) -
         .truncate(true)
         .open(path)?;
     save_encrypted_workbook_to(workbook, password, &mut file)
+}
+
+fn save_workbook_to_writer(
+    workbook: &mut Workbook,
+    output: &mut (dyn Write + Send),
+    password: Option<&str>,
+) -> Result<()> {
+    if let Some(password) = password {
+        let mut encrypted = std::io::Cursor::new(Vec::new());
+        save_encrypted_workbook_to(workbook, password, &mut encrypted)?;
+        output.write_all(encrypted.get_ref())?;
+    } else {
+        workbook
+            .save_to_writer(&mut *output)
+            .map_err(format_error)?;
+    }
+    output.flush()?;
+    Ok(())
 }
 
 trait ReadWriteSeek: Read + Write + Seek {}
