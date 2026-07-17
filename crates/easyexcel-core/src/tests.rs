@@ -668,7 +668,35 @@ fn analysis_context_exposes_sheet_row_and_batch_coordinates() {
     assert_eq!(context.sheet_no(), 3);
     assert_eq!(context.row_index(), 9);
     assert_eq!(context.batch_index(), 0);
+    assert_eq!(context.custom_object(), None);
+    assert_eq!(context.custom::<String>(), None);
     assert_eq!(context.with_batch_index(4).batch_index(), 4);
+
+    let custom = CustomReadObject::new("tenant-42".to_owned());
+    let shared = custom.clone();
+    assert_eq!(custom, shared);
+    assert_ne!(custom, CustomReadObject::new("tenant-42".to_owned()));
+    assert_eq!(format!("{custom:?}"), "CustomReadObject { .. }");
+    assert_eq!(
+        custom.downcast_ref::<String>().map(String::as_str),
+        Some("tenant-42")
+    );
+    assert_eq!(custom.downcast_ref::<u32>(), None);
+
+    let context = context.with_custom_object(Some(custom));
+    assert!(context.custom_object().is_some());
+    assert_eq!(
+        context.custom::<String>().map(String::as_str),
+        Some("tenant-42")
+    );
+    assert_eq!(context.custom::<u32>(), None);
+    assert_eq!(
+        context
+            .with_batch_index(7)
+            .custom::<String>()
+            .map(String::as_str),
+        Some("tenant-42")
+    );
 }
 
 #[derive(Default)]

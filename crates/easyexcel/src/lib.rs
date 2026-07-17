@@ -229,6 +229,16 @@ where
         self
     }
 
+    /// Stores a type-safe value exposed by every read callback context.
+    #[must_use]
+    pub fn custom_object<C>(mut self, custom_object: C) -> Self
+    where
+        C: std::any::Any + Send + Sync,
+    {
+        self.options.custom_object = Some(CustomReadObject::new(custom_object));
+        self
+    }
+
     /// Selects the Java-compatible no-model return mode.
     #[must_use]
     pub const fn read_default_return(mut self, mode: ReadDefaultReturn) -> Self {
@@ -351,6 +361,16 @@ where
         self.options
             .header_aliases
             .insert(header.into(), alias.into());
+        self
+    }
+
+    /// Stores a type-safe value exposed while synchronously collecting rows.
+    #[must_use]
+    pub fn custom_object<C>(mut self, custom_object: C) -> Self
+    where
+        C: std::any::Any + Send + Sync,
+    {
+        self.options.custom_object = Some(CustomReadObject::new(custom_object));
         self
     }
 

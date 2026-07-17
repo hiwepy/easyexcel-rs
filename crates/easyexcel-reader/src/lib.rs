@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use calamine::{Data, DataRef, Range, Reader, Xls, Xlsx, open_workbook};
 use easyexcel_core::{
-    AnalysisContext, CellExtra, CellExtraType, CellValue, CsvCharset, ErrorAction, ExcelError,
-    ExcelRow, FormulaData, ReadDefaultReturn, ReadListener, Result, RowData,
+    AnalysisContext, CellExtra, CellExtraType, CellValue, CsvCharset, CustomReadObject,
+    ErrorAction, ExcelError, ExcelRow, FormulaData, ReadDefaultReturn, ReadListener, Result,
+    RowData,
 };
 use encoding_rs::Encoding;
 use encoding_rs_io::DecodeReaderBytesBuilder;
@@ -56,6 +57,8 @@ pub struct ReadOptions {
     /// Keys are workbook header names and values are names exposed to row mapping
     /// and `ReadListener::invoke_head`.
     pub header_aliases: HashMap<String, String>,
+    /// User value exposed through every [`AnalysisContext`].
+    pub custom_object: Option<CustomReadObject>,
     /// Value mode used by Java-compatible no-model [`easyexcel_core::DynamicRow`] reads.
     pub read_default_return: ReadDefaultReturn,
     /// Extra worksheet metadata dispatched to `ReadListener::extra`.
@@ -76,6 +79,7 @@ impl Default for ReadOptions {
             start_row: None,
             end_row: None,
             header_aliases: HashMap::new(),
+            custom_object: None,
             read_default_return: ReadDefaultReturn::default(),
             extra_read: HashSet::new(),
             password: None,
@@ -337,7 +341,7 @@ where
             return Ok(());
         }
     }
-    listener.do_after_all_analysed(&AnalysisContext::new(sheet_name, 0, final_row))
+    listener.do_after_all_analysed(&analysis_context(sheet_name, 0, final_row, options))
 }
 
 fn csv_row_index(row_index: usize) -> Result<u32> {
@@ -624,7 +628,7 @@ where
     }
 
     let final_row = last_explicit_row.or(current_index).unwrap_or_default();
-    let context = AnalysisContext::new(sheet_name, sheet_no, final_row);
+    let context = analysis_context(sheet_name, sheet_no, final_row, options);
     for extra in extras {
         if consumer.extra(extra, &context)? == ReadFlow::Stop {
             return Ok(ReadFlow::Stop);
@@ -671,7 +675,7 @@ fn read_range(
 ) -> Result<ReadFlow> {
     let mut headers = Arc::new(HashMap::new());
     let Some((start_row, start_column)) = range.start() else {
-        consumer.after(&AnalysisContext::new(sheet_name, sheet_no, 0))?;
+        consumer.after(&analysis_context(sheet_name, sheet_no, 0, options))?;
         return Ok(ReadFlow::Continue);
     };
     let start_column = to_column_index(start_column)?;
@@ -706,7 +710,7 @@ fn read_range(
         }
         row_index = row_index.saturating_add(1);
     }
-    consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))?;
+    consumer.after(&analysis_context(sheet_name, sheet_no, final_row, options))?;
     Ok(ReadFlow::Continue)
 }
 
@@ -762,6 +766,16 @@ fn dispatch_row(
     )
 }
 
+fn analysis_context(
+    sheet_name: &str,
+    sheet_no: usize,
+    row_index: u32,
+    options: &ReadOptions,
+) -> AnalysisContext {
+    AnalysisContext::new(sheet_name, sheet_no, row_index)
+        .with_custom_object(options.custom_object.clone())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn process_row_with_metadata<T>(
     sheet_no: usize,
@@ -785,7 +799,7 @@ where
     if options.auto_trim {
         trim_string_cells(&mut cells);
     }
-    let context = AnalysisContext::new(sheet_name, sheet_no, row_index);
+    let context = analysis_context(sheet_name, sheet_no, row_index, options);
     if row_index < options.head_row_number {
         let current_headers = Arc::new(header_map(&cells, &options.header_aliases));
         if row_index + 1 == options.head_row_number {

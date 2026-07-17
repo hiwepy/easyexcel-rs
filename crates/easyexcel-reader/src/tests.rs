@@ -240,6 +240,7 @@ impl ReadListener<TestRow> for Probe {
 struct ExtraProbe {
     events: Vec<&'static str>,
     extras: Vec<CellExtra>,
+    context_customs: Vec<Option<String>>,
     fail_extra: bool,
     error_action: Option<ErrorAction>,
     errors: usize,
@@ -247,8 +248,16 @@ struct ExtraProbe {
     extra_seen: bool,
 }
 
+impl ExtraProbe {
+    fn record_custom(&mut self, context: &AnalysisContext) {
+        self.context_customs
+            .push(context.custom::<String>().cloned());
+    }
+}
+
 impl ReadListener<TestRow> for ExtraProbe {
-    fn on_exception(&mut self, _error: &ExcelError, _context: &AnalysisContext) -> ErrorAction {
+    fn on_exception(&mut self, _error: &ExcelError, context: &AnalysisContext) -> ErrorAction {
+        self.record_custom(context);
         self.errors += 1;
         self.error_action.unwrap_or(ErrorAction::Stop)
     }
@@ -256,18 +265,21 @@ impl ReadListener<TestRow> for ExtraProbe {
     fn invoke_head(
         &mut self,
         _head: &HashMap<String, usize>,
-        _context: &AnalysisContext,
+        context: &AnalysisContext,
     ) -> Result<()> {
+        self.record_custom(context);
         self.events.push("head");
         Ok(())
     }
 
-    fn invoke(&mut self, _data: TestRow, _context: &AnalysisContext) -> Result<()> {
+    fn invoke(&mut self, _data: TestRow, context: &AnalysisContext) -> Result<()> {
+        self.record_custom(context);
         self.events.push("row");
         Ok(())
     }
 
-    fn extra(&mut self, extra: &CellExtra, _context: &AnalysisContext) -> Result<()> {
+    fn extra(&mut self, extra: &CellExtra, context: &AnalysisContext) -> Result<()> {
+        self.record_custom(context);
         self.events.push("extra");
         self.extras.push(extra.clone());
         self.extra_seen = true;
@@ -278,12 +290,14 @@ impl ReadListener<TestRow> for ExtraProbe {
         }
     }
 
-    fn do_after_all_analysed(&mut self, _context: &AnalysisContext) -> Result<()> {
+    fn do_after_all_analysed(&mut self, context: &AnalysisContext) -> Result<()> {
+        self.record_custom(context);
         self.events.push("after");
         Ok(())
     }
 
-    fn has_next(&mut self, _context: &AnalysisContext) -> bool {
+    fn has_next(&mut self, context: &AnalysisContext) -> bool {
+        self.record_custom(context);
         !(self.stop_after_extra && self.extra_seen)
     }
 }
@@ -313,6 +327,7 @@ fn options() -> ReadOptions {
         start_row: None,
         end_row: None,
         header_aliases: HashMap::new(),
+        custom_object: None,
         read_default_return: ReadDefaultReturn::default(),
         extra_read: HashSet::new(),
         password: None,
@@ -1031,6 +1046,7 @@ fn reads_java_easyexcel_encrypted_xlsx_fixture() -> Result<()> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<()> {
     let (_directory, path) = extra_workbook_fixture()?;
     let all_extras = HashSet::from([
@@ -1041,6 +1057,7 @@ fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<(
     let read_options = ReadOptions {
         sheet: SheetSelector::Name("Meta".to_owned()),
         extra_read: all_extras,
+        custom_object: Some(CustomReadObject::new("reader-context".to_owned())),
         ..options()
     };
     let mut probe = ExtraProbe::default();
@@ -1062,6 +1079,12 @@ fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<(
             .all(|event| *event == "extra")
     );
     assert_eq!(probe.events.last(), Some(&"after"));
+    assert!(
+        probe
+            .context_customs
+            .iter()
+            .all(|value| value.as_deref() == Some("reader-context"))
+    );
 
     let merge = probe
         .extras
@@ -1117,6 +1140,12 @@ fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<(
     read_xlsx::<TestRow, _>(&path, &read_options, &mut continued_error)?;
     assert_eq!(continued_error.errors, 4);
     assert_eq!(continued_error.events.last(), Some(&"after"));
+    assert!(
+        continued_error
+            .context_customs
+            .iter()
+            .all(|value| value.as_deref() == Some("reader-context"))
+    );
 
     let mut stopped_error = ExtraProbe {
         fail_extra: true,

@@ -142,6 +142,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .end_row(8)
         .read_rows(5, 7)
         .header_alias("Source", "Value")
+        .custom_object("event-context".to_owned())
         .read_default_return(ReadDefaultReturn::ActualData)
         .extra_read(CellExtraType::Comment)
         .extra_read(CellExtraType::Merge)
@@ -162,6 +163,14 @@ fn factories_and_builder_options_match_java_style_chaining() {
         Some("Value")
     );
     assert_eq!(
+        read.options
+            .custom_object
+            .as_ref()
+            .and_then(|value| value.downcast_ref::<String>())
+            .map(String::as_str),
+        Some("event-context")
+    );
+    assert_eq!(
         read.options.read_default_return,
         ReadDefaultReturn::ActualData
     );
@@ -180,6 +189,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .end_row(9)
         .read_rows(4, 6)
         .header_alias("Original", "Value")
+        .custom_object(42_u32)
         .read_default_return(ReadDefaultReturn::ReadCellData)
         .extra_read(CellExtraType::Hyperlink)
         .password("sync-secret")
@@ -197,6 +207,13 @@ fn factories_and_builder_options_match_java_style_chaining() {
             .get("Original")
             .map(String::as_str),
         Some("Value")
+    );
+    assert_eq!(
+        sync.options
+            .custom_object
+            .as_ref()
+            .and_then(|value| value.downcast_ref::<u32>()),
+        Some(&42)
     );
     assert_eq!(
         sync.options.read_default_return,

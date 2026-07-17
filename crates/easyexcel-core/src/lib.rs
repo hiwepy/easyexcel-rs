@@ -1,5 +1,6 @@
 //! Core data model and extension points for `easyexcel-rs`.
 
+use std::any::Any;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
@@ -1592,6 +1593,43 @@ fn actual_cell_value(value: &CellValue) -> CellValue {
     }
 }
 
+/// Type-safe shared value equivalent to Java `EasyExcel`'s reader `customObject`.
+#[derive(Clone)]
+pub struct CustomReadObject(Arc<dyn Any + Send + Sync>);
+
+impl CustomReadObject {
+    /// Wraps a value for propagation to every read callback context.
+    #[must_use]
+    pub fn new<T>(value: T) -> Self
+    where
+        T: Any + Send + Sync,
+    {
+        Self(Arc::new(value))
+    }
+
+    /// Returns the value when its concrete type matches `T`.
+    #[must_use]
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        self.0.downcast_ref()
+    }
+}
+
+impl std::fmt::Debug for CustomReadObject {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CustomReadObject")
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for CustomReadObject {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for CustomReadObject {}
+
 /// Read callback context equivalent to Java `AnalysisContext`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalysisContext {
@@ -1599,6 +1637,7 @@ pub struct AnalysisContext {
     sheet_no: usize,
     row_index: u32,
     batch_index: usize,
+    custom_object: Option<CustomReadObject>,
 }
 
 impl AnalysisContext {
@@ -1610,6 +1649,7 @@ impl AnalysisContext {
             sheet_no,
             row_index,
             batch_index: 0,
+            custom_object: None,
         }
     }
 
@@ -1635,6 +1675,25 @@ impl AnalysisContext {
     #[must_use]
     pub const fn batch_index(&self) -> usize {
         self.batch_index
+    }
+
+    /// Returns the configured custom read object, if any.
+    #[must_use]
+    pub const fn custom_object(&self) -> Option<&CustomReadObject> {
+        self.custom_object.as_ref()
+    }
+
+    /// Returns the custom read object when its concrete type matches `T`.
+    #[must_use]
+    pub fn custom<T: Any>(&self) -> Option<&T> {
+        self.custom_object.as_ref()?.downcast_ref()
+    }
+
+    /// Returns a context carrying the supplied custom read object.
+    #[must_use]
+    pub fn with_custom_object(mut self, custom_object: Option<CustomReadObject>) -> Self {
+        self.custom_object = custom_object;
+        self
     }
 
     /// Returns a copy with a different batch index.

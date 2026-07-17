@@ -19,6 +19,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `headRowNumber` | `head_row_number` | implemented |
 | `ignoreEmptyRow` | `ignore_empty_row` | implemented |
 | `autoTrim` | `auto_trim` | implemented: defaults to `true`; sheet-name matching, content/header strings, and trim-to-empty row handling match Java |
+| `customObject` / `AnalysisContext.getCustom()` | `custom_object(value)` / `AnalysisContext::custom::<T>()` | implemented with shared, type-safe downcasting across every callback |
 | Hutool POI header aliases and row slices | `header_alias` / `start_row` / `end_row` / `read_rows` | additive enhancement: aliases are applied before typed mapping; physical bounds are inclusive and retain header analysis |
 | `sheet(Integer/String)` | `sheet(index/name)` | implemented |
 | `doRead` | `do_read` | implemented |
