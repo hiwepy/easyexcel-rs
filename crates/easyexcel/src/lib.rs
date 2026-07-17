@@ -12,7 +12,7 @@ use easyexcel_reader::{
 };
 pub use easyexcel_template::{
     ExcelTemplateWriter, FillConfig, FillDirection, FillWrapper, IntoTemplateValue, TemplateData,
-    fill_xlsx_template, fill_xlsx_template_list,
+    TemplateSheet, fill_xlsx_template, fill_xlsx_template_list,
 };
 pub use easyexcel_writer::{
     CellStyle, CsvEncodingWriter, ExcelOutputStream, ExcelWriter, HorizontalAlignment,

@@ -311,6 +311,65 @@ struct PendingCollectionFill {
     config: FillConfig,
 }
 
+/// Worksheet selected for Java-style template fill and write operations.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum TemplateSheet {
+    /// Selects a worksheet by its zero-based workbook order.
+    #[default]
+    First,
+    /// Selects a worksheet by its zero-based workbook order.
+    Index(usize),
+    /// Selects a worksheet by its exact workbook name.
+    Name(String),
+}
+
+impl TemplateSheet {
+    /// Selects the first worksheet, equivalent to Java `writerSheet().build()`.
+    #[must_use]
+    pub const fn first() -> Self {
+        Self::First
+    }
+
+    /// Selects a worksheet by Java-style zero-based sheet number.
+    #[must_use]
+    pub const fn index(index: usize) -> Self {
+        Self::Index(index)
+    }
+
+    /// Selects a worksheet by exact name.
+    #[must_use]
+    pub fn name(name: impl Into<String>) -> Self {
+        Self::Name(name.into())
+    }
+}
+
+#[derive(Debug)]
+struct PendingSheetFill {
+    sheet: TemplateSheet,
+    scalar: TemplateData,
+    collections: Vec<PendingCollectionFill>,
+    appended_rows: Vec<Vec<CellValue>>,
+}
+
+#[derive(Debug)]
+struct ResolvedSheetFill {
+    worksheet: String,
+    scalar: TemplateData,
+    collections: Vec<PendingCollectionFill>,
+    appended_rows: Vec<Vec<CellValue>>,
+}
+
+impl PendingSheetFill {
+    fn new(sheet: TemplateSheet) -> Self {
+        Self {
+            sheet,
+            scalar: TemplateData::new(),
+            collections: Vec::new(),
+            appended_rows: Vec::new(),
+        }
+    }
+}
+
 /// Stateful OOXML template writer matching Java `ExcelWriter.fill` lifecycle.
 ///
 /// Scalar values and collection fills are accumulated against one loaded XLSX
@@ -319,9 +378,7 @@ struct PendingCollectionFill {
 pub struct ExcelTemplateWriter<'a> {
     output: TemplateOutput<'a>,
     entries: Vec<TemplateEntry>,
-    scalar: TemplateData,
-    collections: Vec<PendingCollectionFill>,
-    appended_rows: Vec<Vec<CellValue>>,
+    sheets: Vec<PendingSheetFill>,
     finished: bool,
     auto_close_stream: bool,
 }
@@ -356,9 +413,7 @@ impl std::fmt::Debug for ExcelTemplateWriter<'_> {
             .debug_struct("ExcelTemplateWriter")
             .field("output", &output)
             .field("entries", &self.entries)
-            .field("scalar", &self.scalar)
-            .field("collections", &self.collections)
-            .field("appended_rows", &self.appended_rows)
+            .field("sheets", &self.sheets)
             .field("finished", &self.finished)
             .field("auto_close_stream", &self.auto_close_stream)
             .finish()
@@ -403,9 +458,7 @@ impl<'a> ExcelTemplateWriter<'a> {
         Self {
             output,
             entries,
-            scalar: TemplateData::new(),
-            collections: Vec::new(),
-            appended_rows: Vec::new(),
+            sheets: vec![PendingSheetFill::new(TemplateSheet::first())],
             finished: false,
             auto_close_stream: true,
         }
@@ -504,8 +557,24 @@ impl<'a> ExcelTemplateWriter<'a> {
     ///
     /// Returns an error after the writer has finished.
     pub fn fill(&mut self, data: &TemplateData) -> Result<&mut Self> {
+        self.fill_on_sheet(&TemplateSheet::first(), data)
+    }
+
+    /// Accumulates scalar `{key}` values for one selected worksheet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after the writer has finished.
+    pub fn fill_on_sheet(
+        &mut self,
+        sheet: &TemplateSheet,
+        data: &TemplateData,
+    ) -> Result<&mut Self> {
         self.ensure_open()?;
-        self.scalar.values.extend(data.values.clone());
+        self.sheet_state_mut(sheet)
+            .scalar
+            .values
+            .extend(data.values.clone());
         Ok(self)
     }
 
@@ -519,11 +588,26 @@ impl<'a> ExcelTemplateWriter<'a> {
     ///
     /// Returns an error after finish or when a prefix changes its fill config.
     pub fn fill_list(&mut self, data: &FillWrapper, config: FillConfig) -> Result<&mut Self> {
+        self.fill_list_on_sheet(&TemplateSheet::first(), data, config)
+    }
+
+    /// Accumulates a collection fill for one selected worksheet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after finish or when a prefix changes its fill config.
+    pub fn fill_list_on_sheet(
+        &mut self,
+        sheet: &TemplateSheet,
+        data: &FillWrapper,
+        config: FillConfig,
+    ) -> Result<&mut Self> {
         self.ensure_open()?;
         if data.rows().is_empty() {
             return Ok(self);
         }
-        if let Some(pending) = self
+        let state = self.sheet_state_mut(sheet);
+        if let Some(pending) = state
             .collections
             .iter_mut()
             .find(|pending| pending.wrapper.name == data.name)
@@ -537,7 +621,7 @@ impl<'a> ExcelTemplateWriter<'a> {
             pending.wrapper.rows.extend(data.rows.iter().cloned());
             return Ok(self);
         }
-        self.collections.push(PendingCollectionFill {
+        state.collections.push(PendingCollectionFill {
             wrapper: data.clone(),
             config,
         });
@@ -557,8 +641,21 @@ impl<'a> ExcelTemplateWriter<'a> {
         &mut self,
         rows: impl IntoIterator<Item = Vec<CellValue>>,
     ) -> Result<&mut Self> {
+        self.write_rows_on_sheet(&TemplateSheet::first(), rows)
+    }
+
+    /// Queues ordinary rows after the fill cursor of one selected worksheet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after the writer has finished.
+    pub fn write_rows_on_sheet(
+        &mut self,
+        sheet: &TemplateSheet,
+        rows: impl IntoIterator<Item = Vec<CellValue>>,
+    ) -> Result<&mut Self> {
         self.ensure_open()?;
-        self.appended_rows.extend(rows);
+        self.sheet_state_mut(sheet).appended_rows.extend(rows);
         Ok(self)
     }
 
@@ -571,12 +668,18 @@ impl<'a> ExcelTemplateWriter<'a> {
         if self.finished {
             return Ok(());
         }
-        for pending in &self.collections {
-            replace_collection_placeholders(&mut self.entries, &pending.wrapper, pending.config);
+        for sheet in self.resolved_sheet_fills()? {
+            for pending in &sheet.collections {
+                replace_collection_placeholders_in_sheet(
+                    &mut self.entries,
+                    &sheet.worksheet,
+                    &pending.wrapper,
+                    pending.config,
+                );
+            }
+            replace_scalar_cells_in_sheet(&mut self.entries, &sheet.worksheet, &sheet.scalar)?;
+            append_rows_to_sheet(&mut self.entries, &sheet.worksheet, &sheet.appended_rows)?;
         }
-        replace_scalar_cells(&mut self.entries, &self.scalar)?;
-        replace_xml_placeholders(&mut self.entries, &self.scalar)?;
-        append_rows_to_first_sheet(&mut self.entries, &self.appended_rows)?;
         self.finished = true;
         write_entries_to_output(&mut self.output, &self.entries, self.auto_close_stream)
     }
@@ -595,6 +698,75 @@ impl<'a> ExcelTemplateWriter<'a> {
         } else {
             Ok(())
         }
+    }
+
+    fn sheet_state_mut(&mut self, sheet: &TemplateSheet) -> &mut PendingSheetFill {
+        if let Some(index) = self
+            .sheets
+            .iter()
+            .position(|pending| same_sheet(&pending.sheet, sheet))
+        {
+            return &mut self.sheets[index];
+        }
+        self.sheets.push(PendingSheetFill::new(sheet.clone()));
+        self.sheets.last_mut().expect("sheet state was just pushed")
+    }
+
+    fn resolved_sheet_fills(&self) -> Result<Vec<ResolvedSheetFill>> {
+        let mut resolved: Vec<ResolvedSheetFill> = Vec::new();
+        for pending_sheet in &self.sheets {
+            let worksheet = worksheet_path(&self.entries, &pending_sheet.sheet)?;
+            if let Some(sheet) = resolved
+                .iter_mut()
+                .find(|sheet| sheet.worksheet.eq_ignore_ascii_case(&worksheet))
+            {
+                sheet
+                    .scalar
+                    .values
+                    .extend(pending_sheet.scalar.values.clone());
+                for pending_collection in &pending_sheet.collections {
+                    if let Some(collection) = sheet.collections.iter_mut().find(|collection| {
+                        collection.wrapper.name == pending_collection.wrapper.name
+                    }) {
+                        if collection.config != pending_collection.config {
+                            return Err(ExcelError::Format(format!(
+                                "collection fill prefix {:?} cannot change configuration between fills",
+                                pending_collection.wrapper.name()
+                            )));
+                        }
+                        collection
+                            .wrapper
+                            .rows
+                            .extend(pending_collection.wrapper.rows.iter().cloned());
+                    } else {
+                        sheet.collections.push(pending_collection.clone());
+                    }
+                }
+                sheet
+                    .appended_rows
+                    .extend(pending_sheet.appended_rows.iter().cloned());
+            } else {
+                resolved.push(ResolvedSheetFill {
+                    worksheet,
+                    scalar: pending_sheet.scalar.clone(),
+                    collections: pending_sheet.collections.clone(),
+                    appended_rows: pending_sheet.appended_rows.clone(),
+                });
+            }
+        }
+        Ok(resolved)
+    }
+}
+
+fn same_sheet(left: &TemplateSheet, right: &TemplateSheet) -> bool {
+    match (left, right) {
+        (
+            TemplateSheet::First | TemplateSheet::Index(0),
+            TemplateSheet::First | TemplateSheet::Index(0),
+        ) => true,
+        (TemplateSheet::Index(left), TemplateSheet::Index(right)) => left == right,
+        (TemplateSheet::Name(left), TemplateSheet::Name(right)) => left == right,
+        _ => false,
     }
 }
 
@@ -624,7 +796,7 @@ type ArchiveWriter = ZipWriter<Box<dyn WriteSeek>>;
 /// Returns an I/O or format error for invalid ZIP/OOXML input or output failures.
 pub fn fill_xlsx_template(template: &Path, output: &Path, data: &TemplateData) -> Result<()> {
     let mut writer = ExcelTemplateWriter::new(template, output)?;
-    writer.scalar.values.extend(data.values.clone());
+    writer.sheets[0].scalar.values.extend(data.values.clone());
     writer.finish()
 }
 
@@ -643,7 +815,7 @@ pub fn fill_xlsx_template_list(
 ) -> Result<()> {
     let mut writer = ExcelTemplateWriter::new(template, output)?;
     if !data.rows().is_empty() {
-        writer.collections.push(PendingCollectionFill {
+        writer.sheets[0].collections.push(PendingCollectionFill {
             wrapper: data.clone(),
             config,
         });
@@ -651,8 +823,27 @@ pub fn fill_xlsx_template_list(
     writer.finish()
 }
 
+#[cfg(test)]
 fn replace_collection_placeholders(
     entries: &mut [TemplateEntry],
+    wrapper: &FillWrapper,
+    config: FillConfig,
+) {
+    replace_collection_placeholders_matching(entries, None, wrapper, config);
+}
+
+fn replace_collection_placeholders_in_sheet(
+    entries: &mut [TemplateEntry],
+    worksheet: &str,
+    wrapper: &FillWrapper,
+    config: FillConfig,
+) {
+    replace_collection_placeholders_matching(entries, Some(worksheet), wrapper, config);
+}
+
+fn replace_collection_placeholders_matching(
+    entries: &mut [TemplateEntry],
+    worksheet: Option<&str>,
     wrapper: &FillWrapper,
     config: FillConfig,
 ) {
@@ -666,10 +857,12 @@ fn replace_collection_placeholders(
         .map(shared_string_values)
         .unwrap_or_default();
     for entry in entries.iter_mut().filter(|entry| {
-        entry.name.starts_with("xl/worksheets/")
-            && Path::new(&entry.name)
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        worksheet.map_or_else(
+            || entry.name.starts_with("xl/worksheets/"),
+            |worksheet| entry.name.eq_ignore_ascii_case(worksheet),
+        ) && Path::new(&entry.name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
     }) {
         let Ok(xml) = std::str::from_utf8(&entry.bytes) else {
             continue;
@@ -1327,10 +1520,27 @@ fn contains_collection_marker(value: &str, wrapper: &FillWrapper) -> bool {
 }
 
 fn replace_collection_values(value: &str, data: &TemplateData, prefix: Option<&str>) -> String {
-    replace_template_values(value, data.values(), prefix, false)
+    replace_template_values(value, data.values(), prefix, false, false)
 }
 
+#[cfg(test)]
 fn replace_scalar_cells(entries: &mut [TemplateEntry], data: &TemplateData) -> Result<()> {
+    replace_scalar_cells_matching(entries, None, data)
+}
+
+fn replace_scalar_cells_in_sheet(
+    entries: &mut [TemplateEntry],
+    worksheet: &str,
+    data: &TemplateData,
+) -> Result<()> {
+    replace_scalar_cells_matching(entries, Some(worksheet), data)
+}
+
+fn replace_scalar_cells_matching(
+    entries: &mut [TemplateEntry],
+    worksheet: Option<&str>,
+    data: &TemplateData,
+) -> Result<()> {
     let shared_strings = entries
         .iter()
         .find(|entry| entry.name == "xl/sharedStrings.xml")
@@ -1338,7 +1548,10 @@ fn replace_scalar_cells(entries: &mut [TemplateEntry], data: &TemplateData) -> R
         .map_or_else(Vec::new, shared_string_values);
     for entry in entries.iter_mut().filter(|entry| {
         !entry.is_dir
-            && entry.name.starts_with("xl/worksheets/")
+            && worksheet.map_or_else(
+                || entry.name.starts_with("xl/worksheets/"),
+                |worksheet| entry.name.eq_ignore_ascii_case(worksheet),
+            )
             && Path::new(&entry.name)
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
@@ -1365,13 +1578,21 @@ fn replace_scalar_cells_in_xml(
         let end = start + relative_end + 4;
         let cell = &xml[start..end];
         output.push_str(&xml[offset..start]);
-        let replacement = cell_value(cell, shared_strings)
-            .and_then(|placeholder| exact_scalar_value(&placeholder, data))
-            .filter(|value| !matches!(value, CellValue::String(_)))
-            .map_or_else(
-                || cell.to_owned(),
-                |value| render_typed_cell(cell, value, true),
-            );
+        let replacement = cell_value(cell, shared_strings).map_or_else(
+            || cell.to_owned(),
+            |placeholder| {
+                if let Some(value) = exact_scalar_value(&placeholder, data) {
+                    return render_typed_cell(cell, value, true);
+                }
+                let filled =
+                    replace_template_values(&placeholder, data.values(), None, true, false);
+                if filled == placeholder {
+                    cell.to_owned()
+                } else {
+                    render_typed_cell(cell, &CellValue::String(filled), true)
+                }
+            },
+        );
         output.push_str(&replacement);
         offset = end;
     }
@@ -1379,8 +1600,17 @@ fn replace_scalar_cells_in_xml(
     output
 }
 
+#[cfg(test)]
 fn append_rows_to_first_sheet(
     entries: &mut [TemplateEntry],
+    rows: &[Vec<CellValue>],
+) -> Result<()> {
+    append_rows_to_sheet(entries, "xl/worksheets/sheet1.xml", rows)
+}
+
+fn append_rows_to_sheet(
+    entries: &mut [TemplateEntry],
+    worksheet: &str,
     rows: &[Vec<CellValue>],
 ) -> Result<()> {
     if rows.is_empty() {
@@ -1388,11 +1618,11 @@ fn append_rows_to_first_sheet(
     }
     let Some(entry) = entries
         .iter_mut()
-        .find(|entry| entry.name == "xl/worksheets/sheet1.xml")
+        .find(|entry| entry.name.eq_ignore_ascii_case(worksheet))
     else {
-        return Err(ExcelError::Format(
-            "template does not contain xl/worksheets/sheet1.xml".to_owned(),
-        ));
+        return Err(ExcelError::Format(format!(
+            "template does not contain {worksheet}"
+        )));
     };
     let xml = String::from_utf8(std::mem::take(&mut entry.bytes))
         .map_err(|error| ExcelError::Format(error.to_string()))?;
@@ -1598,28 +1828,16 @@ fn load_entries_from(reader: Box<dyn ReadSeek>) -> Result<Vec<TemplateEntry>> {
     Ok(entries)
 }
 
-fn replace_xml_placeholders(entries: &mut [TemplateEntry], data: &TemplateData) -> Result<()> {
-    for entry in entries.iter_mut().filter(|entry| {
-        !entry.is_dir
-            && Path::new(&entry.name)
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
-    }) {
-        let xml = String::from_utf8(std::mem::take(&mut entry.bytes))
-            .map_err(|error| ExcelError::Format(error.to_string()))?;
-        entry.bytes = replace_placeholders(&xml, data.values()).into_bytes();
-    }
-    Ok(())
-}
-
+#[cfg(test)]
 fn replace_placeholders(xml: &str, values: &BTreeMap<String, CellValue>) -> String {
-    replace_template_values(xml, values, None, true)
+    replace_template_values(xml, values, None, true, true)
 }
 
 fn replace_template_values(
     input: &str,
     values: &BTreeMap<String, CellValue>,
     collection_prefix: Option<&str>,
+    scalar_values: bool,
     escape_values: bool,
 ) -> String {
     let bytes = input.as_bytes();
@@ -1640,7 +1858,7 @@ fn replace_template_values(
         {
             let end = index + relative_end + 1;
             let placeholder = &input[index + 1..end];
-            let key = if escape_values {
+            let key = if scalar_values {
                 Some(placeholder)
             } else {
                 match collection_prefix {
@@ -1701,6 +1919,142 @@ fn escape_xml(value: &str) -> String {
         }
     }
     escaped
+}
+
+fn worksheet_path(entries: &[TemplateEntry], sheet: &TemplateSheet) -> Result<String> {
+    let workbook = entries
+        .iter()
+        .find(|entry| entry.name.eq_ignore_ascii_case("xl/workbook.xml"));
+    let relationships = entries.iter().find(|entry| {
+        entry
+            .name
+            .eq_ignore_ascii_case("xl/_rels/workbook.xml.rels")
+    });
+    if let (Some(workbook), Some(relationships)) = (workbook, relationships) {
+        let workbook = std::str::from_utf8(&workbook.bytes)
+            .map_err(|error| ExcelError::Format(error.to_string()))?;
+        let relationships = std::str::from_utf8(&relationships.bytes)
+            .map_err(|error| ExcelError::Format(error.to_string()))?;
+        let sheets = workbook_sheets(workbook);
+        let selected = match sheet {
+            TemplateSheet::First => sheets.first(),
+            TemplateSheet::Index(index) => sheets.get(*index),
+            TemplateSheet::Name(name) => sheets.iter().find(|(sheet_name, _)| sheet_name == name),
+        }
+        .ok_or_else(|| ExcelError::SheetNotFound(template_sheet_label(sheet)))?;
+        let target = workbook_relationship_target(relationships, &selected.1).ok_or_else(|| {
+            ExcelError::Format(format!(
+                "workbook relationship {} for sheet {} is missing",
+                selected.1, selected.0
+            ))
+        })?;
+        let normalized = normalize_workbook_target(target)?;
+        return entries
+            .iter()
+            .find(|entry| entry.name.eq_ignore_ascii_case(&normalized))
+            .map(|entry| entry.name.clone())
+            .ok_or_else(|| {
+                ExcelError::Format(format!(
+                    "worksheet part {normalized} for sheet {} is missing",
+                    selected.0
+                ))
+            });
+    }
+
+    let worksheets = entries
+        .iter()
+        .filter(|entry| {
+            entry.name.starts_with("xl/worksheets/")
+                && Path::new(&entry.name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("xml"))
+        })
+        .collect::<Vec<_>>();
+    let index = match sheet {
+        TemplateSheet::First => 0,
+        TemplateSheet::Index(index) => *index,
+        TemplateSheet::Name(name) => {
+            return Err(ExcelError::SheetNotFound(name.clone()));
+        }
+    };
+    worksheets
+        .get(index)
+        .map(|entry| entry.name.clone())
+        .ok_or_else(|| ExcelError::SheetNotFound(template_sheet_label(sheet)))
+}
+
+fn workbook_sheets(xml: &str) -> Vec<(String, String)> {
+    xml_elements(xml, "sheet")
+        .filter_map(|element| {
+            Some((
+                attribute_value(element, "name")?.to_owned(),
+                attribute_value(element, "r:id")?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+fn workbook_relationship_target<'a>(xml: &'a str, relationship_id: &str) -> Option<&'a str> {
+    xml_elements(xml, "Relationship")
+        .find(|element| attribute_value(element, "Id") == Some(relationship_id))
+        .and_then(|element| attribute_value(element, "Target"))
+}
+
+fn xml_elements<'a>(xml: &'a str, name: &'a str) -> impl Iterator<Item = &'a str> {
+    let marker = format!("<{name}");
+    let mut offset = 0;
+    std::iter::from_fn(move || {
+        while let Some(relative_start) = xml[offset..].find(&marker) {
+            let start = offset + relative_start;
+            let after_name = start + marker.len();
+            if xml
+                .as_bytes()
+                .get(after_name)
+                .is_some_and(u8::is_ascii_alphanumeric)
+            {
+                offset = after_name;
+                continue;
+            }
+            let end = start + xml[start..].find('>')? + 1;
+            offset = end;
+            return Some(&xml[start..end]);
+        }
+        None
+    })
+}
+
+fn normalize_workbook_target(target: &str) -> Result<String> {
+    let candidate = target
+        .strip_prefix('/')
+        .map_or_else(|| format!("xl/{target}"), str::to_owned);
+    let mut components = Vec::new();
+    for component in candidate.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                if components.pop().is_none() {
+                    return Err(ExcelError::Format(format!(
+                        "worksheet target escapes package root: {target}"
+                    )));
+                }
+            }
+            component => components.push(component),
+        }
+    }
+    if components.is_empty() {
+        return Err(ExcelError::Format(format!(
+            "worksheet target is empty: {target}"
+        )));
+    }
+    Ok(components.join("/"))
+}
+
+fn template_sheet_label(sheet: &TemplateSheet) -> String {
+    match sheet {
+        TemplateSheet::First => "0".to_owned(),
+        TemplateSheet::Index(index) => index.to_string(),
+        TemplateSheet::Name(name) => name.clone(),
+    }
 }
 
 fn write_entries(path: &Path, entries: &[TemplateEntry]) -> Result<()> {

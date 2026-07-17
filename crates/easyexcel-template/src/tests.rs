@@ -190,6 +190,33 @@ fn template_fixture() -> Result<(TempDir, std::path::PathBuf)> {
     Ok((directory, path))
 }
 
+fn multi_sheet_template_fixture() -> Result<(TempDir, std::path::PathBuf)> {
+    let directory = tempdir()?;
+    let path = directory.path().join("multi-sheet-template.xlsx");
+    let mut workbook = Workbook::new();
+    let summary = workbook.add_worksheet();
+    summary.set_name("摘要").map_err(test_error)?;
+    summary.write_string(0, 0, "{title}").map_err(test_error)?;
+
+    let details = workbook.add_worksheet();
+    details.set_name("明细").map_err(test_error)?;
+    details.write_string(0, 0, "{title}").map_err(test_error)?;
+    details
+        .write_string(1, 0, "{items.name}")
+        .map_err(test_error)?;
+    details
+        .write_string(1, 1, "{items.value}")
+        .map_err(test_error)?;
+
+    let untouched = workbook.add_worksheet();
+    untouched.set_name("未处理").map_err(test_error)?;
+    untouched
+        .write_string(0, 0, "{title}")
+        .map_err(test_error)?;
+    workbook.save(&path).map_err(test_error)?;
+    Ok((directory, path))
+}
+
 fn write_compressed_java_fixture(path: &Path, fixture: &str) -> Result<()> {
     let compressed = base64::engine::general_purpose::STANDARD
         .decode(fixture.trim())
@@ -206,6 +233,16 @@ fn write_java_composite_fixture(path: &Path) -> Result<()> {
         path,
         include_str!("fixtures/java-demo-composite.xlsx.gz.b64"),
     )
+}
+
+fn synthetic_entry(name: &str, bytes: impl Into<Vec<u8>>) -> TemplateEntry {
+    TemplateEntry {
+        name: name.to_owned(),
+        is_dir: false,
+        compression: CompressionMethod::Stored,
+        unix_mode: None,
+        bytes: bytes.into(),
+    }
 }
 
 fn find_string_coordinate(range: &calamine::Range<Data>, needle: &str) -> Option<(u32, u32)> {
@@ -498,9 +535,32 @@ fn template_reader_and_owned_output_follow_java_default_close_lifecycle() -> Res
     let mut writer = ExcelTemplateWriter::from_reader_to_output_stream(input, stream)?;
     assert!(input_dropped.load(Ordering::SeqCst));
     assert!(format!("{writer:?}").contains("owned stream"));
-    writer
-        .fill(&TemplateData::new().with("name", "stream"))?
-        .finish()?;
+    assert_eq!(
+        worksheet_path(&writer.entries, &TemplateSheet::first())?,
+        "xl/worksheets/sheet1.xml"
+    );
+    writer.fill(&TemplateData::new().with("name", "stream"))?;
+    assert_eq!(
+        writer.sheets[0].scalar.values().get("name"),
+        Some(&CellValue::String("stream".to_owned()))
+    );
+    let shared_strings = writer
+        .entries
+        .iter()
+        .find(|entry| entry.name == "xl/sharedStrings.xml")
+        .and_then(|entry| std::str::from_utf8(&entry.bytes).ok())
+        .map_or_else(Vec::new, shared_string_values);
+    let worksheet = writer
+        .entries
+        .iter()
+        .find(|entry| entry.name == "xl/worksheets/sheet1.xml")
+        .and_then(|entry| std::str::from_utf8(&entry.bytes).ok())
+        .expect("worksheet XML");
+    assert!(
+        replace_scalar_cells_in_xml(worksheet, &writer.sheets[0].scalar, &shared_strings)
+            .contains("stream")
+    );
+    writer.finish()?;
 
     assert!(observer.is_closed());
     let bytes = state.0.lock().expect("output state lock").bytes.clone();
@@ -658,6 +718,221 @@ fn template_stream_failures_are_propagated_and_owned_stream_is_closed() -> Resul
     );
     assert!(invalid_observer.is_closed());
     Ok(())
+}
+
+#[test]
+fn stateful_template_writer_isolates_scalar_list_and_rows_by_sheet() -> Result<()> {
+    let (directory, template) = multi_sheet_template_fixture()?;
+    let output = directory.path().join("multi-sheet-filled.xlsx");
+    let details = TemplateSheet::name("明细");
+    let rows = FillWrapper::named(
+        "items",
+        [
+            TemplateData::new().with("name", "A").with("value", 1),
+            TemplateData::new().with("name", "B").with("value", 2),
+        ],
+    );
+
+    let mut writer = ExcelTemplateWriter::new(&template, &output)?;
+    writer
+        .fill(&TemplateData::new().with("title", "首页"))?
+        .fill_on_sheet(&details, &TemplateData::new().with("title", "详情"))?
+        .fill_list_on_sheet(&details, &rows, FillConfig::new())?
+        .fill_on_sheet(
+            &TemplateSheet::index(1),
+            &TemplateData::new().with("title", "详情覆盖"),
+        )?
+        .write_rows_on_sheet(
+            &TemplateSheet::index(1),
+            [vec![
+                CellValue::String("合计".to_owned()),
+                CellValue::Int(3),
+            ]],
+        )?
+        .finish()?;
+
+    let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
+    let summary = workbook.worksheet_range("摘要").map_err(test_error)?;
+    assert_eq!(summary.get((0, 0)), Some(&Data::String("首页".to_owned())));
+    let details = workbook.worksheet_range("明细").map_err(test_error)?;
+    assert_eq!(
+        details.get((0, 0)),
+        Some(&Data::String("详情覆盖".to_owned()))
+    );
+    assert_eq!(details.get((1, 0)), Some(&Data::String("A".to_owned())));
+    assert_eq!(details.get((1, 1)), Some(&Data::Float(1.0)));
+    assert_eq!(details.get((2, 0)), Some(&Data::String("B".to_owned())));
+    assert_eq!(details.get((2, 1)), Some(&Data::Float(2.0)));
+    assert_eq!(details.get((3, 0)), Some(&Data::String("合计".to_owned())));
+    assert_eq!(details.get((3, 1)), Some(&Data::Float(3.0)));
+    let untouched = workbook.worksheet_range("未处理").map_err(test_error)?;
+    assert_eq!(
+        untouched.get((0, 0)),
+        Some(&Data::String("{title}".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn template_sheet_selection_reports_missing_names_and_indexes() -> Result<()> {
+    let (directory, template) = multi_sheet_template_fixture()?;
+    assert_eq!(TemplateSheet::default(), TemplateSheet::first());
+    assert!(same_sheet(
+        &TemplateSheet::first(),
+        &TemplateSheet::index(0)
+    ));
+    assert!(!same_sheet(
+        &TemplateSheet::name("摘要"),
+        &TemplateSheet::index(0)
+    ));
+    assert!(same_sheet(
+        &TemplateSheet::index(2),
+        &TemplateSheet::index(2)
+    ));
+    assert!(!same_sheet(
+        &TemplateSheet::index(1),
+        &TemplateSheet::index(2)
+    ));
+
+    for (sheet, name) in [
+        (TemplateSheet::index(99), "missing-index.xlsx"),
+        (TemplateSheet::name("不存在"), "missing-name.xlsx"),
+    ] {
+        let mut writer = ExcelTemplateWriter::new(&template, directory.path().join(name))?;
+        writer.fill_on_sheet(&sheet, &TemplateData::new().with("title", "x"))?;
+        assert!(matches!(writer.finish(), Err(ExcelError::SheetNotFound(_))));
+        assert!(!writer.is_finished());
+    }
+
+    let rows = FillWrapper::named(
+        "items",
+        [TemplateData::new().with("name", "A").with("value", 1)],
+    );
+    let mut writer = ExcelTemplateWriter::new(
+        &template,
+        directory.path().join("conflicting-sheet-alias.xlsx"),
+    )?;
+    writer
+        .fill_list_on_sheet(&TemplateSheet::name("明细"), &rows, FillConfig::new())?
+        .fill_list_on_sheet(
+            &TemplateSheet::index(1),
+            &rows,
+            FillConfig::new().direction(FillDirection::Horizontal),
+        )?;
+    assert!(
+        matches!(writer.finish(), Err(ExcelError::Format(message)) if message.contains("cannot change configuration"))
+    );
+    assert!(!writer.is_finished());
+
+    let mut writer = ExcelTemplateWriter::new(
+        &template,
+        directory.path().join("distinct-sheet-alias.xlsx"),
+    )?;
+    writer
+        .fill_list_on_sheet(&TemplateSheet::name("明细"), &rows, FillConfig::new())?
+        .fill_list_on_sheet(
+            &TemplateSheet::index(1),
+            &FillWrapper::named("others", [TemplateData::new().with("name", "B")]),
+            FillConfig::new(),
+        )?;
+    let resolved = writer.resolved_sheet_fills()?;
+    assert_eq!(resolved.len(), 2);
+    assert_eq!(resolved[1].collections.len(), 2);
+
+    let mut writer =
+        ExcelTemplateWriter::new(&template, directory.path().join("merged-sheet-alias.xlsx"))?;
+    writer
+        .fill_list_on_sheet(&TemplateSheet::name("明细"), &rows, FillConfig::new())?
+        .fill_list_on_sheet(&TemplateSheet::index(1), &rows, FillConfig::new())?;
+    let resolved = writer.resolved_sheet_fills()?;
+    assert_eq!(resolved[1].collections[0].wrapper.rows().len(), 2);
+    Ok(())
+}
+
+#[test]
+fn worksheet_part_resolution_covers_relationship_and_fallback_failures() {
+    let workbook = br#"<workbook><sheets><sheet name="Data" r:id="rId1"/></sheets></workbook>"#;
+    let missing_relationship = vec![
+        synthetic_entry("xl/workbook.xml", workbook.to_vec()),
+        synthetic_entry("xl/_rels/workbook.xml.rels", b"<Relationships/>".to_vec()),
+    ];
+    assert!(matches!(
+        worksheet_path(&missing_relationship, &TemplateSheet::first()),
+        Err(ExcelError::Format(message)) if message.contains("relationship rId1")
+    ));
+
+    let missing_part = vec![
+        synthetic_entry("xl/workbook.xml", workbook.to_vec()),
+        synthetic_entry(
+            "xl/_rels/workbook.xml.rels",
+            br#"<Relationships><Relationship Id="rId1" Target="worksheets/missing.xml"/></Relationships>"#.to_vec(),
+        ),
+    ];
+    assert!(matches!(
+        worksheet_path(&missing_part, &TemplateSheet::name("Data")),
+        Err(ExcelError::Format(message)) if message.contains("worksheet part")
+    ));
+
+    for entries in [
+        vec![
+            synthetic_entry("xl/workbook.xml", vec![0xff]),
+            synthetic_entry("xl/_rels/workbook.xml.rels", b"<Relationships/>".to_vec()),
+        ],
+        vec![
+            synthetic_entry("xl/workbook.xml", workbook.to_vec()),
+            synthetic_entry("xl/_rels/workbook.xml.rels", vec![0xff]),
+        ],
+    ] {
+        assert!(matches!(
+            worksheet_path(&entries, &TemplateSheet::first()),
+            Err(ExcelError::Format(_))
+        ));
+    }
+    let invalid_target = vec![
+        synthetic_entry("xl/workbook.xml", workbook.to_vec()),
+        synthetic_entry(
+            "xl/_rels/workbook.xml.rels",
+            br#"<Relationships><Relationship Id="rId1" Target="../../outside.xml"/></Relationships>"#.to_vec(),
+        ),
+    ];
+    assert!(matches!(
+        worksheet_path(&invalid_target, &TemplateSheet::first()),
+        Err(ExcelError::Format(message)) if message.contains("escapes package root")
+    ));
+    assert!(
+        workbook_sheets(
+            r#"<sheets><sheet name="missing-id"/><sheet r:id="missing-name"/></sheets>"#
+        )
+        .is_empty()
+    );
+
+    let fallback = vec![synthetic_entry(
+        "xl/worksheets/custom.xml",
+        b"<worksheet/>".to_vec(),
+    )];
+    assert_eq!(
+        worksheet_path(&fallback, &TemplateSheet::index(0)).expect("fallback index"),
+        "xl/worksheets/custom.xml"
+    );
+    assert!(matches!(
+        worksheet_path(&fallback, &TemplateSheet::name("Data")),
+        Err(ExcelError::SheetNotFound(name)) if name == "Data"
+    ));
+    assert!(matches!(
+        worksheet_path(&fallback, &TemplateSheet::index(1)),
+        Err(ExcelError::SheetNotFound(index)) if index == "1"
+    ));
+
+    assert_eq!(
+        normalize_workbook_target("../worksheets/sheet.xml").expect("relative target"),
+        "worksheets/sheet.xml"
+    );
+    assert!(normalize_workbook_target("../../outside.xml").is_err());
+    assert!(normalize_workbook_target("/").is_err());
+    assert_eq!(
+        xml_elements("<sheets><sheet name=\"A\"/><sheet", "sheet").collect::<Vec<_>>(),
+        vec!["<sheet name=\"A\"/>"]
+    );
 }
 
 #[test]
@@ -1454,9 +1729,7 @@ fn collection_coordinate_helpers_and_missing_input_are_deterministic() -> Result
     let mut invalid_scalar_writer = ExcelTemplateWriter {
         output: TemplateOutput::Path(directory.path().join("invalid-scalar.xlsx")),
         entries: invalid_sheet,
-        scalar: TemplateData::new(),
-        collections: Vec::new(),
-        appended_rows: Vec::new(),
+        sheets: vec![PendingSheetFill::new(TemplateSheet::first())],
         finished: false,
         auto_close_stream: true,
     };
@@ -1465,9 +1738,12 @@ fn collection_coordinate_helpers_and_missing_input_are_deterministic() -> Result
     let mut invalid_append_writer = ExcelTemplateWriter {
         output: TemplateOutput::Path(directory.path().join("invalid-append.xlsx")),
         entries: no_sheet_data,
-        scalar: TemplateData::new(),
-        collections: Vec::new(),
-        appended_rows: vec![vec![]],
+        sheets: vec![PendingSheetFill {
+            sheet: TemplateSheet::first(),
+            scalar: TemplateData::new(),
+            collections: Vec::new(),
+            appended_rows: vec![vec![]],
+        }],
         finished: false,
         auto_close_stream: true,
     };

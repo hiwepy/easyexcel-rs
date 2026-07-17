@@ -425,7 +425,9 @@ writer. Collection rows continue from the previous call for each prefix, and
 scalar values can be supplied before or after collection data:
 
 ```rust,no_run
-use easyexcel::{CellValue, EasyExcel, FillConfig, FillWrapper, TemplateData};
+use easyexcel::{
+    CellValue, EasyExcel, FillConfig, FillWrapper, TemplateData, TemplateSheet,
+};
 
 # fn run() -> easyexcel::Result<()> {
 let mut writer = EasyExcel::template_writer("template.xlsx", "report.xlsx")?;
@@ -444,6 +446,10 @@ writer
         CellValue::Empty,
         CellValue::String("Total: 2".to_owned()),
     ]])?
+    .fill_on_sheet(
+        &TemplateSheet::name("Summary"),
+        &TemplateData::new().with("title", "Summary sheet"),
+    )?
     .finish()?;
 # Ok(())
 # }
@@ -484,9 +490,10 @@ assert!(observer.is_closed());
 
 The implementation is verified against Alibaba EasyExcel's official
 `simple.xlsx`, `composite.xlsx`, and `complexFillWithTable.xlsx` fixtures.
-Changing `FillConfig` for an already-used prefix, selecting a non-first sheet
-for appended rows, and typed-model/write-handler composition remain
-compatibility work in progress.
+`fill_on_sheet`, `fill_list_on_sheet`, and `write_rows_on_sheet` isolate state
+by Java-style zero-based sheet number or exact sheet name. Changing
+`FillConfig` for an already-used prefix and typed-model/write-handler
+composition remain compatibility work in progress.
 
 ## Quality gates
 
