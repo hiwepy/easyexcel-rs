@@ -1,6 +1,6 @@
 //! XLSX, XLS, and CSV readers backed by Calamine and the Rust CSV engine.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use calamine::{Data, DataRef, Range, Reader, Xls, Xlsx, open_workbook};
 use easyexcel_core::{
-    AnalysisContext, CellValue, CsvCharset, ErrorAction, ExcelError, ExcelRow, FormulaData,
-    ReadListener, Result, RowData,
+    AnalysisContext, CellExtra, CellExtraType, CellValue, CsvCharset, ErrorAction, ExcelError,
+    ExcelRow, FormulaData, ReadListener, Result, RowData,
 };
 use encoding_rs::Encoding;
 use encoding_rs_io::DecodeReaderBytesBuilder;
@@ -43,6 +43,8 @@ pub struct ReadOptions {
     pub ignore_empty_row: bool,
     /// Whether leading and trailing whitespace is removed from string cells.
     pub auto_trim: bool,
+    /// Extra worksheet metadata dispatched to `ReadListener::extra`.
+    pub extra_read: HashSet<CellExtraType>,
     /// Password used to decrypt an encrypted OOXML workbook.
     pub password: Option<String>,
     /// Character encoding used when reading CSV input.
@@ -56,6 +58,7 @@ impl Default for ReadOptions {
             head_row_number: 1,
             ignore_empty_row: true,
             auto_trim: true,
+            extra_read: HashSet::new(),
             password: None,
             charset: CsvCharset::default(),
         }
@@ -86,22 +89,24 @@ where
     L: ReadListener<T>,
 {
     let mut workbook = Xlsx::new(source.reader()?).map_err(format_error)?;
-    let mut row_metadata = (!options.ignore_empty_row)
+    let mut row_metadata = (!options.ignore_empty_row || !options.extra_read.is_empty())
         .then(|| source.reader().and_then(XlsxRowMetadata::new))
         .transpose()?;
     let names = selected_sheet_names(&workbook, &options.sheet, options.auto_trim)?;
     for (sheet_no, sheet_name) in names {
-        let last_explicit_row = row_metadata
-            .as_mut()
-            .map(|metadata| metadata.last_explicit_row(&sheet_name))
-            .transpose()?
-            .flatten();
+        let (last_explicit_row, extras) = xlsx_sheet_metadata(
+            row_metadata.as_mut(),
+            &sheet_name,
+            options.ignore_empty_row,
+            &options.extra_read,
+        )?;
         let mut consumer = TypedRowConsumer::<T> { listener };
         if read_sheet(
             &mut workbook,
             sheet_no,
             &sheet_name,
             last_explicit_row,
+            &extras,
             options,
             &mut consumer,
         )? == ReadFlow::Stop
@@ -110,6 +115,24 @@ where
         }
     }
     Ok(())
+}
+
+fn xlsx_sheet_metadata(
+    metadata: Option<&mut XlsxRowMetadata<XlsxInput>>,
+    sheet_name: &str,
+    ignore_empty_row: bool,
+    enabled_extras: &HashSet<CellExtraType>,
+) -> Result<(Option<u32>, Vec<CellExtra>)> {
+    let Some(metadata) = metadata else {
+        return Ok((None, Vec::new()));
+    };
+    let last_explicit_row = if ignore_empty_row {
+        None
+    } else {
+        metadata.last_explicit_row(sheet_name)?
+    };
+    let extras = metadata.extras(sheet_name, enabled_extras)?;
+    Ok((last_explicit_row, extras))
 }
 
 enum XlsxInput {
@@ -190,6 +213,7 @@ where
     T: ExcelRow,
     L: ReadListener<T>,
 {
+    reject_extra_read(options, "XLS")?;
     let mut workbook: Xls<_> = open_workbook(path).map_err(format_error)?;
     let sheets = select_xls_sheets(workbook.worksheets(), &options.sheet, options.auto_trim)?;
     for (sheet_no, sheet_name, range) in sheets {
@@ -213,6 +237,7 @@ where
     T: ExcelRow,
     L: ReadListener<T>,
 {
+    reject_extra_read(options, "CSV")?;
     let sheet_name = csv_sheet_name(&options.sheet)?;
     let encoding = csv_encoding(&options.charset)?;
     let input = DecodeReaderBytesBuilder::new()
@@ -313,6 +338,8 @@ trait RowConsumer {
         headers: &mut Arc<HashMap<String, usize>>,
     ) -> Result<ReadFlow>;
 
+    fn extra(&mut self, extra: &CellExtra, context: &AnalysisContext) -> Result<ReadFlow>;
+
     fn after(&mut self, context: &AnalysisContext) -> Result<()>;
 }
 
@@ -362,6 +389,11 @@ impl<T: ExcelRow> RowConsumer for TypedRowConsumer<'_, T> {
             headers,
             self.listener,
         )
+    }
+
+    fn extra(&mut self, extra: &CellExtra, context: &AnalysisContext) -> Result<ReadFlow> {
+        let result = self.listener.extra(extra, context);
+        listener_result(result, self.listener, context)
     }
 
     fn after(&mut self, context: &AnalysisContext) -> Result<()> {
@@ -438,6 +470,7 @@ fn read_sheet<RS>(
     sheet_no: usize,
     sheet_name: &str,
     last_explicit_row: Option<u32>,
+    extras: &[CellExtra],
     options: &ReadOptions,
     consumer: &mut dyn RowConsumer,
 ) -> Result<ReadFlow>
@@ -526,7 +559,13 @@ where
     }
 
     let final_row = last_explicit_row.or(current_index).unwrap_or_default();
-    consumer.after(&AnalysisContext::new(sheet_name, sheet_no, final_row))?;
+    let context = AnalysisContext::new(sheet_name, sheet_no, final_row);
+    for extra in extras {
+        if consumer.extra(extra, &context)? == ReadFlow::Stop {
+            return Ok(ReadFlow::Stop);
+        }
+    }
+    consumer.after(&context)?;
     Ok(ReadFlow::Continue)
 }
 
@@ -678,6 +717,16 @@ fn sheet_name_matches(candidate: &str, requested: &str, auto_trim: bool) -> bool
         java_trim(candidate) == java_trim(requested)
     } else {
         candidate == requested
+    }
+}
+
+fn reject_extra_read(options: &ReadOptions, format: &str) -> Result<()> {
+    if options.extra_read.is_empty() {
+        Ok(())
+    } else {
+        Err(ExcelError::Unsupported(format!(
+            "{format} extra metadata is not supported"
+        )))
     }
 }
 

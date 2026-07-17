@@ -23,6 +23,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `doRead` | `do_read` | implemented |
 | `doReadSync` | `read_sync(...).do_read_sync()` | implemented |
 | `ReadListener` | `ReadListener<T>` | implemented |
+| `extraRead(CellExtraTypeEnum)` / `ReadListener.extra` | `extra_read(CellExtraType)` / `ReadListener::extra` | implemented for XLSX comments, hyperlinks, and merged ranges; XLS/CSV return a typed unsupported error when requested |
 | `PageReadListener` | `PageReadListener<T>` | implemented |
 | `AnalysisContext` | `AnalysisContext` | implemented |
 | `@ExcelProperty` | `#[excel(name, index, order, format)]` | implemented |
@@ -43,13 +44,13 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `@ColumnWidth` / `@HeadRowHeight` / `@ContentRowHeight` | `#[excel(column_width, head_row_height, content_row_height)]` | implemented: field width overrides type width; explicit builder width overrides annotations |
 | `HorizontalCellStyleStrategy` | header and cycling content `CellStyle` | implemented |
 | `@HeadStyle` / `@ContentStyle` / `@HeadFontStyle` / `@ContentFontStyle` | `#[excel(head_style(...), content_style(...), head_font_style(...), content_font_style(...))]` | partial: XLSX cell/font metadata, field-over-type replacement, independent cell/font inheritance, explicit-style precedence, POI indexed colors `0..=64`, RGB extensions, built-in/custom data formats, and official Java annotation color expectations are verified; custom HSSF palettes and XLS writing remain |
-| formulas/images/comments/hyperlinks | rich `CellValue` variants | partial: XLSX write implemented |
+| formulas/images/comments/hyperlinks | formula metadata, `CellExtra`, and rich write values | partial: XLSX formula and comment/hyperlink/merge reads plus XLSX rich writes implemented; image reads remain |
 | `OnceAbsoluteMergeStrategy` | `MergeRange` / `merge_cells` | implemented |
 | `LoopMergeStrategy` | repeating data-row merge metadata | implemented |
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
 | CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, stateful same-sheet multi-write, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; JVM-only charset providers remain |
-| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, numbers, dates, cached formula results plus `FormulaData`, error text, row conversion, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; raw-map listeners, comments, hyperlinks, merged-cell extras, and disk-backed shared-string caching remain |
+| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, numbers, dates, cached formula results plus `FormulaData`, error text, comment/hyperlink/merged-cell extras, row conversion, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; raw-map listeners and disk-backed shared-string caching remain |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
@@ -89,6 +90,13 @@ The original formula expression is retained separately as `FormulaData`, just
 like Java `ReadCellData.formulaData`; `RowData::formula` and custom converter
 contexts can inspect it without replacing the cached value.
 
+When `extra_read` enables a category, the companion OOXML scanner also emits
+Java-style `CellExtra` values for comments, internal and external hyperlinks,
+and merged ranges. Worksheet extras are delivered after row events, comments
+follow them, and all extras precede `do_after_all_analysed`. A successful
+`extra` callback is followed by `has_next`; failures pass through
+`on_exception`. The same parser is used for decrypted in-memory XLSX packages.
+
 Like Java's `RowTagHandler`, the dispatcher synthesizes every missing row before
 the first cell-bearing row and between later cell-bearing rows. This preserves
 empty header callbacks and `ignore_empty_row(false)` data callbacks without
@@ -101,10 +109,9 @@ not perform this companion scan.
 
 This is not yet the complete Java `XlsxSaxAnalyser` contract. Calamine loads
 the workbook shared-string table in memory, whereas Java can select a
-disk-backed cache. It also does not expose Java's comments, hyperlinks, and
-merged-cell extra-data events. Those gaps require focused extensions around
-the OOXML stream, not a second implementation of the already-streaming basic
-cell path.
+disk-backed cache. Raw-map listener parity and image extraction also remain.
+Those gaps require focused extensions around the OOXML stream, not a second
+implementation of the already-streaming basic cell path.
 
 ## Million-row benchmark
 

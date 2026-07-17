@@ -7,7 +7,7 @@ use base64::Engine;
 use calamine::{CellErrorType, ExcelDateTime, ExcelDateTimeType};
 use easyexcel_core::{ExcelColumn, IntoExcelCell};
 use flate2::read::GzDecoder;
-use rust_xlsxwriter::Workbook;
+use rust_xlsxwriter::{Format, Note, Workbook};
 use tempfile::{TempDir, tempdir};
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
@@ -183,6 +183,58 @@ impl ReadListener<TestRow> for Probe {
     }
 }
 
+#[derive(Default)]
+struct ExtraProbe {
+    events: Vec<&'static str>,
+    extras: Vec<CellExtra>,
+    fail_extra: bool,
+    error_action: Option<ErrorAction>,
+    errors: usize,
+    stop_after_extra: bool,
+    extra_seen: bool,
+}
+
+impl ReadListener<TestRow> for ExtraProbe {
+    fn on_exception(&mut self, _error: &ExcelError, _context: &AnalysisContext) -> ErrorAction {
+        self.errors += 1;
+        self.error_action.unwrap_or(ErrorAction::Stop)
+    }
+
+    fn invoke_head(
+        &mut self,
+        _head: &HashMap<String, usize>,
+        _context: &AnalysisContext,
+    ) -> Result<()> {
+        self.events.push("head");
+        Ok(())
+    }
+
+    fn invoke(&mut self, _data: TestRow, _context: &AnalysisContext) -> Result<()> {
+        self.events.push("row");
+        Ok(())
+    }
+
+    fn extra(&mut self, extra: &CellExtra, _context: &AnalysisContext) -> Result<()> {
+        self.events.push("extra");
+        self.extras.push(extra.clone());
+        self.extra_seen = true;
+        if self.fail_extra {
+            Err(ExcelError::Format("extra failed".to_owned()))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn do_after_all_analysed(&mut self, _context: &AnalysisContext) -> Result<()> {
+        self.events.push("after");
+        Ok(())
+    }
+
+    fn has_next(&mut self, _context: &AnalysisContext) -> bool {
+        !(self.stop_after_extra && self.extra_seen)
+    }
+}
+
 struct ErrorProbe {
     action: ErrorAction,
     errors: usize,
@@ -205,6 +257,7 @@ fn options() -> ReadOptions {
         head_row_number: 1,
         ignore_empty_row: true,
         auto_trim: true,
+        extra_read: HashSet::new(),
         password: None,
         charset: CsvCharset::default(),
     }
@@ -222,6 +275,30 @@ fn workbook_fixture() -> Result<(TempDir, std::path::PathBuf)> {
     second.set_name("Second").map_err(test_error)?;
     second.write_string(0, 0, "Value").map_err(test_error)?;
     second.write_string(1, 0, "two").map_err(test_error)?;
+    workbook.save(&path).map_err(test_error)?;
+    Ok((directory, path))
+}
+
+fn extra_workbook_fixture() -> Result<(TempDir, std::path::PathBuf)> {
+    let directory = tempdir()?;
+    let path = directory.path().join("extras.xlsx");
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.set_name("Meta").map_err(test_error)?;
+    worksheet.write_string(0, 0, "Value").map_err(test_error)?;
+    worksheet.write_string(1, 0, "row").map_err(test_error)?;
+    worksheet
+        .insert_note(1, 0, &Note::new("comment & text"))
+        .map_err(test_error)?;
+    worksheet
+        .write_url(2, 0, "https://example.com")
+        .map_err(test_error)?;
+    worksheet
+        .write_url(2, 1, "internal:Meta!A1")
+        .map_err(test_error)?;
+    worksheet
+        .merge_range(3, 0, 3, 1, "Merged", &Format::new())
+        .map_err(test_error)?;
     workbook.save(&path).map_err(test_error)?;
     Ok((directory, path))
 }
@@ -621,6 +698,7 @@ fn reads_java_easyexcel_encrypted_xlsx_fixture() -> Result<()> {
         &path,
         &ReadOptions {
             password: Some("123456".to_owned()),
+            extra_read: HashSet::from([CellExtraType::Merge]),
             ..options()
         },
         &mut probe,
@@ -651,6 +729,126 @@ fn reads_java_easyexcel_encrypted_xlsx_fixture() -> Result<()> {
     assert_eq!(empty_row_probe.rows.len(), 10);
     assert_eq!(empty_row_probe.after, vec![("0".to_owned(), 0, 10)]);
     Ok(())
+}
+
+#[test]
+fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<()> {
+    let (_directory, path) = extra_workbook_fixture()?;
+    let all_extras = HashSet::from([
+        CellExtraType::Comment,
+        CellExtraType::Hyperlink,
+        CellExtraType::Merge,
+    ]);
+    let read_options = ReadOptions {
+        sheet: SheetSelector::Name("Meta".to_owned()),
+        extra_read: all_extras,
+        ..options()
+    };
+    let mut probe = ExtraProbe::default();
+    read_xlsx::<TestRow, _>(&path, &read_options, &mut probe)?;
+    assert_eq!(probe.extras.len(), 4);
+    let first_extra = probe
+        .events
+        .iter()
+        .position(|event| *event == "extra")
+        .expect("extra event");
+    assert!(
+        probe.events[..first_extra]
+            .iter()
+            .all(|event| matches!(*event, "head" | "row"))
+    );
+    assert!(
+        probe.events[first_extra..probe.events.len() - 1]
+            .iter()
+            .all(|event| *event == "extra")
+    );
+    assert_eq!(probe.events.last(), Some(&"after"));
+
+    let merge = probe
+        .extras
+        .iter()
+        .find(|extra| extra.extra_type() == CellExtraType::Merge)
+        .expect("merge extra");
+    assert_eq!(merge.first_row_index(), 3);
+    assert_eq!(merge.last_row_index(), 3);
+    assert_eq!(merge.first_column_index(), 0);
+    assert_eq!(merge.last_column_index(), 1);
+    let hyperlinks = probe
+        .extras
+        .iter()
+        .filter(|extra| extra.extra_type() == CellExtraType::Hyperlink)
+        .filter_map(CellExtra::text)
+        .collect::<Vec<_>>();
+    assert!(hyperlinks.contains(&"https://example.com"));
+    assert!(hyperlinks.contains(&"Meta!A1"));
+    let comment = probe
+        .extras
+        .iter()
+        .find(|extra| extra.extra_type() == CellExtraType::Comment)
+        .expect("comment extra");
+    assert_eq!(comment.text(), Some("Author:\ncomment & text"));
+    assert_eq!(comment.first_row_index(), 1);
+    assert_eq!(comment.first_column_index(), 0);
+
+    let mut comments_only = ExtraProbe::default();
+    read_xlsx::<TestRow, _>(
+        &path,
+        &ReadOptions {
+            extra_read: HashSet::from([CellExtraType::Comment]),
+            ..options()
+        },
+        &mut comments_only,
+    )?;
+    assert_eq!(comments_only.extras.len(), 1);
+    assert_eq!(comments_only.extras[0].extra_type(), CellExtraType::Comment);
+
+    let mut stopped = ExtraProbe {
+        stop_after_extra: true,
+        ..ExtraProbe::default()
+    };
+    read_xlsx::<TestRow, _>(&path, &read_options, &mut stopped)?;
+    assert_eq!(stopped.extras.len(), 1);
+    assert!(!stopped.events.contains(&"after"));
+
+    let mut continued_error = ExtraProbe {
+        fail_extra: true,
+        error_action: Some(ErrorAction::Continue),
+        ..ExtraProbe::default()
+    };
+    read_xlsx::<TestRow, _>(&path, &read_options, &mut continued_error)?;
+    assert_eq!(continued_error.errors, 4);
+    assert_eq!(continued_error.events.last(), Some(&"after"));
+
+    let mut stopped_error = ExtraProbe {
+        fail_extra: true,
+        ..ExtraProbe::default()
+    };
+    assert!(read_xlsx::<TestRow, _>(&path, &read_options, &mut stopped_error).is_err());
+    assert_eq!(stopped_error.errors, 1);
+    assert!(!stopped_error.events.contains(&"after"));
+
+    let malformed = path.with_file_name("malformed-extra.xlsx");
+    rewrite_first_sheet(&path, &malformed, "<worksheet>")?;
+    let mut malformed_probe = ExtraProbe::default();
+    assert!(read_xlsx::<TestRow, _>(&malformed, &read_options, &mut malformed_probe).is_err());
+    Ok(())
+}
+
+#[test]
+fn non_xlsx_readers_reject_requested_extra_metadata_before_opening_input() {
+    let options = ReadOptions {
+        extra_read: HashSet::from([CellExtraType::Comment]),
+        ..options()
+    };
+    let mut probe = Probe::default();
+    assert!(matches!(
+        read_xls::<TestRow, _>(Path::new("missing.xls"), &options, &mut probe),
+        Err(ExcelError::Unsupported(message)) if message.contains("XLS")
+    ));
+    assert!(matches!(
+        read_csv::<TestRow, _>(Path::new("missing.csv"), &options, &mut probe),
+        Err(ExcelError::Unsupported(message)) if message.contains("CSV")
+    ));
 }
 
 #[test]
@@ -1436,7 +1634,18 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
     let mut consumer = TypedRowConsumer::<TestRow> {
         listener: &mut direct,
     };
-    assert!(read_sheet(&mut opened, 0, "Missing", None, &options(), &mut consumer).is_err());
+    assert!(
+        read_sheet(
+            &mut opened,
+            0,
+            "Missing",
+            None,
+            &[],
+            &options(),
+            &mut consumer
+        )
+        .is_err()
+    );
     let source = XlsxSource::open(&path, None)?;
     let mut public_opened = Xlsx::new(source.reader()?).map_err(test_error)?;
     assert!(
@@ -1445,6 +1654,7 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
             0,
             "Missing",
             None,
+            &[],
             &options(),
             &mut consumer,
         )

@@ -1,9 +1,11 @@
 use std::io::{Cursor, Write};
+use std::sync::Arc;
 
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
 use super::*;
+use crate::XlsxInput;
 
 fn package(entries: &[(&str, &str)]) -> Cursor<Vec<u8>> {
     let mut output = Cursor::new(Vec::new());
@@ -23,8 +25,33 @@ fn package(entries: &[(&str, &str)]) -> Cursor<Vec<u8>> {
     output
 }
 
+fn package_bytes(entries: &[(&str, &[u8])]) -> Cursor<Vec<u8>> {
+    let mut output = Cursor::new(Vec::new());
+    {
+        let mut writer = ZipWriter::new(&mut output);
+        for (name, contents) in entries {
+            writer
+                .start_file(*name, SimpleFileOptions::default())
+                .expect("start package entry");
+            writer.write_all(contents).expect("write package entry");
+        }
+        writer.finish().expect("finish package");
+    }
+    output.set_position(0);
+    output
+}
+
 fn archive(entries: &[(&str, &str)]) -> ZipArchive<Cursor<Vec<u8>>> {
     ZipArchive::new(package(entries)).expect("valid ZIP archive")
+}
+
+fn xlsx_input_archive(entries: &[(&str, &str)]) -> ZipArchive<XlsxInput> {
+    ZipArchive::new(xlsx_input(entries)).expect("valid XLSX input archive")
+}
+
+fn xlsx_input(entries: &[(&str, &str)]) -> XlsxInput {
+    let bytes: Arc<[u8]> = Arc::from(package(entries).into_inner());
+    XlsxInput::Memory(Cursor::new(bytes))
 }
 
 fn valid_entries() -> Vec<(&'static str, &'static str)> {
@@ -167,6 +194,29 @@ fn relationship_parser_rejects_missing_truncated_and_malformed_parts() {
     let mut malformed_event = archive(&[("rels.xml", "<Relationships><")]);
     let cache = path_cache(&malformed_event);
     assert!(read_relationships(&mut malformed_event, &cache, "rels.xml").is_err());
+
+    let mut missing = xlsx_input_archive(&[]);
+    let cache = path_cache(&missing);
+    assert!(read_raw_relationships(&mut missing, &cache, "missing.rels").is_err());
+    for xml in [
+        "<Relationships>",
+        "<Relationships><Relationship Id=></Relationship></Relationships>",
+        "<Relationships><",
+    ] {
+        let mut invalid = xlsx_input_archive(&[("rels.xml", xml)]);
+        let cache = path_cache(&invalid);
+        assert!(read_raw_relationships(&mut invalid, &cache, "rels.xml").is_err());
+    }
+    let mut missing_id = xlsx_input_archive(&[(
+        "rels.xml",
+        "<Relationships><Relationship Target=\"ignored\"/></Relationships>",
+    )]);
+    let cache = path_cache(&missing_id);
+    assert!(
+        read_raw_relationships(&mut missing_id, &cache, "rels.xml")
+            .expect("relationship table")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -258,5 +308,267 @@ fn metadata_constructor_reports_each_package_boundary() {
             ("xl/workbook.xml", "<workbook>"),
         ]))
         .is_err()
+    );
+}
+
+#[test]
+fn extras_parse_merge_internal_external_hyperlinks_and_rich_comments() -> Result<()> {
+    let mut entries = valid_entries();
+    entries.pop();
+    entries.extend([
+        (
+            "custom/sheets/First.XML",
+            r#"<worksheet xmlns:r="urn:r"><sheetData><row r="1"/></sheetData>
+<mergeCells><mergeCell ref="$A$1:B2"/></mergeCells>
+<hyperlinks><hyperlink ref="C3" location="'Other Sheet'!A1"/><hyperlink ref="D4:E5" r:id="external"/></hyperlinks>
+</worksheet>"#,
+        ),
+        (
+            "custom/sheets/_rels/First.XML.rels",
+            r#"<Relationships>
+<Relationship Id="external" Type="urn:relationships/hyperlink" Target="https://example.com?a=1&amp;b=2" TargetMode="External"/>
+<Relationship Id="comments" Type="urn:relationships/comments" Target="../comments1.xml"/>
+</Relationships>"#,
+        ),
+        (
+            "custom/comments1.xml",
+            r#"<comments><commentList><comment ref="F6"><text><r><t>A&amp;B</t></r><r><t> plus </t></r><r><t><![CDATA[C]]></t></r><r><t>&#x21;</t></r></text></comment></commentList></comments>"#,
+        ),
+    ]);
+    let mut metadata = XlsxRowMetadata::new(package(&entries))?;
+    let enabled = HashSet::from([
+        CellExtraType::Comment,
+        CellExtraType::Hyperlink,
+        CellExtraType::Merge,
+    ]);
+    let extras = metadata.extras("A&B", &enabled)?;
+    assert_eq!(extras.len(), 4);
+    assert_eq!(extras[0].extra_type(), CellExtraType::Merge);
+    assert_eq!(extras[0].text(), None);
+    assert_eq!(extras[0].first_row_index(), 0);
+    assert_eq!(extras[0].last_row_index(), 1);
+    assert_eq!(extras[0].first_column_index(), 0);
+    assert_eq!(extras[0].last_column_index(), 1);
+    assert_eq!(extras[1].extra_type(), CellExtraType::Hyperlink);
+    assert_eq!(extras[1].text(), Some("'Other Sheet'!A1"));
+    assert_eq!(extras[2].text(), Some("https://example.com?a=1&b=2"));
+    assert_eq!(extras[2].first_row_index(), 3);
+    assert_eq!(extras[2].last_row_index(), 4);
+    assert_eq!(extras[2].first_column_index(), 3);
+    assert_eq!(extras[2].last_column_index(), 4);
+    assert_eq!(extras[3].extra_type(), CellExtraType::Comment);
+    assert_eq!(extras[3].text(), Some("A&B plus C!"));
+    assert_eq!(extras[3].first_row_index(), 5);
+    assert_eq!(extras[3].last_row_index(), 5);
+    assert_eq!(extras[3].first_column_index(), 5);
+    assert_eq!(extras[3].last_column_index(), 5);
+
+    assert!(metadata.extras("Missing", &enabled).is_err());
+    assert!(metadata.extras("A&B", &HashSet::new())?.is_empty());
+    let mut metadata = XlsxRowMetadata::new(xlsx_input(&entries))?;
+    assert!(metadata.extras("Missing", &enabled).is_err());
+    Ok(())
+}
+
+#[test]
+fn cell_reference_parser_enforces_xlsx_coordinates_and_range_ordering() -> Result<()> {
+    assert_eq!(parse_cell_reference("A1")?, (0, 0));
+    assert_eq!(parse_cell_reference("$xFd$1048576")?, (1_048_575, 16_383));
+    assert_eq!(parse_cell_range("B2")?, (1, 1, 1, 1));
+    assert_eq!(parse_cell_range("A1:B2")?, (0, 1, 0, 1));
+    for invalid in [
+        "",
+        "1",
+        "A",
+        "A0",
+        "XFE1",
+        "A1048577",
+        "A-1",
+        "A1:B",
+        "B2:A1",
+        "A1:B2:C3",
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1",
+    ] {
+        assert!(parse_cell_range(invalid).is_err(), "{invalid}");
+    }
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn extra_parsers_report_missing_relationships_attributes_parts_and_xml() {
+    let enabled = HashSet::from([CellExtraType::Hyperlink, CellExtraType::Merge]);
+    let relationships = RawRelationships::new();
+    for xml in [
+        "<worksheet><mergeCell/></worksheet>",
+        "<worksheet><mergeCell ref=\"XFE1\"/></worksheet>",
+        "<worksheet><hyperlink/></worksheet>",
+        "<worksheet><hyperlink ref=\"A1\"/></worksheet>",
+        "<worksheet><hyperlink ref=\"XFE1\" location=\"Sheet2!A1\"/></worksheet>",
+        "<worksheet><hyperlink ref=></hyperlink></worksheet>",
+        "<worksheet><hyperlink ref=\"A1\" id=\"missing\"/></worksheet>",
+        "<worksheet>",
+        "<worksheet><",
+    ] {
+        let mut archive = archive(&[("sheet.xml", xml)]);
+        let cache = path_cache(&archive);
+        assert!(
+            read_worksheet_extras(&mut archive, &cache, "sheet.xml", &relationships, &enabled)
+                .is_err()
+        );
+    }
+
+    let mut missing = archive(&[]);
+    let cache = path_cache(&missing);
+    assert!(
+        read_worksheet_extras(
+            &mut missing,
+            &cache,
+            "missing.xml",
+            &relationships,
+            &enabled
+        )
+        .is_err()
+    );
+
+    let mut malformed_attribute = ZipArchive::new(package_bytes(&[(
+        "sheet.xml",
+        b"<worksheet><mergeCell \xff=\"x\"/></worksheet>",
+    )]))
+    .expect("ZIP archive");
+    let cache = path_cache(&malformed_attribute);
+    assert!(
+        read_worksheet_extras(
+            &mut malformed_attribute,
+            &cache,
+            "sheet.xml",
+            &relationships,
+            &enabled
+        )
+        .is_err()
+    );
+
+    for xml in [
+        "<comments><commentList><comment><text><t>x</t></text></comment></commentList></comments>",
+        "<comments><commentList><comment ref=\"XFE1\"><text><t>x</t></text></comment></commentList></comments>",
+        "<comments><commentList></comment></commentList></comments>",
+        "<comments><commentList><comment ref=\"A1\"><text><t>&unknown;</t></text></comment></commentList></comments>",
+        "<comments><commentList><comment ref=\"A1\"><text><t>&#0;</t></text></comment></commentList></comments>",
+        "<comments>",
+        "<comments><",
+        "<comments><commentList><comment ref=\"A1\"><text><t>\u{fffd}</t></text></comment></commentList></comments>",
+    ] {
+        let mut archive = archive(&[("comments.xml", xml)]);
+        let cache = path_cache(&archive);
+        let result = read_comments(&mut archive, &cache, "comments.xml");
+        if xml.contains('\u{fffd}') {
+            assert!(result.is_ok());
+        } else {
+            assert!(result.is_err());
+        }
+    }
+    let mut missing_comments = archive(&[]);
+    let cache = path_cache(&missing_comments);
+    assert!(read_comments(&mut missing_comments, &cache, "missing.xml").is_err());
+
+    let mut missing_xlsx_part = xlsx_input_archive(&[]);
+    let cache = path_cache(&missing_xlsx_part);
+    assert!(
+        read_worksheet_extras(
+            &mut missing_xlsx_part,
+            &cache,
+            "missing-sheet.xml",
+            &relationships,
+            &enabled,
+        )
+        .is_err()
+    );
+    assert!(read_comments(&mut missing_xlsx_part, &cache, "missing-comments.xml").is_err());
+
+    for bytes in [
+        b"<comments><commentList><comment \xff=\"x\"></comment></commentList></comments>".as_slice(),
+        b"<comments><commentList><comment ref=\"A1\"><text><t>\xff</t></text></comment></commentList></comments>".as_slice(),
+        b"<comments><commentList><comment ref=\"A1\"><text><t><![CDATA[\xff]]></t></text></comment></commentList></comments>".as_slice(),
+        b"<comments><commentList><comment ref=\"A1\"><text><t>&\xff;</t></text></comment></commentList></comments>".as_slice(),
+    ] {
+        let mut invalid = ZipArchive::new(package_bytes(&[("comments.xml", bytes)]))
+            .expect("ZIP archive");
+        let cache = path_cache(&invalid);
+        assert!(read_comments(&mut invalid, &cache, "comments.xml").is_err());
+    }
+
+    let mut entries = valid_entries();
+    entries.pop();
+    entries.extend([
+        (
+            "custom/sheets/First.XML",
+            "<worksheet><sheetData/></worksheet>",
+        ),
+        (
+            "custom/sheets/_rels/First.XML.rels",
+            "<Relationships><Relationship Id=\"comments\" Type=\"urn:relationships/comments\" Target=\"../missing-comments.xml\"/></Relationships>",
+        ),
+    ]);
+    let mut metadata = XlsxRowMetadata::new(package(&entries)).expect("metadata package");
+    assert!(
+        metadata
+            .extras("A&B", &HashSet::from([CellExtraType::Comment]))
+            .is_err()
+    );
+    let mut metadata = XlsxRowMetadata::new(xlsx_input(&entries)).expect("metadata package");
+    assert!(
+        metadata
+            .extras("A&B", &HashSet::from([CellExtraType::Comment]))
+            .is_err()
+    );
+
+    let mut invalid_relationships = valid_entries();
+    invalid_relationships.pop();
+    invalid_relationships.extend([
+        (
+            "custom/sheets/First.XML",
+            "<worksheet><sheetData/></worksheet>",
+        ),
+        ("custom/sheets/_rels/First.XML.rels", "<Relationships>"),
+    ]);
+    let mut metadata =
+        XlsxRowMetadata::new(package(&invalid_relationships)).expect("metadata package");
+    assert!(
+        metadata
+            .extras("A&B", &HashSet::from([CellExtraType::Hyperlink]))
+            .is_err()
+    );
+    let mut metadata =
+        XlsxRowMetadata::new(xlsx_input(&invalid_relationships)).expect("metadata package");
+    assert!(
+        metadata
+            .extras("A&B", &HashSet::from([CellExtraType::Hyperlink]))
+            .is_err()
+    );
+
+    let mut escaping_comment = valid_entries();
+    escaping_comment.pop();
+    escaping_comment.extend([
+        (
+            "custom/sheets/First.XML",
+            "<worksheet><sheetData/></worksheet>",
+        ),
+        (
+            "custom/sheets/_rels/First.XML.rels",
+            "<Relationships><Relationship Id=\"comments\" Type=\"urn:relationships/comments\" Target=\"../../../../outside.xml\"/></Relationships>",
+        ),
+    ]);
+    let mut metadata = XlsxRowMetadata::new(package(&escaping_comment)).expect("metadata package");
+    assert!(
+        metadata
+            .extras("A&B", &HashSet::from([CellExtraType::Comment]))
+            .is_err()
+    );
+    let mut metadata =
+        XlsxRowMetadata::new(xlsx_input(&escaping_comment)).expect("metadata package");
+    assert!(
+        metadata
+            .extras("A&B", &HashSet::from([CellExtraType::Comment]))
+            .is_err()
     );
 }

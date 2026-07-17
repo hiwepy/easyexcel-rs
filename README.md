@@ -8,7 +8,7 @@ The project is under active compatibility development. The authoritative
 feature inventory is [docs/compatibility.md](docs/compatibility.md).
 
 ```rust,no_run
-use easyexcel::{EasyExcel, ExcelRow, PageReadListener};
+use easyexcel::{CellExtraType, EasyExcel, ExcelRow, PageReadListener};
 
 #[derive(Debug, ExcelRow)]
 struct User {
@@ -25,6 +25,7 @@ let listener = PageReadListener::new(1_000, |rows, _context| save(rows));
 EasyExcel::read::<User, _>("users.xlsx", listener)
     .sheet("Users")
     .auto_trim(true)
+    .extra_read(CellExtraType::Comment)
     .do_read()?;
 # Ok(())
 # }
@@ -173,6 +174,14 @@ For formula cells, typed fields receive Excel's cached result. The original
 expression remains available separately through `RowData::formula()` and
 `ReadConverterContext::formula()`, mirroring Java `ReadCellData.formulaData`
 without changing ordinary scalar conversion.
+
+Java `extraRead` maps to `.extra_read(CellExtraType::...)`. Enable `Comment`,
+`Hyperlink`, or `Merge` on an XLSX reader and implement `ReadListener::extra`
+to receive a `CellExtra` with optional text and zero-based first/last row and
+column coordinates. Extra callbacks run after row callbacks and before the
+sheet completion callback, with the same `on_exception` and `has_next`
+control flow as Java EasyExcel. XLS and CSV return a typed unsupported error
+when extra metadata is requested.
 
 Run `./scripts/benchmark-million-rows.sh` for the release-scale streaming
 benchmark. It writes and reads one million typed rows and reports elapsed time,

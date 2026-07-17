@@ -442,6 +442,11 @@ impl ReadListener<i32> for RecordingListener {
         Ok(())
     }
 
+    fn extra(&mut self, _extra: &CellExtra, _context: &AnalysisContext) -> Result<()> {
+        self.calls.push("extra");
+        Ok(())
+    }
+
     fn do_after_all_analysed(&mut self, _context: &AnalysisContext) -> Result<()> {
         self.calls.push("after");
         Ok(())
@@ -465,10 +470,33 @@ impl ReadListener<i32> for DefaultListener {
 fn listener_defaults_and_box_forwarding_match_java_lifecycle() -> Result<()> {
     let context = AnalysisContext::new("Users", 0, 1);
     let error = ExcelError::Format("bad".to_owned());
+    let extra = CellExtra::new(CellExtraType::Merge, None, 1, 2, 3, 4);
+    assert_eq!(extra.extra_type(), CellExtraType::Merge);
+    assert_eq!(extra.text(), None);
+    assert_eq!(extra.first_row_index(), 1);
+    assert_eq!(extra.last_row_index(), 2);
+    assert_eq!(extra.first_column_index(), 3);
+    assert_eq!(extra.last_column_index(), 4);
+    let comment = CellExtra::new(CellExtraType::Comment, Some("note".to_owned()), 0, 0, 0, 0);
+    assert_eq!(comment.extra_type(), CellExtraType::Comment);
+    assert_eq!(comment.text(), Some("note"));
+    assert_eq!(
+        CellExtra::new(
+            CellExtraType::Hyperlink,
+            Some("https://example.com".to_owned()),
+            0,
+            0,
+            0,
+            0,
+        )
+        .extra_type(),
+        CellExtraType::Hyperlink
+    );
     let mut defaults = DefaultListener;
     assert_eq!(defaults.on_exception(&error, &context), ErrorAction::Stop);
     defaults.invoke_head(&HashMap::new(), &context)?;
     defaults.invoke(1, &context)?;
+    defaults.extra(&extra, &context)?;
     defaults.do_after_all_analysed(&context)?;
     assert!(defaults.has_next(&context));
 
@@ -479,6 +507,7 @@ fn listener_defaults_and_box_forwarding_match_java_lifecycle() -> Result<()> {
     );
     listener.invoke_head(&HashMap::new(), &context)?;
     listener.invoke(1, &context)?;
+    listener.extra(&extra, &context)?;
     listener.do_after_all_analysed(&context)?;
     assert!(listener.has_next(&context));
     Ok(())

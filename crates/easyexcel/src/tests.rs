@@ -125,6 +125,8 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .head_row_number(3)
         .ignore_empty_row(false)
         .auto_trim(false)
+        .extra_read(CellExtraType::Comment)
+        .extra_read(CellExtraType::Merge)
         .password("read-secret")
         .charset("GBK");
     assert_eq!(read.path, PathBuf::from("input.xlsx"));
@@ -132,6 +134,8 @@ fn factories_and_builder_options_match_java_style_chaining() {
     assert_eq!(read.options.head_row_number, 3);
     assert!(!read.options.ignore_empty_row);
     assert!(!read.options.auto_trim);
+    assert!(read.options.extra_read.contains(&CellExtraType::Comment));
+    assert!(read.options.extra_read.contains(&CellExtraType::Merge));
     assert_eq!(read.options.password.as_deref(), Some("read-secret"));
     assert_eq!(read.options.charset.name(), "GBK");
 
@@ -140,6 +144,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .head_row_number(2)
         .ignore_empty_row(false)
         .auto_trim(false)
+        .extra_read(CellExtraType::Hyperlink)
         .password("sync-secret")
         .charset(CsvCharset::new("UTF-16BE"));
     assert_eq!(sync.path, PathBuf::from("sync.xlsx"));
@@ -147,6 +152,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
     assert_eq!(sync.options.head_row_number, 2);
     assert!(!sync.options.ignore_empty_row);
     assert!(!sync.options.auto_trim);
+    assert!(sync.options.extra_read.contains(&CellExtraType::Hyperlink));
     assert_eq!(sync.options.password.as_deref(), Some("sync-secret"));
     assert_eq!(sync.options.charset.name(), "UTF-16BE");
 

@@ -177,6 +177,13 @@ where
         self
     }
 
+    /// Enables a Java `extraRead` metadata category.
+    #[must_use]
+    pub fn extra_read(mut self, extra_type: CellExtraType) -> Self {
+        self.options.extra_read.insert(extra_type);
+        self
+    }
+
     /// Sets the password for an encrypted OOXML workbook.
     #[must_use]
     pub fn password(mut self, password: impl Into<String>) -> Self {
@@ -243,6 +250,13 @@ where
     #[must_use]
     pub const fn auto_trim(mut self, enabled: bool) -> Self {
         self.options.auto_trim = enabled;
+        self
+    }
+
+    /// Enables a Java `extraRead` metadata category.
+    #[must_use]
+    pub fn extra_read(mut self, extra_type: CellExtraType) -> Self {
+        self.options.extra_read.insert(extra_type);
         self
     }
 
