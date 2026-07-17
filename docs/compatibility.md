@@ -22,6 +22,8 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `sheet(Integer/String)` | `sheet(index/name)` | implemented |
 | `doRead` | `do_read` | implemented |
 | `doReadSync` | `read_sync(...).do_read_sync()` | implemented |
+| no-model `Map<Integer, String/Object/ReadCellData<?>>` | `DynamicRow` + `DynamicValue` | implemented: physical column indexes, sparse gaps, header-tail nulls, XLSX/XLS/CSV event and sync reads, and schema-less XLSX/CSV writes are verified |
+| `ReadDefaultReturnEnum.STRING/ACTUAL_DATA/READ_CELL_DATA` | `ReadDefaultReturn::{String, ActualData, ReadCellData}` | implemented: Java-compatible default, scalar typing, formula metadata, coordinates, and raw cell values |
 | `ReadListener` | `ReadListener<T>` | implemented |
 | `extraRead(CellExtraTypeEnum)` / `ReadListener.extra` | `extra_read(CellExtraType)` / `ReadListener::extra` | implemented for XLSX comments, hyperlinks, and merged ranges; XLS/CSV return a typed unsupported error when requested |
 | `PageReadListener` | `PageReadListener<T>` | implemented |
@@ -50,7 +52,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
 | CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, stateful same-sheet multi-write, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; JVM-only charset providers remain |
-| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, numbers, dates, cached formula results plus `FormulaData`, error text, comment/hyperlink/merged-cell extras, row conversion, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; raw-map listeners and disk-backed shared-string caching remain |
+| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed/dynamic row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, numbers, dates, cached formula results plus `FormulaData`, error text, comment/hyperlink/merged-cell extras, typed and no-model rows, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; disk-backed shared-string caching remains |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
@@ -109,9 +111,9 @@ not perform this companion scan.
 
 This is not yet the complete Java `XlsxSaxAnalyser` contract. Calamine loads
 the workbook shared-string table in memory, whereas Java can select a
-disk-backed cache. Raw-map listener parity and image extraction also remain.
-Those gaps require focused extensions around the OOXML stream, not a second
-implementation of the already-streaming basic cell path.
+disk-backed cache. Image extraction also remains. Those gaps require focused
+extensions around the OOXML stream, not a second implementation of the
+already-streaming basic cell path.
 
 ## Million-row benchmark
 

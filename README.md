@@ -132,6 +132,35 @@ For Java `OutputStream`-style integration, use the re-exported
 `write_csv_to_writer` function with any owned Rust `Write` implementation and a
 logical path for handler context.
 
+Java's no-model `Map<Integer, ...>` reads map to the ordered `DynamicRow` type.
+The default mode returns strings, while `ActualData` preserves scalar cell
+types and `ReadCellData` exposes the raw value, converted value, physical
+coordinates, and formula metadata. Missing physical columns are represented by
+`DynamicValue::Null`, so sparse rows retain Java-compatible indexes:
+
+```rust,no_run
+use easyexcel::{DynamicRow, DynamicValue, EasyExcel, ReadDefaultReturn};
+
+# fn run() -> easyexcel::Result<()> {
+let rows = EasyExcel::read_dynamic_sync("users.xlsx")
+    .head_row_number(0)
+    .read_default_return(ReadDefaultReturn::ActualData)
+    .do_read_sync()?;
+
+if let Some(DynamicValue::ActualData(value)) = rows[0].get(1) {
+    println!("second physical column: {}", value.as_text());
+}
+
+EasyExcel::write::<DynamicRow>("copy.xlsx").do_write(rows)?;
+# Ok(())
+# }
+```
+
+Use `EasyExcel::read_dynamic(path, listener)` for the event-driven equivalent.
+Dynamic rows can be written to XLSX or CSV with no synthetic header, or with a
+runtime header supplied through `.head(...)`. Index include/exclude filters and
+Java-style include ordering apply to dynamic rows as well.
+
 Stateful builders follow Java `ExcelWriter` semantics: repeated writes to the
 same sheet append rows without repeating the head. XLSX may target multiple
 sheets, while CSV accepts one logical sheet. `writer_sheet_index(index)` and

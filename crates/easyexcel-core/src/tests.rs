@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::sync::Arc;
 
@@ -146,6 +146,116 @@ fn row_data_resolves_index_before_header_name() {
             content_font_style: Some(font_style),
         }
     );
+}
+
+#[test]
+fn dynamic_rows_match_java_no_model_return_modes() -> Result<()> {
+    let headers = Arc::new(HashMap::from([("Tail".to_owned(), 4)]));
+    let cells = vec![
+        CellValue::String("value".to_owned()),
+        CellValue::Empty,
+        CellValue::Error("#N/A".to_owned()),
+        CellValue::Empty,
+    ];
+    let row = RowData::new("Dynamic", 7, cells.clone(), Arc::clone(&headers))
+        .with_formulas(HashMap::from([(2, FormulaData::new("NA()"))]))
+        .with_present_columns(HashSet::from([0, 2, 3]));
+
+    assert_eq!(ReadDefaultReturn::default(), ReadDefaultReturn::String);
+    let strings = DynamicRow::from_row(&row)?;
+    assert_eq!(strings.values().len(), 5);
+    assert_eq!(
+        strings.get(0),
+        Some(&DynamicValue::String("value".to_owned()))
+    );
+    assert_eq!(strings.get(1), Some(&DynamicValue::Null));
+    assert_eq!(
+        strings.get(2),
+        Some(&DynamicValue::String("#N/A".to_owned()))
+    );
+    assert_eq!(strings.get(3), Some(&DynamicValue::String(String::new())));
+    assert_eq!(strings.get(4), Some(&DynamicValue::Null));
+
+    let actual = DynamicRow::from_row(
+        &RowData::new("Dynamic", 7, cells.clone(), Arc::clone(&headers))
+            .with_present_columns(HashSet::from([0, 2, 3]))
+            .with_read_default_return(ReadDefaultReturn::ActualData),
+    )?;
+    assert_eq!(
+        actual.get(0),
+        Some(&DynamicValue::ActualData(CellValue::String(
+            "value".to_owned()
+        )))
+    );
+    assert_eq!(
+        actual.get(2),
+        Some(&DynamicValue::ActualData(CellValue::String(
+            "#N/A".to_owned()
+        )))
+    );
+    assert_eq!(
+        actual.get(3),
+        Some(&DynamicValue::ActualData(CellValue::String(String::new())))
+    );
+
+    let cell_data_row = DynamicRow::from_row(
+        &RowData::new("Dynamic", 7, cells, headers)
+            .with_formulas(HashMap::from([(2, FormulaData::new("NA()"))]))
+            .with_present_columns(HashSet::from([0, 2, 3]))
+            .with_read_default_return(ReadDefaultReturn::ReadCellData),
+    )?;
+    let DynamicValue::ReadCellData(cell_data) = cell_data_row.get(2).expect("column 2") else {
+        panic!("expected read cell data");
+    };
+    assert_eq!(cell_data.row_index(), 7);
+    assert_eq!(cell_data.column_index(), 2);
+    assert_eq!(cell_data.raw_value(), &CellValue::Error("#N/A".to_owned()));
+    assert_eq!(cell_data.data(), &CellValue::String("#N/A".to_owned()));
+    assert_eq!(
+        cell_data.formula().map(FormulaData::formula_value),
+        Some("NA()")
+    );
+    let DynamicValue::ReadCellData(empty_data) = cell_data_row.get(3).expect("column 3") else {
+        panic!("expected empty read cell data");
+    };
+    assert_eq!(empty_data.raw_value(), &CellValue::Empty);
+    assert_eq!(empty_data.data(), &CellValue::String(String::new()));
+    assert_eq!(empty_data.formula(), None);
+    Ok(())
+}
+
+#[test]
+fn dynamic_rows_are_ordered_and_can_be_written_back() -> Result<()> {
+    let read_cell_data = ReadCellData::new(1, 4, CellValue::Int(9), CellValue::Int(9), None);
+    let row = DynamicRow::new(BTreeMap::from([
+        (0, DynamicValue::String("first".to_owned())),
+        (1, DynamicValue::Null),
+        (2, DynamicValue::ActualData(CellValue::Bool(true))),
+        (4, DynamicValue::ReadCellData(read_cell_data)),
+    ]));
+    assert!(DynamicRow::schema().is_empty());
+    assert_eq!(
+        row.clone()
+            .into_values()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2, 4]
+    );
+    assert_eq!(
+        row.to_row()?,
+        vec![
+            CellValue::String("first".to_owned()),
+            CellValue::Empty,
+            CellValue::Bool(true),
+            CellValue::Empty,
+            CellValue::Int(9),
+        ]
+    );
+    assert!(DynamicRow::default().to_row()?.is_empty());
+    let overflow = DynamicRow::new(BTreeMap::from([(usize::MAX, DynamicValue::Null)]));
+    assert!(matches!(overflow.to_row(), Err(ExcelError::Format(_))));
+    Ok(())
 }
 
 #[test]

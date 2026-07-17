@@ -1244,6 +1244,7 @@ fn dynamic_head_validation_and_backend_failures_are_typed() -> Result<()> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn columns_are_ordered_by_physical_index_order_and_schema_position() {
     const SCHEMA: &[ExcelColumn] = &[
         ExcelColumn::new("third", "Third", Some(2), 0, None),
@@ -1319,6 +1320,92 @@ fn columns_are_ordered_by_physical_index_order_and_schema_position() {
             .collect::<Vec<_>>(),
         vec!["first", "implicit"]
     );
+
+    let dynamic = selected_columns(
+        easyexcel_core::DynamicRow::schema(),
+        &WriteOptions {
+            dynamic_head: Some(vec![
+                vec!["First".to_owned()],
+                vec!["Second".to_owned()],
+                vec!["Third".to_owned()],
+            ]),
+            include_column_indexes: Some(vec![2, 0]),
+            exclude_column_indexes: vec![1],
+            order_by_include_column: true,
+            ..WriteOptions::default()
+        },
+    );
+    assert_eq!(
+        dynamic
+            .iter()
+            .map(|(physical, source, column)| (*physical, *source, column.field))
+            .collect::<Vec<_>>(),
+        vec![(0, 2, ""), (1, 0, "")]
+    );
+    assert!(
+        selected_dynamic_columns(
+            3,
+            &WriteOptions {
+                include_column_field_names: Some(vec!["unknown".to_owned()]),
+                ..WriteOptions::default()
+            }
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        selected_dynamic_columns(
+            2,
+            &WriteOptions {
+                order_by_include_column: true,
+                ..WriteOptions::default()
+            }
+        )
+        .iter()
+        .map(|(physical, source, _)| (*physical, *source))
+        .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 1)]
+    );
+}
+
+#[test]
+fn dynamic_row_layout_omits_a_synthetic_head_and_accepts_a_dynamic_head() -> Result<()> {
+    let options = WriteOptions::default();
+    assert_eq!(head_rows_for_schema_state(true, &options)?, 0);
+    assert!(dynamic_columns_for_row(true, 3, &options).is_some());
+    assert!(dynamic_columns_for_row(false, 3, &options).is_none());
+
+    let headed_options = WriteOptions {
+        dynamic_head: Some(vec![
+            vec!["Name".to_owned()],
+            vec!["Unused".to_owned()],
+            vec!["Score".to_owned()],
+        ]),
+        ..WriteOptions::default()
+    };
+    assert_eq!(head_rows_for_schema_state(true, &headed_options)?, 1);
+    assert!(dynamic_columns_for_row(true, 3, &headed_options).is_none());
+
+    let mut writer = create_csv_record_writer(Box::new(Vec::<u8>::new()), &options.charset, true)?;
+    let mut rows = [Ok(vec![
+        CellValue::String("Alice".to_owned()),
+        CellValue::Empty,
+        CellValue::Int(7),
+    ])]
+    .into_iter();
+    let progress = append_csv_records(
+        &mut writer,
+        &options,
+        &[],
+        true,
+        &mut rows,
+        &mut [],
+        0,
+        0,
+        true,
+    )?;
+    assert_eq!(progress.next_row, 1);
+    assert_eq!(progress.next_data_index, 1);
+    finish_csv_record_writer(writer)
 }
 
 #[test]

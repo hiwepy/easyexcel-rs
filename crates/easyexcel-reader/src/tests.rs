@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use base64::Engine;
 use calamine::{CellErrorType, ExcelDateTime, ExcelDateTimeType};
-use easyexcel_core::{ExcelColumn, IntoExcelCell};
+use easyexcel_core::{DynamicRow, DynamicValue, ExcelColumn, IntoExcelCell};
 use flate2::read::GzDecoder;
 use rust_xlsxwriter::{Format, Note, Workbook};
 use tempfile::{TempDir, tempdir};
@@ -114,6 +114,16 @@ struct RawProbe(Vec<RawRow>);
 
 impl ReadListener<RawRow> for RawProbe {
     fn invoke(&mut self, data: RawRow, _context: &AnalysisContext) -> Result<()> {
+        self.0.push(data);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct DynamicProbe(Vec<DynamicRow>);
+
+impl ReadListener<DynamicRow> for DynamicProbe {
+    fn invoke(&mut self, data: DynamicRow, _context: &AnalysisContext) -> Result<()> {
         self.0.push(data);
         Ok(())
     }
@@ -257,6 +267,7 @@ fn options() -> ReadOptions {
         head_row_number: 1,
         ignore_empty_row: true,
         auto_trim: true,
+        read_default_return: ReadDefaultReturn::default(),
         extra_read: HashSet::new(),
         password: None,
         charset: CsvCharset::default(),
@@ -672,6 +683,23 @@ fn reads_java_easyexcel_legacy_multisheet_fixture() -> Result<()> {
     let invalid = directory.path().join("invalid.xls");
     fs::write(&invalid, b"not an XLS workbook")?;
     assert!(read_xls::<TestRow, _>(&invalid, &options(), &mut probe).is_err());
+
+    let mut dynamic = DynamicProbe::default();
+    read_xls::<DynamicRow, _>(
+        &path,
+        &ReadOptions {
+            read_default_return: ReadDefaultReturn::ReadCellData,
+            ..options()
+        },
+        &mut dynamic,
+    )?;
+    let DynamicValue::ReadCellData(cell) = dynamic.0[0].get(0).expect("legacy cell") else {
+        panic!("expected legacy read cell data");
+    };
+    assert_eq!(cell.raw_value(), &CellValue::String("表1数据".to_owned()));
+    assert_eq!(cell.data(), &CellValue::String("表1数据".to_owned()));
+    assert_eq!(cell.row_index(), 1);
+    assert_eq!(cell.column_index(), 0);
     Ok(())
 }
 
@@ -992,6 +1020,131 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
     assert_eq!(
         untrimmed.0[0].cells[1],
         CellValue::String("  inline value  ".to_owned())
+    );
+
+    let mut strings = DynamicProbe::default();
+    read_xlsx::<DynamicRow, _>(&path, &options(), &mut strings)?;
+    assert_eq!(
+        strings.0[0].get(3),
+        Some(&DynamicValue::String("42".to_owned()))
+    );
+    assert_eq!(
+        strings.0[0].get(8),
+        Some(&DynamicValue::String("1904-01-02 00:00:00".to_owned()))
+    );
+
+    let mut actual = DynamicProbe::default();
+    read_xlsx::<DynamicRow, _>(
+        &path,
+        &ReadOptions {
+            read_default_return: ReadDefaultReturn::ActualData,
+            ..options()
+        },
+        &mut actual,
+    )?;
+    assert_eq!(
+        actual.0[0].get(2),
+        Some(&DynamicValue::ActualData(CellValue::Bool(true)))
+    );
+    assert_eq!(
+        actual.0[0].get(5),
+        Some(&DynamicValue::ActualData(CellValue::Float(45.5)))
+    );
+    assert_eq!(
+        actual.0[0].get(7),
+        Some(&DynamicValue::ActualData(CellValue::String(
+            "#DIV/0!".to_owned()
+        )))
+    );
+
+    let mut cell_data = DynamicProbe::default();
+    read_xlsx::<DynamicRow, _>(
+        &path,
+        &ReadOptions {
+            read_default_return: ReadDefaultReturn::ReadCellData,
+            ..options()
+        },
+        &mut cell_data,
+    )?;
+    let DynamicValue::ReadCellData(formula_cell) =
+        cell_data.0[0].get(5).expect("formula cell data")
+    else {
+        panic!("expected formula read cell data");
+    };
+    assert_eq!(formula_cell.raw_value(), &CellValue::Float(45.5));
+    assert_eq!(formula_cell.data(), &CellValue::Float(45.5));
+    assert_eq!(
+        formula_cell.formula().map(FormulaData::formula_value),
+        Some("SUM(D2:E2)")
+    );
+    Ok(())
+}
+
+#[test]
+fn dynamic_rows_preserve_xlsx_gaps_and_csv_scalar_contracts() -> Result<()> {
+    let (directory, base) = workbook_fixture()?;
+    let sparse = directory.path().join("dynamic-sparse.xlsx");
+    rewrite_first_sheet(
+        &base,
+        &sparse,
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>First</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>Tail</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>value</t></is></c>
+      <c r="C2" t="n"><v>3</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+    )?;
+    let mut xlsx = DynamicProbe::default();
+    read_xlsx::<DynamicRow, _>(&sparse, &options(), &mut xlsx)?;
+    assert_eq!(xlsx.0[0].values().len(), 3);
+    assert_eq!(
+        xlsx.0[0].get(0),
+        Some(&DynamicValue::String("value".to_owned()))
+    );
+    assert_eq!(xlsx.0[0].get(1), Some(&DynamicValue::Null));
+    assert_eq!(
+        xlsx.0[0].get(2),
+        Some(&DynamicValue::String("3".to_owned()))
+    );
+
+    let csv_path = directory.path().join("dynamic.csv");
+    fs::write(&csv_path, "Text,Number,Empty,Tail\r\nvalue,109,,last\r\n")?;
+    let mut csv_strings = DynamicProbe::default();
+    read_csv::<DynamicRow, _>(&csv_path, &options(), &mut csv_strings)?;
+    assert_eq!(
+        csv_strings.0[0].get(1),
+        Some(&DynamicValue::String("109".to_owned()))
+    );
+    assert_eq!(
+        csv_strings.0[0].get(2),
+        Some(&DynamicValue::String(String::new()))
+    );
+
+    let mut csv_actual = DynamicProbe::default();
+    read_csv::<DynamicRow, _>(
+        &csv_path,
+        &ReadOptions {
+            read_default_return: ReadDefaultReturn::ActualData,
+            ..options()
+        },
+        &mut csv_actual,
+    )?;
+    assert_eq!(
+        csv_actual.0[0].get(1),
+        Some(&DynamicValue::ActualData(CellValue::String(
+            "109".to_owned()
+        )))
+    );
+    assert_eq!(
+        csv_actual.0[0].get(2),
+        Some(&DynamicValue::ActualData(CellValue::String(String::new())))
     );
     Ok(())
 }

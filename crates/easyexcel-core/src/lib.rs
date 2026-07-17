@@ -1,6 +1,6 @@
 //! Core data model and extension points for `easyexcel-rs`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -143,6 +143,125 @@ impl FormulaData {
     #[must_use]
     pub fn formula_value(&self) -> &str {
         &self.formula_value
+    }
+}
+
+/// Value mode used when reading rows without a declared Rust model.
+///
+/// This mirrors Java `EasyExcel`'s `ReadDefaultReturnEnum` while [`DynamicValue`]
+/// keeps the runtime alternatives type-safe.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReadDefaultReturn {
+    /// Convert every present cell to the text a user sees in the workbook.
+    #[default]
+    String,
+    /// Preserve the backend-neutral scalar type of each cell.
+    ActualData,
+    /// Return the scalar together with its raw value, location, and formula.
+    ReadCellData,
+}
+
+/// Java-compatible no-model cell metadata.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadCellData {
+    row_index: u32,
+    column_index: usize,
+    raw_value: CellValue,
+    data: CellValue,
+    formula: Option<FormulaData>,
+}
+
+impl ReadCellData {
+    fn new(
+        row_index: u32,
+        column_index: usize,
+        raw_value: CellValue,
+        data: CellValue,
+        formula: Option<FormulaData>,
+    ) -> Self {
+        Self {
+            row_index,
+            column_index,
+            raw_value,
+            data,
+            formula,
+        }
+    }
+
+    /// Returns the physical zero-based row index.
+    #[must_use]
+    pub const fn row_index(&self) -> u32 {
+        self.row_index
+    }
+
+    /// Returns the physical zero-based column index.
+    #[must_use]
+    pub const fn column_index(&self) -> usize {
+        self.column_index
+    }
+
+    /// Returns the original backend-neutral cell value.
+    #[must_use]
+    pub const fn raw_value(&self) -> &CellValue {
+        &self.raw_value
+    }
+
+    /// Returns the Java `ACTUAL_DATA`-equivalent value.
+    #[must_use]
+    pub const fn data(&self) -> &CellValue {
+        &self.data
+    }
+
+    /// Returns formula metadata when the cell contains a formula.
+    #[must_use]
+    pub const fn formula(&self) -> Option<&FormulaData> {
+        self.formula.as_ref()
+    }
+}
+
+/// A type-safe value in a Java-compatible no-model row.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DynamicValue {
+    /// A missing column inserted to preserve physical indexes or head width.
+    Null,
+    /// Text returned by Java's default `STRING` mode.
+    String(String),
+    /// Scalar returned by Java's `ACTUAL_DATA` mode.
+    ActualData(CellValue),
+    /// Metadata returned by Java's `READ_CELL_DATA` mode.
+    ReadCellData(ReadCellData),
+}
+
+/// A no-model row keyed by zero-based physical column index.
+///
+/// Use this when Java code would read `Map<Integer, String>`,
+/// `Map<Integer, Object>`, or `Map<Integer, ReadCellData<?>>`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DynamicRow(BTreeMap<usize, DynamicValue>);
+
+impl DynamicRow {
+    /// Creates a dynamic row from indexed values.
+    #[must_use]
+    pub const fn new(values: BTreeMap<usize, DynamicValue>) -> Self {
+        Self(values)
+    }
+
+    /// Returns all indexed values in physical column order.
+    #[must_use]
+    pub const fn values(&self) -> &BTreeMap<usize, DynamicValue> {
+        &self.0
+    }
+
+    /// Returns a value by zero-based physical column index.
+    #[must_use]
+    pub fn get(&self, column_index: usize) -> Option<&DynamicValue> {
+        self.0.get(&column_index)
+    }
+
+    /// Consumes the row and returns its ordered values.
+    #[must_use]
+    pub fn into_values(self) -> BTreeMap<usize, DynamicValue> {
+        self.0
     }
 }
 
@@ -689,6 +808,8 @@ pub struct RowData {
     cells: Vec<CellValue>,
     headers: Arc<HashMap<String, usize>>,
     formulas: HashMap<usize, FormulaData>,
+    present_columns: HashSet<usize>,
+    read_default_return: ReadDefaultReturn,
 }
 
 impl RowData {
@@ -700,12 +821,15 @@ impl RowData {
         cells: Vec<CellValue>,
         headers: Arc<HashMap<String, usize>>,
     ) -> Self {
+        let present_columns = (0..cells.len()).collect();
         Self {
             sheet_name: sheet_name.into(),
             row_index,
             cells,
             headers,
             formulas: HashMap::new(),
+            present_columns,
+            read_default_return: ReadDefaultReturn::default(),
         }
     }
 
@@ -713,6 +837,20 @@ impl RowData {
     #[must_use]
     pub fn with_formulas(mut self, formulas: HashMap<usize, FormulaData>) -> Self {
         self.formulas = formulas;
+        self
+    }
+
+    /// Attaches the physical columns that were explicitly present in the source.
+    #[must_use]
+    pub fn with_present_columns(mut self, present_columns: HashSet<usize>) -> Self {
+        self.present_columns = present_columns;
+        self
+    }
+
+    /// Selects the Java-compatible no-model return mode.
+    #[must_use]
+    pub const fn with_read_default_return(mut self, mode: ReadDefaultReturn) -> Self {
+        self.read_default_return = mode;
         self
     }
 
@@ -744,6 +882,39 @@ impl RowData {
             .index
             .or_else(|| self.headers.get(column.name).copied())?;
         self.formulas.get(&index)
+    }
+
+    fn dynamic_width(&self) -> usize {
+        let head_width = self
+            .headers
+            .values()
+            .copied()
+            .max()
+            .map_or(0, |index| index.saturating_add(1));
+        self.cells.len().max(head_width)
+    }
+
+    fn dynamic_cell(&self, column_index: usize) -> DynamicValue {
+        if !self.present_columns.contains(&column_index) {
+            return DynamicValue::Null;
+        }
+        let raw_value = self
+            .cells
+            .get(column_index)
+            .cloned()
+            .unwrap_or(CellValue::Empty);
+        let data = actual_cell_value(&raw_value);
+        match self.read_default_return {
+            ReadDefaultReturn::String => DynamicValue::String(raw_value.as_text()),
+            ReadDefaultReturn::ActualData => DynamicValue::ActualData(data),
+            ReadDefaultReturn::ReadCellData => DynamicValue::ReadCellData(ReadCellData::new(
+                self.row_index,
+                column_index,
+                raw_value,
+                data,
+                self.formulas.get(&column_index).cloned(),
+            )),
+        }
     }
 
     /// Creates a conversion context for a column.
@@ -1273,6 +1444,47 @@ pub trait ExcelRow: Sized {
     ///
     /// Returns an error when any field cannot be encoded as an Excel cell.
     fn to_row(&self) -> Result<Vec<CellValue>>;
+}
+
+impl ExcelRow for DynamicRow {
+    fn schema() -> &'static [ExcelColumn] {
+        &[]
+    }
+
+    fn from_row(row: &RowData) -> Result<Self> {
+        Ok(Self(
+            (0..row.dynamic_width())
+                .map(|index| (index, row.dynamic_cell(index)))
+                .collect(),
+        ))
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        let Some(last_index) = self.0.last_key_value().map(|(index, _)| *index) else {
+            return Ok(Vec::new());
+        };
+        let row_length = last_index
+            .checked_add(1)
+            .ok_or_else(|| ExcelError::Format("dynamic column index exceeds usize".to_owned()))?;
+        let mut row = vec![CellValue::Empty; row_length];
+        for (index, value) in &self.0 {
+            row[*index] = match value {
+                DynamicValue::Null => CellValue::Empty,
+                DynamicValue::String(value) => CellValue::String(value.clone()),
+                DynamicValue::ActualData(value) => value.clone(),
+                DynamicValue::ReadCellData(value) => value.data().clone(),
+            };
+        }
+        Ok(row)
+    }
+}
+
+fn actual_cell_value(value: &CellValue) -> CellValue {
+    match value {
+        CellValue::Empty => CellValue::String(String::new()),
+        CellValue::Error(value) => CellValue::String(value.clone()),
+        value => value.clone(),
+    }
 }
 
 /// Read callback context equivalent to Java `AnalysisContext`.

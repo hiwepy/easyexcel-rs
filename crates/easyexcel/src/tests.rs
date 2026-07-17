@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
+use std::sync::{Arc, Mutex};
 
 use chrono::NaiveDate;
 use tempfile::tempdir;
@@ -79,6 +81,9 @@ struct FailingListener;
 
 struct NoopWriteHandler;
 
+#[derive(Clone, Default)]
+struct DynamicListener(Arc<Mutex<Vec<DynamicRow>>>);
+
 impl WriteHandler for NoopWriteHandler {}
 
 impl ReadListener<Value> for Listener {
@@ -102,6 +107,13 @@ impl ReadListener<Value> for FailingListener {
     }
 }
 
+impl ReadListener<DynamicRow> for DynamicListener {
+    fn invoke(&mut self, data: DynamicRow, _context: &AnalysisContext) -> Result<()> {
+        self.0.lock().expect("dynamic listener lock").push(data);
+        Ok(())
+    }
+}
+
 #[test]
 fn sheet_selector_inputs_map_indices_borrowed_and_owned_names() {
     assert_eq!(0_usize.into_sheet_selector(), SheetSelector::Index(0));
@@ -118,6 +130,7 @@ fn sheet_selector_inputs_map_indices_borrowed_and_owned_names() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn factories_and_builder_options_match_java_style_chaining() {
     let read = EasyExcel::read::<Value, _>("input.xlsx", Listener::default())
         .sheet(2_usize)
@@ -125,6 +138,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .head_row_number(3)
         .ignore_empty_row(false)
         .auto_trim(false)
+        .read_default_return(ReadDefaultReturn::ActualData)
         .extra_read(CellExtraType::Comment)
         .extra_read(CellExtraType::Merge)
         .password("read-secret")
@@ -134,6 +148,10 @@ fn factories_and_builder_options_match_java_style_chaining() {
     assert_eq!(read.options.head_row_number, 3);
     assert!(!read.options.ignore_empty_row);
     assert!(!read.options.auto_trim);
+    assert_eq!(
+        read.options.read_default_return,
+        ReadDefaultReturn::ActualData
+    );
     assert!(read.options.extra_read.contains(&CellExtraType::Comment));
     assert!(read.options.extra_read.contains(&CellExtraType::Merge));
     assert_eq!(read.options.password.as_deref(), Some("read-secret"));
@@ -144,6 +162,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .head_row_number(2)
         .ignore_empty_row(false)
         .auto_trim(false)
+        .read_default_return(ReadDefaultReturn::ReadCellData)
         .extra_read(CellExtraType::Hyperlink)
         .password("sync-secret")
         .charset(CsvCharset::new("UTF-16BE"));
@@ -152,6 +171,10 @@ fn factories_and_builder_options_match_java_style_chaining() {
     assert_eq!(sync.options.head_row_number, 2);
     assert!(!sync.options.ignore_empty_row);
     assert!(!sync.options.auto_trim);
+    assert_eq!(
+        sync.options.read_default_return,
+        ReadDefaultReturn::ReadCellData
+    );
     assert!(sync.options.extra_read.contains(&CellExtraType::Hyperlink));
     assert_eq!(sync.options.password.as_deref(), Some("sync-secret"));
     assert_eq!(sync.options.charset.name(), "UTF-16BE");
@@ -222,6 +245,116 @@ fn factories_and_builder_options_match_java_style_chaining() {
     let indexed_sheet = EasyExcel::writer_sheet_index::<Value>(5);
     assert_eq!(indexed_sheet.options().sheet_index, Some(5));
     assert_eq!(indexed_sheet.options().sheet_name, "5");
+
+    let dynamic = EasyExcel::read_dynamic("dynamic.xlsx", DynamicListener::default());
+    assert_eq!(dynamic.path, PathBuf::from("dynamic.xlsx"));
+    assert_eq!(
+        dynamic.options.read_default_return,
+        ReadDefaultReturn::String
+    );
+    let dynamic_sync = EasyExcel::read_dynamic_sync("dynamic-sync.xlsx");
+    assert_eq!(dynamic_sync.path, PathBuf::from("dynamic-sync.xlsx"));
+}
+
+#[test]
+fn facade_reads_and_writes_java_style_dynamic_rows() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("dynamic.xlsx");
+    let source = DynamicRow::new(BTreeMap::from([
+        (0, DynamicValue::String("string19".to_owned())),
+        (1, DynamicValue::ActualData(CellValue::Int(109))),
+        (2, DynamicValue::Null),
+        (3, DynamicValue::String("tail".to_owned())),
+    ]));
+    EasyExcel::write::<DynamicRow>(&path).do_write([source.clone()])?;
+
+    let strings = EasyExcel::read_dynamic_sync(&path)
+        .head_row_number(0)
+        .do_read_sync()?;
+    assert_eq!(
+        strings[0].get(0),
+        Some(&DynamicValue::String("string19".to_owned()))
+    );
+    assert_eq!(
+        strings[0].get(1),
+        Some(&DynamicValue::String("109".to_owned()))
+    );
+    assert_eq!(strings[0].get(2), Some(&DynamicValue::Null));
+
+    let actual = EasyExcel::read_dynamic_sync(&path)
+        .head_row_number(0)
+        .read_default_return(ReadDefaultReturn::ActualData)
+        .do_read_sync()?;
+    let Some(DynamicValue::ActualData(number)) = actual[0].get(1) else {
+        panic!("expected actual numeric cell");
+    };
+    assert_eq!(number.as_text(), "109");
+
+    let listener = DynamicListener::default();
+    let observed = Arc::clone(&listener.0);
+    EasyExcel::read_dynamic(&path, listener)
+        .head_row_number(0)
+        .read_default_return(ReadDefaultReturn::ReadCellData)
+        .do_read()?;
+    let observed = observed.lock().expect("dynamic listener lock");
+    let DynamicValue::ReadCellData(cell) = observed[0].get(3).expect("tail cell") else {
+        panic!("expected read cell data");
+    };
+    assert_eq!(cell.data(), &CellValue::String("tail".to_owned()));
+
+    let csv_without_head = directory.path().join("dynamic-no-head.csv");
+    EasyExcel::write::<DynamicRow>(&csv_without_head)
+        .with_bom(false)
+        .do_write([source.clone()])?;
+    let no_head_rows = EasyExcel::read_dynamic_sync(&csv_without_head)
+        .head_row_number(0)
+        .do_read_sync()?;
+    assert_eq!(
+        no_head_rows[0].get(3),
+        Some(&DynamicValue::String("tail".to_owned()))
+    );
+
+    let csv = directory.path().join("dynamic.csv");
+    EasyExcel::write::<DynamicRow>(&csv)
+        .head([["Text"], ["Number"], ["Empty"], ["Tail"]])
+        .with_bom(false)
+        .do_write([source])?;
+    let csv_rows = EasyExcel::read_dynamic_sync(&csv).do_read_sync()?;
+    assert_eq!(
+        csv_rows[0].get(0),
+        Some(&DynamicValue::String("string19".to_owned()))
+    );
+    assert_eq!(
+        csv_rows[0].get(1),
+        Some(&DynamicValue::String("109".to_owned()))
+    );
+
+    let filter_source = DynamicRow::new(BTreeMap::from([
+        (0, DynamicValue::String("A".to_owned())),
+        (1, DynamicValue::String("B".to_owned())),
+        (2, DynamicValue::String("C".to_owned())),
+    ]));
+    let filtered = directory.path().join("dynamic-filtered.xlsx");
+    EasyExcel::write::<DynamicRow>(&filtered)
+        .include_column_indexes([2, 0])
+        .exclude_column_indexes([2])
+        .order_by_include_column(true)
+        .do_write([filter_source.clone()])?;
+    assert_eq!(
+        EasyExcel::read_dynamic_sync(&filtered)
+            .head_row_number(0)
+            .do_read_sync()?[0]
+            .get(0),
+        Some(&DynamicValue::String("A".to_owned()))
+    );
+
+    EasyExcel::write::<DynamicRow>(directory.path().join("dynamic-ordered.xlsx"))
+        .order_by_include_column(true)
+        .do_write([filter_source.clone()])?;
+    EasyExcel::write::<DynamicRow>(directory.path().join("dynamic-field-filter.xlsx"))
+        .include_column_field_names(["unknown"])
+        .do_write([filter_source])?;
+    Ok(())
 }
 
 #[test]

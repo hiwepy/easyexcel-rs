@@ -9,7 +9,7 @@ use std::sync::Arc;
 use calamine::{Data, DataRef, Range, Reader, Xls, Xlsx, open_workbook};
 use easyexcel_core::{
     AnalysisContext, CellExtra, CellExtraType, CellValue, CsvCharset, ErrorAction, ExcelError,
-    ExcelRow, FormulaData, ReadListener, Result, RowData,
+    ExcelRow, FormulaData, ReadDefaultReturn, ReadListener, Result, RowData,
 };
 use encoding_rs::Encoding;
 use encoding_rs_io::DecodeReaderBytesBuilder;
@@ -43,6 +43,8 @@ pub struct ReadOptions {
     pub ignore_empty_row: bool,
     /// Whether leading and trailing whitespace is removed from string cells.
     pub auto_trim: bool,
+    /// Value mode used by Java-compatible no-model [`easyexcel_core::DynamicRow`] reads.
+    pub read_default_return: ReadDefaultReturn,
     /// Extra worksheet metadata dispatched to `ReadListener::extra`.
     pub extra_read: HashSet<CellExtraType>,
     /// Password used to decrypt an encrypted OOXML workbook.
@@ -58,6 +60,7 @@ impl Default for ReadOptions {
             head_row_number: 1,
             ignore_empty_row: true,
             auto_trim: true,
+            read_default_return: ReadDefaultReturn::default(),
             extra_read: HashSet::new(),
             password: None,
             charset: CsvCharset::default(),
@@ -316,12 +319,14 @@ enum ReadFlow {
 }
 
 trait RowConsumer {
+    #[allow(clippy::too_many_arguments)]
     fn process(
         &mut self,
         sheet_no: usize,
         sheet_name: &str,
         row_index: u32,
         cells: Vec<CellValue>,
+        present_columns: HashSet<usize>,
         options: &ReadOptions,
         headers: &mut Arc<HashMap<String, usize>>,
     ) -> Result<ReadFlow>;
@@ -334,6 +339,7 @@ trait RowConsumer {
         row_index: u32,
         cells: Vec<CellValue>,
         formulas: HashMap<usize, FormulaData>,
+        present_columns: HashSet<usize>,
         options: &ReadOptions,
         headers: &mut Arc<HashMap<String, usize>>,
     ) -> Result<ReadFlow>;
@@ -354,15 +360,17 @@ impl<T: ExcelRow> RowConsumer for TypedRowConsumer<'_, T> {
         sheet_name: &str,
         row_index: u32,
         cells: Vec<CellValue>,
+        present_columns: HashSet<usize>,
         options: &ReadOptions,
         headers: &mut Arc<HashMap<String, usize>>,
     ) -> Result<ReadFlow> {
-        process_row_with_formulas::<T>(
+        process_row_with_metadata::<T>(
             sheet_no,
             sheet_name,
             row_index,
             cells,
             HashMap::new(),
+            present_columns,
             options,
             headers,
             self.listener,
@@ -376,15 +384,17 @@ impl<T: ExcelRow> RowConsumer for TypedRowConsumer<'_, T> {
         row_index: u32,
         cells: Vec<CellValue>,
         formulas: HashMap<usize, FormulaData>,
+        present_columns: HashSet<usize>,
         options: &ReadOptions,
         headers: &mut Arc<HashMap<String, usize>>,
     ) -> Result<ReadFlow> {
-        process_row_with_formulas::<T>(
+        process_row_with_metadata::<T>(
             sheet_no,
             sheet_name,
             row_index,
             cells,
             formulas,
+            present_columns,
             options,
             headers,
             self.listener,
@@ -483,6 +493,7 @@ where
     let mut current_index = None;
     let mut current_cells = Vec::new();
     let mut current_formulas = HashMap::new();
+    let mut current_present_columns = HashSet::new();
     let mut headers = Arc::new(HashMap::new());
     let mut next_row_index = 0;
 
@@ -496,6 +507,7 @@ where
                     current,
                     std::mem::take(&mut current_cells),
                     std::mem::take(&mut current_formulas),
+                    std::mem::take(&mut current_present_columns),
                     options,
                     &mut headers,
                 )? == ReadFlow::Stop
@@ -522,6 +534,7 @@ where
         if current_cells.len() <= column {
             current_cells.resize(column + 1, CellValue::Empty);
         }
+        current_present_columns.insert(column);
         current_cells[column] = from_calamine(&cell.value);
         if let Some(formula) = cell.formula {
             current_formulas.insert(column, FormulaData::new(formula));
@@ -535,6 +548,7 @@ where
             row,
             current_cells,
             current_formulas,
+            current_present_columns,
             options,
             &mut headers,
         )? == ReadFlow::Stop
@@ -585,6 +599,7 @@ fn process_missing_rows(
             sheet_name,
             row_index,
             Vec::new(),
+            HashSet::new(),
             options,
             headers,
         )? == ReadFlow::Stop
@@ -614,11 +629,19 @@ fn read_range(
         final_row = row_index;
         let mut cells = vec![CellValue::Empty; start_column];
         cells.extend(row.iter().map(from_data));
+        let present_columns = row
+            .iter()
+            .enumerate()
+            .filter_map(|(offset, value)| {
+                (!matches!(value, Data::Empty)).then_some(start_column + offset)
+            })
+            .collect();
         if consumer.process(
             sheet_no,
             sheet_name,
             row_index,
             cells,
+            present_columns,
             options,
             &mut headers,
         )? == ReadFlow::Stop
@@ -644,12 +667,14 @@ fn process_row<T>(
 where
     T: ExcelRow,
 {
+    let present_columns = (0..cells.len()).collect();
     process_row_with_formulas(
         sheet_no,
         sheet_name,
         row_index,
         cells,
         HashMap::new(),
+        present_columns,
         options,
         headers,
         listener,
@@ -661,8 +686,37 @@ fn process_row_with_formulas<T>(
     sheet_no: usize,
     sheet_name: &str,
     row_index: u32,
+    cells: Vec<CellValue>,
+    formulas: HashMap<usize, FormulaData>,
+    present_columns: HashSet<usize>,
+    options: &ReadOptions,
+    headers: &mut Arc<HashMap<String, usize>>,
+    listener: &mut dyn ReadListener<T>,
+) -> Result<ReadFlow>
+where
+    T: ExcelRow,
+{
+    process_row_with_metadata(
+        sheet_no,
+        sheet_name,
+        row_index,
+        cells,
+        formulas,
+        present_columns,
+        options,
+        headers,
+        listener,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_row_with_metadata<T>(
+    sheet_no: usize,
+    sheet_name: &str,
+    row_index: u32,
     mut cells: Vec<CellValue>,
     formulas: HashMap<usize, FormulaData>,
+    present_columns: HashSet<usize>,
     options: &ReadOptions,
     headers: &mut Arc<HashMap<String, usize>>,
     listener: &mut dyn ReadListener<T>,
@@ -686,8 +740,10 @@ where
         return Ok(ReadFlow::Continue);
     }
 
-    let row =
-        RowData::new(sheet_name, row_index, cells, Arc::clone(headers)).with_formulas(formulas);
+    let row = RowData::new(sheet_name, row_index, cells, Arc::clone(headers))
+        .with_formulas(formulas)
+        .with_present_columns(present_columns)
+        .with_read_default_return(options.read_default_return);
     match T::from_row(&row) {
         Ok(data) => {
             let result = listener.invoke(data, &context);

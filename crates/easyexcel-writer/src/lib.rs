@@ -861,7 +861,15 @@ where
 {
     let columns = selected_columns(T::schema(), options);
     let mut rows = rows.into_iter().map(|row| row.to_row());
-    write_csv_records(path, output, options, &columns, &mut rows, handlers)
+    write_csv_records(
+        path,
+        output,
+        options,
+        &columns,
+        T::schema().is_empty(),
+        &mut rows,
+        handlers,
+    )
 }
 
 fn write_csv_records(
@@ -869,6 +877,7 @@ fn write_csv_records(
     output: Box<dyn Write>,
     options: &WriteOptions,
     columns: &[(usize, usize, &'static ExcelColumn)],
+    schema_is_empty: bool,
     rows: &mut dyn Iterator<Item = Result<Vec<CellValue>>>,
     handlers: &mut [Box<dyn WriteHandler>],
 ) -> Result<()> {
@@ -880,7 +889,17 @@ fn write_csv_records(
     before_sheet(handlers, &sheet_context)?;
 
     let mut writer = create_csv_record_writer(output, &options.charset, options.with_bom)?;
-    append_csv_records(&mut writer, options, columns, rows, handlers, 0, 0, true)?;
+    append_csv_records(
+        &mut writer,
+        options,
+        columns,
+        schema_is_empty,
+        rows,
+        handlers,
+        0,
+        0,
+        true,
+    )?;
     finish_csv_record_writer(writer)?;
     after_sheet(handlers, &sheet_context)?;
     after_workbook(handlers, &workbook_context)
@@ -891,14 +910,15 @@ fn append_csv_records(
     writer: &mut csv::Writer<CsvEncodingWriter>,
     options: &WriteOptions,
     columns: &[(usize, usize, &'static ExcelColumn)],
+    schema_is_empty: bool,
     rows: &mut dyn Iterator<Item = Result<Vec<CellValue>>>,
     handlers: &mut [Box<dyn WriteHandler>],
     mut row_index: u32,
     mut data_index: usize,
     write_head: bool,
 ) -> Result<WriteProgress> {
-    let head_rows = dynamic_head_rows(options)?;
-    if write_head && options.need_head {
+    let head_rows = head_rows_for_schema_state(schema_is_empty, options)?;
+    if write_head && head_rows > 0 {
         if let Some(head) = &options.dynamic_head {
             if head.len() != columns.len() {
                 return Err(ExcelError::Format(format!(
@@ -931,7 +951,16 @@ fn append_csv_records(
         }
     }
     for cells in rows {
-        let record = csv_data_record(row_index, columns, &cells?, &options.sheet_name, handlers)?;
+        let cells = cells?;
+        let dynamic_columns = dynamic_columns_for_row(schema_is_empty, cells.len(), options);
+        let row_columns = dynamic_columns.as_deref().unwrap_or(columns);
+        let record = csv_data_record(
+            row_index,
+            row_columns,
+            &cells,
+            &options.sheet_name,
+            handlers,
+        )?;
         writer.write_record(record).map_err(format_error)?;
         row_index += 1;
         data_index += 1;
@@ -958,7 +987,15 @@ where
     let columns = selected_columns(T::schema(), options);
     let mut rows = rows.into_iter().map(|row| row.to_row());
     append_csv_records(
-        writer, options, &columns, &mut rows, handlers, row_index, data_index, write_head,
+        writer,
+        options,
+        &columns,
+        T::schema().is_empty(),
+        &mut rows,
+        handlers,
+        row_index,
+        data_index,
+        write_head,
     )
 }
 
@@ -1203,7 +1240,7 @@ fn csv_header_record(
             sheet_name: sheet_name.to_owned(),
             row_index,
             column_index,
-            field: Some(column.field),
+            field: (!column.field.is_empty()).then_some(column.field),
             is_head: true,
             value: CellValue::String(label.clone()),
             skip: false,
@@ -1238,7 +1275,7 @@ fn csv_data_record(
             sheet_name: sheet_name.to_owned(),
             row_index,
             column_index,
-            field: Some(metadata.field),
+            field: (!metadata.field.is_empty()).then_some(metadata.field),
             is_head: false,
             value: cells
                 .get(*schema_index)
@@ -1406,7 +1443,7 @@ where
             )
             .map_err(format_error)?;
     }
-    let head_rows = dynamic_head_rows(options)?;
+    let head_rows = head_rows_for_schema(T::schema(), options)?;
     let freeze_panes = options
         .freeze_panes
         .or_else(|| (options.freeze_head && options.need_head).then_some((head_rows, 0)));
@@ -1456,7 +1493,8 @@ where
         next_data_index: mut data_index,
     } = progress;
     let columns = selected_columns(T::schema(), options);
-    if write_head && options.need_head {
+    let head_rows = head_rows_for_schema(T::schema(), options)?;
+    if write_head && head_rows > 0 {
         if let Some(head) = &options.dynamic_head {
             write_dynamic_headers_with_handlers(
                 worksheet,
@@ -1475,7 +1513,6 @@ where
                 handlers,
             )?;
         }
-        let head_rows = dynamic_head_rows(options)?;
         if let Some(height) = metadata.head_row_height {
             for head_row in row_index..row_index + head_rows {
                 worksheet
@@ -1492,13 +1529,15 @@ where
                 .map_err(format_error)?;
         }
         let cells = row.to_row()?;
+        let dynamic_columns = dynamic_columns_for_row(T::schema().is_empty(), cells.len(), options);
+        let row_columns = dynamic_columns.as_deref().unwrap_or(&columns);
         let style = (!options.content_styles.is_empty())
             .then(|| &options.content_styles[data_index % options.content_styles.len()]);
         apply_loop_merges(worksheet, row_index, data_index, &options.loop_merges)?;
         write_data_row_with_handlers(
             worksheet,
             row_index,
-            &columns,
+            row_columns,
             &cells,
             &options.sheet_name,
             SheetStyleContext::content(style, metadata),
@@ -1628,6 +1667,11 @@ fn selected_columns(
     schema: &'static [ExcelColumn],
     options: &WriteOptions,
 ) -> Vec<(usize, usize, &'static ExcelColumn)> {
+    if schema.is_empty()
+        && let Some(head) = &options.dynamic_head
+    {
+        return selected_dynamic_columns(head.len(), options);
+    }
     let mut columns = ordered_columns(schema)
         .into_iter()
         .filter(|(physical_index, _, column)| {
@@ -1669,6 +1713,67 @@ fn selected_columns(
         }
     }
     columns
+}
+
+const DYNAMIC_COLUMN: ExcelColumn = ExcelColumn::new("", "", None, i32::MAX, None);
+
+#[inline(never)]
+fn selected_dynamic_columns(
+    column_count: usize,
+    options: &WriteOptions,
+) -> Vec<(usize, usize, &'static ExcelColumn)> {
+    let mut columns = Vec::with_capacity(column_count);
+    for index in 0..column_count {
+        let included_by_index = match &options.include_column_indexes {
+            Some(indexes) => indexes.contains(&index),
+            None => false,
+        };
+        let has_includes = options.include_column_indexes.is_some()
+            || options.include_column_field_names.is_some();
+        let excluded = options.exclude_column_indexes.contains(&index);
+        if (!has_includes || included_by_index) && !excluded {
+            columns.push((index, index, &DYNAMIC_COLUMN));
+        }
+    }
+
+    if options.order_by_include_column {
+        if let Some(indexes) = &options.include_column_indexes {
+            let mut ordered = Vec::with_capacity(columns.len());
+            for requested in indexes {
+                for column in &columns {
+                    if column.1 == *requested {
+                        ordered.push(*column);
+                        break;
+                    }
+                }
+            }
+            columns = ordered;
+        }
+        for (output_index, (physical_index, _, _)) in columns.iter_mut().enumerate() {
+            *physical_index = output_index;
+        }
+    }
+    columns
+}
+
+fn dynamic_columns_for_row(
+    schema_is_empty: bool,
+    column_count: usize,
+    options: &WriteOptions,
+) -> Option<Vec<(usize, usize, &'static ExcelColumn)>> {
+    (schema_is_empty && options.dynamic_head.is_none())
+        .then(|| selected_dynamic_columns(column_count, options))
+}
+
+fn head_rows_for_schema(schema: &[ExcelColumn], options: &WriteOptions) -> Result<u32> {
+    head_rows_for_schema_state(schema.is_empty(), options)
+}
+
+fn head_rows_for_schema_state(schema_is_empty: bool, options: &WriteOptions) -> Result<u32> {
+    if schema_is_empty && options.dynamic_head.is_none() {
+        return Ok(0);
+    }
+    dynamic_head_rows(options)
 }
 
 fn dynamic_head_rows(options: &WriteOptions) -> Result<u32> {
@@ -1775,7 +1880,7 @@ fn write_header_row_with_handlers(
             sheet_name: sheet_name.to_owned(),
             row_index,
             column_index,
-            field: Some(column.field),
+            field: (!column.field.is_empty()).then_some(column.field),
             is_head: true,
             value: CellValue::String(label.clone()),
             skip: false,
@@ -1908,7 +2013,7 @@ fn write_data_row_with_handlers(
             sheet_name: sheet_name.to_owned(),
             row_index,
             column_index: column,
-            field: Some(metadata.field),
+            field: (!metadata.field.is_empty()).then_some(metadata.field),
             is_head: false,
             value: value.clone(),
             skip: false,

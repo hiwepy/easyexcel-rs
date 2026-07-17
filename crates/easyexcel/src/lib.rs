@@ -46,6 +46,23 @@ impl EasyExcel {
         }
     }
 
+    /// Starts a Java-compatible no-model event read.
+    pub fn read_dynamic<L>(
+        path: impl Into<PathBuf>,
+        listener: L,
+    ) -> ExcelReaderBuilder<DynamicRow, L>
+    where
+        L: ReadListener<DynamicRow>,
+    {
+        Self::read(path, listener)
+    }
+
+    /// Starts a Java-compatible no-model synchronous read.
+    #[must_use]
+    pub fn read_dynamic_sync(path: impl Into<PathBuf>) -> ExcelSyncReaderBuilder<DynamicRow> {
+        Self::read_sync(path)
+    }
+
     /// Starts a new XLSX or CSV write, selected from the path extension.
     pub fn write<T>(path: impl Into<PathBuf>) -> ExcelWriterBuilder<T>
     where
@@ -177,6 +194,13 @@ where
         self
     }
 
+    /// Selects the Java-compatible no-model return mode.
+    #[must_use]
+    pub const fn read_default_return(mut self, mode: ReadDefaultReturn) -> Self {
+        self.options.read_default_return = mode;
+        self
+    }
+
     /// Enables a Java `extraRead` metadata category.
     #[must_use]
     pub fn extra_read(mut self, extra_type: CellExtraType) -> Self {
@@ -250,6 +274,13 @@ where
     #[must_use]
     pub const fn auto_trim(mut self, enabled: bool) -> Self {
         self.options.auto_trim = enabled;
+        self
+    }
+
+    /// Selects the Java-compatible no-model return mode.
+    #[must_use]
+    pub const fn read_default_return(mut self, mode: ReadDefaultReturn) -> Self {
+        self.options.read_default_return = mode;
         self
     }
 
