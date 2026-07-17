@@ -7,12 +7,17 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 use easyexcel_core::{
-    CellValue, CsvCharset, ExcelColumn, ExcelError, ExcelRow, ExcelWriteMetadata, Result,
-    WriteCellContext, WriteHandler, WriteRowContext, WriteSheetContext, WriteWorkbookContext,
+    CellValue, CsvCharset, ExcelBorderStyle, ExcelCellStyle, ExcelColumn, ExcelError,
+    ExcelFillPattern, ExcelFontScript, ExcelFontStyle, ExcelHorizontalAlignment, ExcelRow,
+    ExcelUnderline, ExcelVerticalAlignment, ExcelWriteMetadata, Result, WriteCellContext,
+    WriteHandler, WriteRowContext, WriteSheetContext, WriteWorkbookContext,
 };
 use encoding_rs::{CoderResult, Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use ms_offcrypto_writer::Ecma376AgileWriter;
-use rust_xlsxwriter::{Format, FormatAlign, FormatPattern, Image, Note, Workbook, Worksheet};
+use rust_xlsxwriter::{
+    Format, FormatAlign, FormatBorder, FormatPattern, FormatScript, FormatUnderline, Image, Note,
+    Workbook, Worksheet,
+};
 
 /// Horizontal cell alignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1301,6 +1306,69 @@ struct WriteProgress {
     next_data_index: usize,
 }
 
+#[derive(Clone, Copy)]
+struct SheetStyleContext<'a> {
+    explicit: Option<&'a CellStyle>,
+    metadata: &'a ExcelWriteMetadata,
+    is_head: bool,
+}
+
+impl<'a> SheetStyleContext<'a> {
+    const fn head(explicit: &'a CellStyle, metadata: &'a ExcelWriteMetadata) -> Self {
+        Self {
+            explicit: Some(explicit),
+            metadata,
+            is_head: true,
+        }
+    }
+
+    const fn content(explicit: Option<&'a CellStyle>, metadata: &'a ExcelWriteMetadata) -> Self {
+        Self {
+            explicit,
+            metadata,
+            is_head: false,
+        }
+    }
+
+    const fn column(self, column: &'a ExcelColumn) -> CellFormatContext<'a> {
+        let (cell, font) = if self.is_head {
+            (
+                match column.head_style {
+                    Some(style) => Some(style),
+                    None => self.metadata.head_style,
+                },
+                match column.head_font_style {
+                    Some(style) => Some(style),
+                    None => self.metadata.head_font_style,
+                },
+            )
+        } else {
+            (
+                match column.content_style {
+                    Some(style) => Some(style),
+                    None => self.metadata.content_style,
+                },
+                match column.content_font_style {
+                    Some(style) => Some(style),
+                    None => self.metadata.content_font_style,
+                },
+            )
+        };
+        CellFormatContext {
+            explicit: self.explicit,
+            cell,
+            font,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct CellFormatContext<'a> {
+    explicit: Option<&'a CellStyle>,
+    cell: Option<ExcelCellStyle>,
+    font: Option<ExcelFontStyle>,
+}
+
 fn write_sheet_to_workbook<T, I>(
     workbook: &mut Workbook,
     options: &WriteOptions,
@@ -1394,7 +1462,7 @@ where
                 &columns,
                 head,
                 &options.sheet_name,
-                &options.head_style,
+                SheetStyleContext::head(&options.head_style, metadata),
                 handlers,
             )?;
         } else {
@@ -1402,7 +1470,7 @@ where
                 worksheet,
                 &columns,
                 &options.sheet_name,
-                &options.head_style,
+                SheetStyleContext::head(&options.head_style, metadata),
                 handlers,
             )?;
         }
@@ -1432,7 +1500,7 @@ where
             &columns,
             &cells,
             &options.sheet_name,
-            style,
+            SheetStyleContext::content(style, metadata),
             handlers,
         )?;
         row_index += 1;
@@ -1627,14 +1695,21 @@ fn write_headers(
     worksheet: &mut Worksheet,
     columns: &[(usize, usize, &'static ExcelColumn)],
 ) -> Result<()> {
-    write_headers_with_handlers(worksheet, columns, "", &CellStyle::default(), &mut [])
+    const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new();
+    write_headers_with_handlers(
+        worksheet,
+        columns,
+        "",
+        SheetStyleContext::head(&CellStyle::new(), &METADATA),
+        &mut [],
+    )
 }
 
 fn write_headers_with_handlers(
     worksheet: &mut Worksheet,
     columns: &[(usize, usize, &'static ExcelColumn)],
     sheet_name: &str,
-    style: &CellStyle,
+    style: SheetStyleContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
 ) -> Result<()> {
     let labels = columns
@@ -1649,7 +1724,7 @@ fn write_dynamic_headers_with_handlers(
     columns: &[(usize, usize, &'static ExcelColumn)],
     head: &[Vec<String>],
     sheet_name: &str,
-    style: &CellStyle,
+    style: SheetStyleContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
 ) -> Result<()> {
     if head.len() != columns.len() {
@@ -1680,10 +1755,9 @@ fn write_header_row_with_handlers(
     columns: &[(usize, usize, &'static ExcelColumn)],
     labels: &[String],
     sheet_name: &str,
-    style: &CellStyle,
+    style: SheetStyleContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
 ) -> Result<()> {
-    let format = cell_format(Some(style));
     let row_context = WriteRowContext {
         sheet_name: sheet_name.to_owned(),
         row_index,
@@ -1693,6 +1767,8 @@ fn write_header_row_with_handlers(
         handler.before_row(&row_context)?;
     }
     for ((physical_index, _, column), label) in columns.iter().zip(labels) {
+        let format_context = style.column(column);
+        let format = cell_format(format_context);
         let column_index = to_column(*physical_index)?;
         let mut context = WriteCellContext {
             sheet_name: sheet_name.to_owned(),
@@ -1719,7 +1795,7 @@ fn write_header_row_with_handlers(
                     context.column_index,
                     column,
                     value,
-                    Some(style),
+                    format_context,
                 )?,
             }
         }
@@ -1737,10 +1813,9 @@ fn merge_dynamic_head_groups(
     worksheet: &mut Worksheet,
     columns: &[(usize, usize, &'static ExcelColumn)],
     head: &[Vec<String>],
-    style: &CellStyle,
+    style: SheetStyleContext<'_>,
 ) -> Result<()> {
     let levels = head.iter().map(Vec::len).max().unwrap_or(0);
-    let format = cell_format(Some(style));
     for level in 0..levels {
         #[allow(clippy::cast_possible_truncation)]
         let row_index = level as u32;
@@ -1755,6 +1830,7 @@ fn merge_dynamic_head_groups(
             }
             let label = head[start].get(level).map_or("", String::as_str);
             if end > start && !label.is_empty() {
+                let format = cell_format(style.column(columns[start].2));
                 worksheet
                     .merge_range(
                         row_index,
@@ -1792,7 +1868,19 @@ fn write_data_row(
     columns: &[(usize, usize, &'static ExcelColumn)],
     cells: &[CellValue],
 ) -> Result<()> {
-    write_data_row_with_handlers(worksheet, row_index, columns, cells, "", None, &mut [])
+    write_data_row_with_handlers(
+        worksheet,
+        row_index,
+        columns,
+        cells,
+        "",
+        SheetStyleContext {
+            explicit: None,
+            metadata: &ExcelWriteMetadata::new(),
+            is_head: false,
+        },
+        &mut [],
+    )
 }
 
 fn write_data_row_with_handlers(
@@ -1801,7 +1889,7 @@ fn write_data_row_with_handlers(
     columns: &[(usize, usize, &'static ExcelColumn)],
     cells: &[CellValue],
     sheet_name: &str,
-    style: Option<&CellStyle>,
+    style: SheetStyleContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
 ) -> Result<()> {
     let row_context = WriteRowContext {
@@ -1828,13 +1916,14 @@ fn write_data_row_with_handlers(
             handler.before_cell(&mut context)?;
         }
         if !context.skip {
+            let format_context = style.column(metadata);
             write_cell(
                 worksheet,
                 row_index,
                 context.column_index,
                 metadata,
                 &context.value,
-                style,
+                format_context,
             )?;
         }
         for handler in handlers.iter_mut() {
@@ -1853,7 +1942,7 @@ fn write_cell(
     column: u16,
     metadata: &ExcelColumn,
     value: &CellValue,
-    style: Option<&CellStyle>,
+    style: CellFormatContext<'_>,
 ) -> Result<()> {
     let format = cell_format(style);
     match value {
@@ -1931,11 +2020,17 @@ fn image_from_buffer(bytes: &[u8]) -> Result<Image> {
     Image::new_from_buffer(bytes).map_err(format_error)
 }
 
-fn cell_format(style: Option<&CellStyle>) -> Format {
-    let Some(style) = style else {
-        return Format::new();
-    };
+fn cell_format(context: CellFormatContext<'_>) -> Format {
     let mut format = Format::new();
+    if let Some(style) = context.cell {
+        format = apply_annotation_cell_style(format, style);
+    }
+    if let Some(font) = context.font {
+        format = apply_annotation_font_style(format, font);
+    }
+    let Some(style) = context.explicit else {
+        return format;
+    };
     if style.bold {
         format = format.set_bold();
     }
@@ -1963,6 +2058,220 @@ fn cell_format(style: Option<&CellStyle>) -> Format {
         format = format.set_num_format(number_format);
     }
     format
+}
+
+fn apply_annotation_cell_style(mut format: Format, style: ExcelCellStyle) -> Format {
+    if let Some(hidden) = style.hidden {
+        format = if hidden {
+            format.set_hidden()
+        } else {
+            format.unset_hidden()
+        };
+    }
+    if let Some(locked) = style.locked {
+        format = if locked {
+            format.set_locked()
+        } else {
+            format.set_unlocked()
+        };
+    }
+    if let Some(quote_prefix) = style.quote_prefix {
+        format = if quote_prefix {
+            format.set_quote_prefix()
+        } else {
+            format.unset_quote_prefix()
+        };
+    }
+    if let Some(alignment) = style.horizontal_alignment {
+        format = format.set_align(annotation_horizontal_format_align(alignment));
+    }
+    if let Some(wrapped) = style.wrapped {
+        format = if wrapped {
+            format.set_text_wrap()
+        } else {
+            format.unset_text_wrap()
+        };
+    }
+    if let Some(alignment) = style.vertical_alignment {
+        format = format.set_align(annotation_vertical_format_align(alignment));
+    }
+    if let Some(rotation) = style.rotation {
+        format = format.set_rotation(rotation);
+    }
+    if let Some(indent) = style.indent {
+        format = format.set_indent(indent);
+    }
+    if let Some(border) = style.border_left {
+        format = format.set_border_left(annotation_border_style(border));
+    }
+    if let Some(border) = style.border_right {
+        format = format.set_border_right(annotation_border_style(border));
+    }
+    if let Some(border) = style.border_top {
+        format = format.set_border_top(annotation_border_style(border));
+    }
+    if let Some(border) = style.border_bottom {
+        format = format.set_border_bottom(annotation_border_style(border));
+    }
+    if let Some(color) = style.left_border_color {
+        format = format.set_border_left_color(color);
+    }
+    if let Some(color) = style.right_border_color {
+        format = format.set_border_right_color(color);
+    }
+    if let Some(color) = style.top_border_color {
+        format = format.set_border_top_color(color);
+    }
+    if let Some(color) = style.bottom_border_color {
+        format = format.set_border_bottom_color(color);
+    }
+    if let Some(pattern) = style.fill_pattern {
+        format = format.set_pattern(annotation_fill_pattern(pattern));
+    }
+    if let Some(color) = style.fill_background_color {
+        format = format.set_background_color(color);
+    }
+    if let Some(color) = style.fill_foreground_color {
+        format = format.set_foreground_color(color);
+    }
+    if let Some(shrink) = style.shrink_to_fit {
+        format = if shrink {
+            format.set_shrink()
+        } else {
+            format.unset_shrink()
+        };
+    }
+    if let Some(data_format) = style.data_format {
+        format = format.set_num_format(data_format);
+    }
+    format
+}
+
+fn apply_annotation_font_style(mut format: Format, style: ExcelFontStyle) -> Format {
+    if let Some(font_name) = style.font_name {
+        format = format.set_font_name(font_name);
+    }
+    if let Some(font_height) = style.font_height_in_points {
+        format = format.set_font_size(font_height);
+    }
+    if let Some(italic) = style.italic {
+        format = if italic {
+            format.set_italic()
+        } else {
+            format.unset_italic()
+        };
+    }
+    if let Some(strikeout) = style.strikeout {
+        format = if strikeout {
+            format.set_font_strikethrough()
+        } else {
+            format.unset_font_strikethrough()
+        };
+    }
+    if let Some(color) = style.color {
+        format = format.set_font_color(color);
+    }
+    if let Some(script) = style.type_offset {
+        format = format.set_font_script(annotation_font_script(script));
+    }
+    if let Some(underline) = style.underline {
+        format = format.set_underline(annotation_underline(underline));
+    }
+    if let Some(charset) = style.charset {
+        format = format.set_font_charset(charset);
+    }
+    if let Some(bold) = style.bold {
+        format = if bold {
+            format.set_bold()
+        } else {
+            format.unset_bold()
+        };
+    }
+    format
+}
+
+const fn annotation_horizontal_format_align(alignment: ExcelHorizontalAlignment) -> FormatAlign {
+    match alignment {
+        ExcelHorizontalAlignment::General => FormatAlign::General,
+        ExcelHorizontalAlignment::Left => FormatAlign::Left,
+        ExcelHorizontalAlignment::Center => FormatAlign::Center,
+        ExcelHorizontalAlignment::Right => FormatAlign::Right,
+        ExcelHorizontalAlignment::Fill => FormatAlign::Fill,
+        ExcelHorizontalAlignment::Justify => FormatAlign::Justify,
+        ExcelHorizontalAlignment::CenterAcross => FormatAlign::CenterAcross,
+        ExcelHorizontalAlignment::Distributed => FormatAlign::Distributed,
+    }
+}
+
+const fn annotation_vertical_format_align(alignment: ExcelVerticalAlignment) -> FormatAlign {
+    match alignment {
+        ExcelVerticalAlignment::Top => FormatAlign::Top,
+        ExcelVerticalAlignment::Center => FormatAlign::VerticalCenter,
+        ExcelVerticalAlignment::Bottom => FormatAlign::Bottom,
+        ExcelVerticalAlignment::Justify => FormatAlign::VerticalJustify,
+        ExcelVerticalAlignment::Distributed => FormatAlign::VerticalDistributed,
+    }
+}
+
+const fn annotation_border_style(border: ExcelBorderStyle) -> FormatBorder {
+    match border {
+        ExcelBorderStyle::None => FormatBorder::None,
+        ExcelBorderStyle::Thin => FormatBorder::Thin,
+        ExcelBorderStyle::Medium => FormatBorder::Medium,
+        ExcelBorderStyle::Dashed => FormatBorder::Dashed,
+        ExcelBorderStyle::Dotted => FormatBorder::Dotted,
+        ExcelBorderStyle::Thick => FormatBorder::Thick,
+        ExcelBorderStyle::Double => FormatBorder::Double,
+        ExcelBorderStyle::Hair => FormatBorder::Hair,
+        ExcelBorderStyle::MediumDashed => FormatBorder::MediumDashed,
+        ExcelBorderStyle::DashDot => FormatBorder::DashDot,
+        ExcelBorderStyle::MediumDashDot => FormatBorder::MediumDashDot,
+        ExcelBorderStyle::DashDotDot => FormatBorder::DashDotDot,
+        ExcelBorderStyle::MediumDashDotDot => FormatBorder::MediumDashDotDot,
+        ExcelBorderStyle::SlantDashDot => FormatBorder::SlantDashDot,
+    }
+}
+
+const fn annotation_fill_pattern(pattern: ExcelFillPattern) -> FormatPattern {
+    match pattern {
+        ExcelFillPattern::None => FormatPattern::None,
+        ExcelFillPattern::Solid => FormatPattern::Solid,
+        ExcelFillPattern::MediumGray => FormatPattern::MediumGray,
+        ExcelFillPattern::DarkGray => FormatPattern::DarkGray,
+        ExcelFillPattern::LightGray => FormatPattern::LightGray,
+        ExcelFillPattern::DarkHorizontal => FormatPattern::DarkHorizontal,
+        ExcelFillPattern::DarkVertical => FormatPattern::DarkVertical,
+        ExcelFillPattern::DarkDown => FormatPattern::DarkDown,
+        ExcelFillPattern::DarkUp => FormatPattern::DarkUp,
+        ExcelFillPattern::DarkGrid => FormatPattern::DarkGrid,
+        ExcelFillPattern::DarkTrellis => FormatPattern::DarkTrellis,
+        ExcelFillPattern::LightHorizontal => FormatPattern::LightHorizontal,
+        ExcelFillPattern::LightVertical => FormatPattern::LightVertical,
+        ExcelFillPattern::LightDown => FormatPattern::LightDown,
+        ExcelFillPattern::LightUp => FormatPattern::LightUp,
+        ExcelFillPattern::LightGrid => FormatPattern::LightGrid,
+        ExcelFillPattern::LightTrellis => FormatPattern::LightTrellis,
+        ExcelFillPattern::Gray125 => FormatPattern::Gray125,
+        ExcelFillPattern::Gray0625 => FormatPattern::Gray0625,
+    }
+}
+
+const fn annotation_underline(underline: ExcelUnderline) -> FormatUnderline {
+    match underline {
+        ExcelUnderline::None => FormatUnderline::None,
+        ExcelUnderline::Single => FormatUnderline::Single,
+        ExcelUnderline::Double => FormatUnderline::Double,
+        ExcelUnderline::SingleAccounting => FormatUnderline::SingleAccounting,
+        ExcelUnderline::DoubleAccounting => FormatUnderline::DoubleAccounting,
+    }
+}
+
+const fn annotation_font_script(script: ExcelFontScript) -> FormatScript {
+    match script {
+        ExcelFontScript::None => FormatScript::None,
+        ExcelFontScript::Superscript => FormatScript::Superscript,
+        ExcelFontScript::Subscript => FormatScript::Subscript,
+    }
 }
 
 const fn horizontal_format_align(alignment: HorizontalAlignment) -> FormatAlign {

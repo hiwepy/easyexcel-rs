@@ -71,6 +71,30 @@ struct AnnotatedDimensions {
     age: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
+#[excel(
+    head_style(
+        horizontal_alignment = "center",
+        fill_pattern = "solid",
+        fill_foreground_color = 0x00ff_0000,
+        border_bottom = "thin"
+    ),
+    content_style(wrapped = true),
+    head_font_style(font_name = "Arial", font_height_in_points = 14, bold = true),
+    content_font_style(italic = true)
+)]
+struct AnnotatedStyles {
+    #[excel(
+        name = "姓名",
+        index = 0,
+        head_style(fill_pattern = "solid", fill_foreground_color = 0x0000_00ff),
+        head_font_style(font_height_in_points = 20)
+    )]
+    name: String,
+    #[excel(name = "年龄", index = 1)]
+    age: u32,
+}
+
 struct EveryPublicCell;
 
 impl ExcelRow for EveryPublicCell {
@@ -263,6 +287,26 @@ fn derive_exposes_java_style_dimension_annotations() -> Result<()> {
             name: "Alice".to_owned(),
             age: 30,
         }])?;
+    Ok(())
+}
+
+#[test]
+fn derive_writes_java_style_cell_and_font_annotations() -> Result<()> {
+    let metadata = AnnotatedStyles::write_metadata();
+    assert!(metadata.head_style.is_some());
+    assert!(metadata.content_style.is_some());
+    assert!(metadata.head_font_style.is_some());
+    assert!(metadata.content_font_style.is_some());
+    assert!(AnnotatedStyles::schema()[0].head_style.is_some());
+    assert!(AnnotatedStyles::schema()[0].head_font_style.is_some());
+
+    let directory = tempdir()?;
+    EasyExcel::write::<AnnotatedStyles>(directory.path().join("annotated-styles.xlsx")).do_write(
+        [AnnotatedStyles {
+            name: "Alice".to_owned(),
+            age: 30,
+        }],
+    )?;
     Ok(())
 }
 

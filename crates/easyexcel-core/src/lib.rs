@@ -121,8 +121,264 @@ impl CellValue {
     }
 }
 
-/// Static metadata for one Rust struct field and Excel column.
+/// Horizontal alignment used by annotation-driven cell styles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcelHorizontalAlignment {
+    /// Excel's type-dependent default.
+    General,
+    /// Left aligned.
+    Left,
+    /// Centered.
+    Center,
+    /// Right aligned.
+    Right,
+    /// Repeats content across the cell.
+    Fill,
+    /// Justified.
+    Justify,
+    /// Centered across adjacent cells.
+    CenterAcross,
+    /// Distributed across the cell.
+    Distributed,
+}
+
+/// Vertical alignment used by annotation-driven cell styles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcelVerticalAlignment {
+    /// Top aligned.
+    Top,
+    /// Vertically centered.
+    Center,
+    /// Bottom aligned.
+    Bottom,
+    /// Vertically justified.
+    Justify,
+    /// Vertically distributed.
+    Distributed,
+}
+
+/// Border line style used by annotation-driven cell styles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcelBorderStyle {
+    /// No border.
+    None,
+    /// Thin solid line.
+    Thin,
+    /// Medium solid line.
+    Medium,
+    /// Dashed line.
+    Dashed,
+    /// Dotted line.
+    Dotted,
+    /// Thick solid line.
+    Thick,
+    /// Double line.
+    Double,
+    /// Hairline border.
+    Hair,
+    /// Medium dashed line.
+    MediumDashed,
+    /// Dash-dot line.
+    DashDot,
+    /// Medium dash-dot line.
+    MediumDashDot,
+    /// Dash-dot-dot line.
+    DashDotDot,
+    /// Medium dash-dot-dot line.
+    MediumDashDotDot,
+    /// Slanted dash-dot line.
+    SlantDashDot,
+}
+
+/// Fill pattern used by annotation-driven cell styles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcelFillPattern {
+    /// No fill.
+    None,
+    /// Solid foreground fill.
+    Solid,
+    /// 50% gray pattern.
+    MediumGray,
+    /// 75% gray pattern.
+    DarkGray,
+    /// 25% gray pattern.
+    LightGray,
+    /// Dark horizontal stripes.
+    DarkHorizontal,
+    /// Dark vertical stripes.
+    DarkVertical,
+    /// Dark downward diagonal stripes.
+    DarkDown,
+    /// Dark upward diagonal stripes.
+    DarkUp,
+    /// Dark grid.
+    DarkGrid,
+    /// Dark trellis.
+    DarkTrellis,
+    /// Light horizontal stripes.
+    LightHorizontal,
+    /// Light vertical stripes.
+    LightVertical,
+    /// Light downward diagonal stripes.
+    LightDown,
+    /// Light upward diagonal stripes.
+    LightUp,
+    /// Light grid.
+    LightGrid,
+    /// Light trellis.
+    LightTrellis,
+    /// 12.5% gray pattern.
+    Gray125,
+    /// 6.25% gray pattern.
+    Gray0625,
+}
+
+/// Font underline style used by annotation-driven font styles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcelUnderline {
+    /// No underline.
+    None,
+    /// Single underline.
+    Single,
+    /// Double underline.
+    Double,
+    /// Single accounting underline.
+    SingleAccounting,
+    /// Double accounting underline.
+    DoubleAccounting,
+}
+
+/// Font script position used by annotation-driven font styles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExcelFontScript {
+    /// Normal baseline text.
+    None,
+    /// Superscript text.
+    Superscript,
+    /// Subscript text.
+    Subscript,
+}
+
+/// Cell-style properties generated from `HeadStyle` or `ContentStyle` equivalents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ExcelCellStyle {
+    /// Whether the cell is hidden when the sheet is protected.
+    pub hidden: Option<bool>,
+    /// Whether the cell is locked when the sheet is protected.
+    pub locked: Option<bool>,
+    /// Whether Excel treats the value as explicitly quoted text.
+    pub quote_prefix: Option<bool>,
+    /// Horizontal alignment.
+    pub horizontal_alignment: Option<ExcelHorizontalAlignment>,
+    /// Whether text wraps within the cell.
+    pub wrapped: Option<bool>,
+    /// Vertical alignment.
+    pub vertical_alignment: Option<ExcelVerticalAlignment>,
+    /// Text rotation in degrees.
+    pub rotation: Option<i16>,
+    /// Text indentation level.
+    pub indent: Option<u8>,
+    /// Left border style.
+    pub border_left: Option<ExcelBorderStyle>,
+    /// Right border style.
+    pub border_right: Option<ExcelBorderStyle>,
+    /// Top border style.
+    pub border_top: Option<ExcelBorderStyle>,
+    /// Bottom border style.
+    pub border_bottom: Option<ExcelBorderStyle>,
+    /// Left border RGB color.
+    pub left_border_color: Option<u32>,
+    /// Right border RGB color.
+    pub right_border_color: Option<u32>,
+    /// Top border RGB color.
+    pub top_border_color: Option<u32>,
+    /// Bottom border RGB color.
+    pub bottom_border_color: Option<u32>,
+    /// Fill pattern.
+    pub fill_pattern: Option<ExcelFillPattern>,
+    /// Fill background RGB color.
+    pub fill_background_color: Option<u32>,
+    /// Fill foreground RGB color.
+    pub fill_foreground_color: Option<u32>,
+    /// Whether text shrinks to fit the cell.
+    pub shrink_to_fit: Option<bool>,
+    /// Custom Excel number format string.
+    pub data_format: Option<&'static str>,
+}
+
+impl ExcelCellStyle {
+    /// Creates an annotation style with every property unspecified.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            hidden: None,
+            locked: None,
+            quote_prefix: None,
+            horizontal_alignment: None,
+            wrapped: None,
+            vertical_alignment: None,
+            rotation: None,
+            indent: None,
+            border_left: None,
+            border_right: None,
+            border_top: None,
+            border_bottom: None,
+            left_border_color: None,
+            right_border_color: None,
+            top_border_color: None,
+            bottom_border_color: None,
+            fill_pattern: None,
+            fill_background_color: None,
+            fill_foreground_color: None,
+            shrink_to_fit: None,
+            data_format: None,
+        }
+    }
+}
+
+/// Font properties generated from `HeadFontStyle` or `ContentFontStyle` equivalents.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ExcelFontStyle {
+    /// Font family name.
+    pub font_name: Option<&'static str>,
+    /// Font size in points.
+    pub font_height_in_points: Option<f64>,
+    /// Italic rendering.
+    pub italic: Option<bool>,
+    /// Strike-through rendering.
+    pub strikeout: Option<bool>,
+    /// Font RGB color.
+    pub color: Option<u32>,
+    /// Superscript or subscript positioning.
+    pub type_offset: Option<ExcelFontScript>,
+    /// Underline rendering.
+    pub underline: Option<ExcelUnderline>,
+    /// Font character set.
+    pub charset: Option<u8>,
+    /// Bold rendering.
+    pub bold: Option<bool>,
+}
+
+impl ExcelFontStyle {
+    /// Creates an annotation font style with every property unspecified.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            font_name: None,
+            font_height_in_points: None,
+            italic: None,
+            strikeout: None,
+            color: None,
+            type_offset: None,
+            underline: None,
+            charset: None,
+            bold: None,
+        }
+    }
+}
+
+/// Static metadata for one Rust struct field and Excel column.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ExcelColumn {
     /// Rust field name.
     pub field: &'static str,
@@ -136,6 +392,14 @@ pub struct ExcelColumn {
     pub format: Option<&'static str>,
     /// Optional annotation-driven column width in Excel character units.
     pub column_width: Option<u16>,
+    /// Field-level header cell style.
+    pub head_style: Option<ExcelCellStyle>,
+    /// Field-level content cell style.
+    pub content_style: Option<ExcelCellStyle>,
+    /// Field-level header font style.
+    pub head_font_style: Option<ExcelFontStyle>,
+    /// Field-level content font style.
+    pub content_font_style: Option<ExcelFontStyle>,
 }
 
 impl ExcelColumn {
@@ -155,6 +419,10 @@ impl ExcelColumn {
             order,
             format,
             column_width: None,
+            head_style: None,
+            content_style: None,
+            head_font_style: None,
+            content_font_style: None,
         }
     }
 
@@ -164,10 +432,38 @@ impl ExcelColumn {
         self.column_width = Some(width);
         self
     }
+
+    /// Adds a field-level header cell style.
+    #[must_use]
+    pub const fn with_head_style(mut self, style: ExcelCellStyle) -> Self {
+        self.head_style = Some(style);
+        self
+    }
+
+    /// Adds a field-level content cell style.
+    #[must_use]
+    pub const fn with_content_style(mut self, style: ExcelCellStyle) -> Self {
+        self.content_style = Some(style);
+        self
+    }
+
+    /// Adds a field-level header font style.
+    #[must_use]
+    pub const fn with_head_font_style(mut self, style: ExcelFontStyle) -> Self {
+        self.head_font_style = Some(style);
+        self
+    }
+
+    /// Adds a field-level content font style.
+    #[must_use]
+    pub const fn with_content_font_style(mut self, style: ExcelFontStyle) -> Self {
+        self.content_font_style = Some(style);
+        self
+    }
 }
 
 /// Type-level dimensions derived from Java-style write annotations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ExcelWriteMetadata {
     /// Default width for columns without a field-level override.
     pub column_width: Option<u16>,
@@ -175,6 +471,14 @@ pub struct ExcelWriteMetadata {
     pub head_row_height: Option<u16>,
     /// Height for every generated content row.
     pub content_row_height: Option<u16>,
+    /// Type-level header cell style.
+    pub head_style: Option<ExcelCellStyle>,
+    /// Type-level content cell style.
+    pub content_style: Option<ExcelCellStyle>,
+    /// Type-level header font style.
+    pub head_font_style: Option<ExcelFontStyle>,
+    /// Type-level content font style.
+    pub content_font_style: Option<ExcelFontStyle>,
 }
 
 impl ExcelWriteMetadata {
@@ -185,6 +489,10 @@ impl ExcelWriteMetadata {
             column_width: None,
             head_row_height: None,
             content_row_height: None,
+            head_style: None,
+            content_style: None,
+            head_font_style: None,
+            content_font_style: None,
         }
     }
 
@@ -206,6 +514,34 @@ impl ExcelWriteMetadata {
     #[must_use]
     pub const fn content_row_height(mut self, height: u16) -> Self {
         self.content_row_height = Some(height);
+        self
+    }
+
+    /// Adds a type-level header cell style.
+    #[must_use]
+    pub const fn head_style(mut self, style: ExcelCellStyle) -> Self {
+        self.head_style = Some(style);
+        self
+    }
+
+    /// Adds a type-level content cell style.
+    #[must_use]
+    pub const fn content_style(mut self, style: ExcelCellStyle) -> Self {
+        self.content_style = Some(style);
+        self
+    }
+
+    /// Adds a type-level header font style.
+    #[must_use]
+    pub const fn head_font_style(mut self, style: ExcelFontStyle) -> Self {
+        self.head_font_style = Some(style);
+        self
+    }
+
+    /// Adds a type-level content font style.
+    #[must_use]
+    pub const fn content_font_style(mut self, style: ExcelFontStyle) -> Self {
+        self.content_font_style = Some(style);
         self
     }
 }

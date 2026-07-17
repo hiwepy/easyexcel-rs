@@ -53,6 +53,49 @@ EasyExcel::write::<User>("users.xlsx")
 # }
 ```
 
+Java's `@HeadStyle`, `@ContentStyle`, `@HeadFontStyle`, and
+`@ContentFontStyle` map to nested derive attributes. Field annotations replace
+the corresponding type-level annotation independently, so a field can override
+only its head font while inheriting the type-level head cell style. Explicit
+builder styles run last:
+
+```rust,no_run
+use easyexcel::{EasyExcel, ExcelRow};
+
+#[derive(ExcelRow)]
+#[excel(
+    head_style(
+        horizontal_alignment = "center",
+        fill_pattern = "solid",
+        fill_foreground_color = 0x00D9_EAF7,
+        border_bottom = "thin"
+    ),
+    head_font_style(font_name = "Arial", font_height_in_points = 12, bold = true),
+    content_style(vertical_alignment = "center", wrapped = true),
+    content_font_style(color = 0x0033_3333)
+)]
+struct StyledUser {
+    #[excel(
+        name = "姓名",
+        head_style(fill_foreground_color = 0x00FF_E699),
+        head_font_style(bold = false)
+    )]
+    name: String,
+    #[excel(name = "年龄")]
+    age: u32,
+}
+
+# fn run(users: Vec<StyledUser>) -> easyexcel::Result<()> {
+EasyExcel::write::<StyledUser>("styled-users.xlsx")
+    .do_write(users)?;
+# Ok(())
+# }
+```
+
+Annotation colors use `0x00RRGGBB` RGB values. This is the Rust backend-neutral
+representation; Java EasyExcel's indexed-color `short` values are not accepted
+as equivalent numeric inputs.
+
 The same read and write builders automatically select the CSV engine for a
 `.csv` path. Typed mapping, listeners, column filters, and write handlers keep
 the same lifecycle. Like Java EasyExcel, CSV output includes a BOM by default

@@ -88,15 +88,43 @@ fn row_data_resolves_index_before_header_name() {
     assert_eq!(explicit.column_width, Some(24));
     assert_eq!(named.column_width, None);
     assert_eq!(ExcelWriteMetadata::default(), ExcelWriteMetadata::new());
+    let cell_style = ExcelCellStyle {
+        horizontal_alignment: Some(ExcelHorizontalAlignment::Center),
+        fill_pattern: Some(ExcelFillPattern::Solid),
+        fill_foreground_color: Some(0x00ff_0000),
+        ..ExcelCellStyle::new()
+    };
+    let font_style = ExcelFontStyle {
+        font_name: Some("Arial"),
+        bold: Some(true),
+        ..ExcelFontStyle::new()
+    };
+    let styled = ExcelColumn::new("styled", "Styled", None, 0, None)
+        .with_head_style(cell_style)
+        .with_content_style(cell_style)
+        .with_head_font_style(font_style)
+        .with_content_font_style(font_style);
+    assert_eq!(styled.head_style, Some(cell_style));
+    assert_eq!(styled.content_style, Some(cell_style));
+    assert_eq!(styled.head_font_style, Some(font_style));
+    assert_eq!(styled.content_font_style, Some(font_style));
     assert_eq!(
         ExcelWriteMetadata::new()
             .column_width(18)
             .head_row_height(20)
-            .content_row_height(16),
+            .content_row_height(16)
+            .head_style(cell_style)
+            .content_style(cell_style)
+            .head_font_style(font_style)
+            .content_font_style(font_style),
         ExcelWriteMetadata {
             column_width: Some(18),
             head_row_height: Some(20),
             content_row_height: Some(16),
+            head_style: Some(cell_style),
+            content_style: Some(cell_style),
+            head_font_style: Some(font_style),
+            content_font_style: Some(font_style),
         }
     );
 }

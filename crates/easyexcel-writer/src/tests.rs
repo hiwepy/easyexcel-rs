@@ -222,6 +222,82 @@ struct SparseRow;
 
 struct DimensionRow;
 
+struct StyledAnnotationRow;
+
+impl ExcelRow for StyledAnnotationRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const FIELD_HEAD_STYLE: ExcelCellStyle = ExcelCellStyle {
+            fill_pattern: Some(ExcelFillPattern::Solid),
+            fill_foreground_color: Some(0x0000_00ff),
+            horizontal_alignment: Some(ExcelHorizontalAlignment::Left),
+            ..ExcelCellStyle::new()
+        };
+        const FIELD_HEAD_FONT: ExcelFontStyle = ExcelFontStyle {
+            font_height_in_points: Some(20.0),
+            ..ExcelFontStyle::new()
+        };
+        const FIELD_CONTENT_STYLE: ExcelCellStyle = ExcelCellStyle {
+            border_bottom: Some(ExcelBorderStyle::Double),
+            ..ExcelCellStyle::new()
+        };
+        const FIELD_CONTENT_FONT: ExcelFontStyle = ExcelFontStyle {
+            italic: Some(false),
+            bold: Some(true),
+            ..ExcelFontStyle::new()
+        };
+        const COLUMNS: &[ExcelColumn] = &[
+            ExcelColumn::new("field", "Field", Some(0), 0, None)
+                .with_head_style(FIELD_HEAD_STYLE)
+                .with_head_font_style(FIELD_HEAD_FONT)
+                .with_content_style(FIELD_CONTENT_STYLE)
+                .with_content_font_style(FIELD_CONTENT_FONT),
+            ExcelColumn::new("type", "Type", Some(1), 0, None),
+        ];
+        COLUMNS
+    }
+
+    fn write_metadata() -> &'static ExcelWriteMetadata {
+        const HEAD_STYLE: ExcelCellStyle = ExcelCellStyle {
+            fill_pattern: Some(ExcelFillPattern::Solid),
+            fill_foreground_color: Some(0x00ff_0000),
+            horizontal_alignment: Some(ExcelHorizontalAlignment::Center),
+            ..ExcelCellStyle::new()
+        };
+        const CONTENT_STYLE: ExcelCellStyle = ExcelCellStyle {
+            border_bottom: Some(ExcelBorderStyle::Thin),
+            fill_pattern: Some(ExcelFillPattern::Solid),
+            fill_foreground_color: Some(0x00ff_ff00),
+            ..ExcelCellStyle::new()
+        };
+        const HEAD_FONT: ExcelFontStyle = ExcelFontStyle {
+            bold: Some(false),
+            color: Some(0x00ff_0000),
+            ..ExcelFontStyle::new()
+        };
+        const CONTENT_FONT: ExcelFontStyle = ExcelFontStyle {
+            italic: Some(true),
+            ..ExcelFontStyle::new()
+        };
+        const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new()
+            .head_style(HEAD_STYLE)
+            .content_style(CONTENT_STYLE)
+            .head_font_style(HEAD_FONT)
+            .content_font_style(CONTENT_FONT);
+        &METADATA
+    }
+
+    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+        Ok(Self)
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![
+            CellValue::String("field".to_owned()),
+            CellValue::String("type".to_owned()),
+        ])
+    }
+}
+
 impl ExcelRow for DimensionRow {
     fn schema() -> &'static [ExcelColumn] {
         const COLUMNS: &[ExcelColumn] = &[
@@ -603,6 +679,7 @@ fn default_options_and_helpers_are_deterministic() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn style_model_maps_every_alignment_and_cycles_content_rows() -> Result<()> {
     for (alignment, expected) in [
         (HorizontalAlignment::General, FormatAlign::General),
@@ -627,6 +704,174 @@ fn style_model_maps_every_alignment_and_cycles_content_rows() -> Result<()> {
     ] {
         assert_eq!(vertical_format_align(alignment), expected);
     }
+    for (alignment, expected) in [
+        (ExcelHorizontalAlignment::General, FormatAlign::General),
+        (ExcelHorizontalAlignment::Left, FormatAlign::Left),
+        (ExcelHorizontalAlignment::Center, FormatAlign::Center),
+        (ExcelHorizontalAlignment::Right, FormatAlign::Right),
+        (ExcelHorizontalAlignment::Fill, FormatAlign::Fill),
+        (ExcelHorizontalAlignment::Justify, FormatAlign::Justify),
+        (
+            ExcelHorizontalAlignment::CenterAcross,
+            FormatAlign::CenterAcross,
+        ),
+        (
+            ExcelHorizontalAlignment::Distributed,
+            FormatAlign::Distributed,
+        ),
+    ] {
+        assert_eq!(annotation_horizontal_format_align(alignment), expected);
+    }
+    for (alignment, expected) in [
+        (ExcelVerticalAlignment::Top, FormatAlign::Top),
+        (ExcelVerticalAlignment::Center, FormatAlign::VerticalCenter),
+        (ExcelVerticalAlignment::Bottom, FormatAlign::Bottom),
+        (
+            ExcelVerticalAlignment::Justify,
+            FormatAlign::VerticalJustify,
+        ),
+        (
+            ExcelVerticalAlignment::Distributed,
+            FormatAlign::VerticalDistributed,
+        ),
+    ] {
+        assert_eq!(annotation_vertical_format_align(alignment), expected);
+    }
+    for (border, expected) in [
+        (ExcelBorderStyle::None, FormatBorder::None),
+        (ExcelBorderStyle::Thin, FormatBorder::Thin),
+        (ExcelBorderStyle::Medium, FormatBorder::Medium),
+        (ExcelBorderStyle::Dashed, FormatBorder::Dashed),
+        (ExcelBorderStyle::Dotted, FormatBorder::Dotted),
+        (ExcelBorderStyle::Thick, FormatBorder::Thick),
+        (ExcelBorderStyle::Double, FormatBorder::Double),
+        (ExcelBorderStyle::Hair, FormatBorder::Hair),
+        (ExcelBorderStyle::MediumDashed, FormatBorder::MediumDashed),
+        (ExcelBorderStyle::DashDot, FormatBorder::DashDot),
+        (ExcelBorderStyle::MediumDashDot, FormatBorder::MediumDashDot),
+        (ExcelBorderStyle::DashDotDot, FormatBorder::DashDotDot),
+        (
+            ExcelBorderStyle::MediumDashDotDot,
+            FormatBorder::MediumDashDotDot,
+        ),
+        (ExcelBorderStyle::SlantDashDot, FormatBorder::SlantDashDot),
+    ] {
+        assert_eq!(annotation_border_style(border), expected);
+    }
+    for (pattern, expected) in [
+        (ExcelFillPattern::None, FormatPattern::None),
+        (ExcelFillPattern::Solid, FormatPattern::Solid),
+        (ExcelFillPattern::MediumGray, FormatPattern::MediumGray),
+        (ExcelFillPattern::DarkGray, FormatPattern::DarkGray),
+        (ExcelFillPattern::LightGray, FormatPattern::LightGray),
+        (
+            ExcelFillPattern::DarkHorizontal,
+            FormatPattern::DarkHorizontal,
+        ),
+        (ExcelFillPattern::DarkVertical, FormatPattern::DarkVertical),
+        (ExcelFillPattern::DarkDown, FormatPattern::DarkDown),
+        (ExcelFillPattern::DarkUp, FormatPattern::DarkUp),
+        (ExcelFillPattern::DarkGrid, FormatPattern::DarkGrid),
+        (ExcelFillPattern::DarkTrellis, FormatPattern::DarkTrellis),
+        (
+            ExcelFillPattern::LightHorizontal,
+            FormatPattern::LightHorizontal,
+        ),
+        (
+            ExcelFillPattern::LightVertical,
+            FormatPattern::LightVertical,
+        ),
+        (ExcelFillPattern::LightDown, FormatPattern::LightDown),
+        (ExcelFillPattern::LightUp, FormatPattern::LightUp),
+        (ExcelFillPattern::LightGrid, FormatPattern::LightGrid),
+        (ExcelFillPattern::LightTrellis, FormatPattern::LightTrellis),
+        (ExcelFillPattern::Gray125, FormatPattern::Gray125),
+        (ExcelFillPattern::Gray0625, FormatPattern::Gray0625),
+    ] {
+        assert_eq!(annotation_fill_pattern(pattern), expected);
+    }
+    for (underline, expected) in [
+        (ExcelUnderline::None, FormatUnderline::None),
+        (ExcelUnderline::Single, FormatUnderline::Single),
+        (ExcelUnderline::Double, FormatUnderline::Double),
+        (
+            ExcelUnderline::SingleAccounting,
+            FormatUnderline::SingleAccounting,
+        ),
+        (
+            ExcelUnderline::DoubleAccounting,
+            FormatUnderline::DoubleAccounting,
+        ),
+    ] {
+        assert_eq!(annotation_underline(underline), expected);
+    }
+    for (script, expected) in [
+        (ExcelFontScript::None, FormatScript::None),
+        (ExcelFontScript::Superscript, FormatScript::Superscript),
+        (ExcelFontScript::Subscript, FormatScript::Subscript),
+    ] {
+        assert_eq!(annotation_font_script(script), expected);
+    }
+
+    let annotation_cell = ExcelCellStyle {
+        hidden: Some(true),
+        locked: Some(false),
+        quote_prefix: Some(true),
+        horizontal_alignment: Some(ExcelHorizontalAlignment::Distributed),
+        wrapped: Some(true),
+        vertical_alignment: Some(ExcelVerticalAlignment::Distributed),
+        rotation: Some(45),
+        indent: Some(2),
+        border_left: Some(ExcelBorderStyle::Thin),
+        border_right: Some(ExcelBorderStyle::Medium),
+        border_top: Some(ExcelBorderStyle::Dashed),
+        border_bottom: Some(ExcelBorderStyle::Double),
+        left_border_color: Some(0x0011_2233),
+        right_border_color: Some(0x0022_3344),
+        top_border_color: Some(0x0033_4455),
+        bottom_border_color: Some(0x0044_5566),
+        fill_pattern: Some(ExcelFillPattern::Solid),
+        fill_background_color: Some(0x0055_6677),
+        fill_foreground_color: Some(0x0066_7788),
+        shrink_to_fit: Some(true),
+        data_format: Some("0.00"),
+    };
+    assert_ne!(
+        apply_annotation_cell_style(Format::new(), annotation_cell),
+        Format::new()
+    );
+    let disabled_cell = ExcelCellStyle {
+        hidden: Some(false),
+        locked: Some(true),
+        quote_prefix: Some(false),
+        wrapped: Some(false),
+        shrink_to_fit: Some(false),
+        ..ExcelCellStyle::new()
+    };
+    let _ = apply_annotation_cell_style(Format::new(), disabled_cell);
+
+    let annotation_font = ExcelFontStyle {
+        font_name: Some("Arial"),
+        font_height_in_points: Some(12.5),
+        italic: Some(true),
+        strikeout: Some(true),
+        color: Some(0x0077_8899),
+        type_offset: Some(ExcelFontScript::Superscript),
+        underline: Some(ExcelUnderline::DoubleAccounting),
+        charset: Some(1),
+        bold: Some(true),
+    };
+    assert_ne!(
+        apply_annotation_font_style(Format::new(), annotation_font),
+        Format::new()
+    );
+    let disabled_font = ExcelFontStyle {
+        italic: Some(false),
+        strikeout: Some(false),
+        bold: Some(false),
+        ..ExcelFontStyle::new()
+    };
+    let _ = apply_annotation_font_style(Format::new(), disabled_font);
 
     let head_style = CellStyle::new()
         .bold(true)
@@ -691,6 +936,33 @@ fn annotation_dimensions_apply_field_type_and_explicit_precedence() -> Result<()
     assert!((explicit_width - type_width - 22.0).abs() < f64::EPSILON);
     assert!((sheet_row_height(&sheet, 1)? - 24.0).abs() < f64::EPSILON);
     assert!((sheet_row_height(&sheet, 2)? - 16.0).abs() <= 0.25);
+    Ok(())
+}
+
+#[test]
+fn annotation_styles_apply_field_type_and_builder_precedence() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("annotation-styles.xlsx");
+    write_xlsx::<StyledAnnotationRow, _>(
+        &path,
+        &WriteOptions {
+            head_style: CellStyle::new().bold(true).font_color(0x0000_ff00),
+            ..WriteOptions::default()
+        },
+        vec![StyledAnnotationRow],
+    )?;
+
+    let styles = zip_entry(&path, "xl/styles.xml")?;
+    assert!(styles.contains("rgb=\"FF00FF00\""));
+    assert!(styles.contains("rgb=\"FF0000FF\""));
+    assert!(styles.contains("rgb=\"FFFF0000\""));
+    assert!(styles.contains("rgb=\"FFFFFF00\""));
+    assert!(styles.contains("<sz val=\"20\"/>"));
+    assert!(styles.contains("style=\"thin\""));
+
+    let sheet = zip_entry(&path, "xl/worksheets/sheet1.xml")?;
+    assert_ne!(cell_style_id(&sheet, "A1"), cell_style_id(&sheet, "B1"));
+    assert_ne!(cell_style_id(&sheet, "A2"), cell_style_id(&sheet, "B2"));
     Ok(())
 }
 
@@ -891,7 +1163,13 @@ fn dynamic_head_validation_and_backend_failures_are_typed() -> Result<()> {
         let mut raw = Workbook::new();
         let worksheet = raw.add_worksheet();
         assert!(
-            merge_dynamic_head_groups(worksheet, &columns, &head, &CellStyle::default()).is_err()
+            merge_dynamic_head_groups(
+                worksheet,
+                &columns,
+                &head,
+                SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new()),
+            )
+            .is_err()
         );
     }
     assert!(
@@ -1472,7 +1750,7 @@ fn every_handler_failure_stage_is_propagated() -> Result<()> {
             worksheet,
             &selected_columns(EveryCell::schema(), &WriteOptions::default()),
             "Sheet1",
-            &CellStyle::default(),
+            SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new()),
             &mut handlers,
         )
         .is_err()
