@@ -8,17 +8,17 @@ use std::path::{Path, PathBuf};
 
 use bigdecimal::ToPrimitive;
 use easyexcel_core::{
-    CellValue, Converter, ConverterRegistry, CsvCharset, ExcelBorderStyle, ExcelCellStyle,
-    ExcelColor, ExcelColumn, ExcelDataFormat, ExcelError, ExcelFillPattern, ExcelFontScript,
-    ExcelFontStyle, ExcelHorizontalAlignment, ExcelRow, ExcelUnderline, ExcelVerticalAlignment,
-    ExcelWriteMetadata, Result, WriteCellContext, WriteHandler, WriteRowContext, WriteSheetContext,
-    WriteWorkbookContext,
+    AnchorType, CellValue, Converter, ConverterRegistry, CsvCharset, ExcelBorderStyle,
+    ExcelCellStyle, ExcelColor, ExcelColumn, ExcelDataFormat, ExcelError, ExcelFillPattern,
+    ExcelFontScript, ExcelFontStyle, ExcelHorizontalAlignment, ExcelRow, ExcelUnderline,
+    ExcelVerticalAlignment, ExcelWriteMetadata, ImageData, Result, WriteCellContext, WriteHandler,
+    WriteRowContext, WriteSheetContext, WriteWorkbookContext,
 };
 use encoding_rs::{CoderResult, Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use ms_offcrypto_writer::Ecma376AgileWriter;
 use rust_xlsxwriter::{
     Color, Format, FormatAlign, FormatBorder, FormatPattern, FormatScript, FormatUnderline, Image,
-    Note, Workbook, Worksheet,
+    Note, ObjectMovement, Workbook, Worksheet,
 };
 
 /// Horizontal cell alignment.
@@ -1430,6 +1430,78 @@ struct CellFormatContext<'a> {
     font: Option<ExcelFontStyle>,
 }
 
+#[derive(Debug)]
+struct ImageLayout {
+    column_widths: HashMap<u16, u32>,
+    head_rows: u32,
+    head_row_height: u32,
+    content_row_height: u32,
+}
+
+impl Default for ImageLayout {
+    fn default() -> Self {
+        Self {
+            column_widths: HashMap::new(),
+            head_rows: 0,
+            head_row_height: 20,
+            content_row_height: 20,
+        }
+    }
+}
+
+impl ImageLayout {
+    fn new(
+        columns: &[(usize, usize, &'static ExcelColumn)],
+        options: &WriteOptions,
+        metadata: &ExcelWriteMetadata,
+        head_rows: u32,
+    ) -> Result<Self> {
+        let mut column_widths = HashMap::new();
+        for (column, width) in &options.column_widths {
+            column_widths.insert(*column, excel_column_width_pixels(*width));
+        }
+        for (physical_index, _, column) in columns {
+            let physical_index = to_column(*physical_index)?;
+            if column_widths.contains_key(&physical_index) {
+                continue;
+            }
+            if let Some(width) = column.column_width.or(metadata.column_width) {
+                column_widths.insert(physical_index, excel_column_width_pixels(width));
+            }
+        }
+        Ok(Self {
+            column_widths,
+            head_rows,
+            head_row_height: excel_row_height_pixels(metadata.head_row_height),
+            content_row_height: excel_row_height_pixels(metadata.content_row_height),
+        })
+    }
+
+    fn column_width(&self, column: u16) -> u32 {
+        self.column_widths.get(&column).copied().unwrap_or(64)
+    }
+
+    const fn row_height(&self, row: u32) -> u32 {
+        if row < self.head_rows {
+            self.head_row_height
+        } else {
+            self.content_row_height
+        }
+    }
+}
+
+fn excel_column_width_pixels(width: u16) -> u32 {
+    if width == 0 {
+        0
+    } else {
+        u32::from(width) * 7 + 5
+    }
+}
+
+fn excel_row_height_pixels(height: Option<u16>) -> u32 {
+    height.map_or(20, |height| (u32::from(height) * 4 + 1) / 3)
+}
+
 fn write_sheet_to_workbook<T, I>(
     workbook: &mut Workbook,
     options: &WriteOptions,
@@ -1517,6 +1589,7 @@ where
     } = progress;
     let columns = selected_columns(T::schema(), options);
     let head_rows = head_rows_for_schema(T::schema(), options)?;
+    let image_layout = ImageLayout::new(&columns, options, metadata, head_rows)?;
     if write_head && head_rows > 0 {
         if let Some(head) = &options.dynamic_head {
             write_dynamic_headers_with_handlers(
@@ -1526,6 +1599,7 @@ where
                 &options.sheet_name,
                 SheetStyleContext::head(&options.head_style, metadata),
                 handlers,
+                &image_layout,
             )?;
         } else {
             write_headers_with_handlers(
@@ -1534,6 +1608,7 @@ where
                 &options.sheet_name,
                 SheetStyleContext::head(&options.head_style, metadata),
                 handlers,
+                &image_layout,
             )?;
         }
         if let Some(height) = metadata.head_row_height {
@@ -1565,6 +1640,7 @@ where
             &options.sheet_name,
             SheetStyleContext::content(style, metadata),
             handlers,
+            &image_layout,
         )?;
         row_index += 1;
         data_index += 1;
@@ -1825,12 +1901,14 @@ fn write_headers(
     columns: &[(usize, usize, &'static ExcelColumn)],
 ) -> Result<()> {
     const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new();
+    let layout = ImageLayout::default();
     write_headers_with_handlers(
         worksheet,
         columns,
         "",
         SheetStyleContext::head(&CellStyle::new(), &METADATA),
         &mut [],
+        &layout,
     )
 }
 
@@ -1840,12 +1918,22 @@ fn write_headers_with_handlers(
     sheet_name: &str,
     style: SheetStyleContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
+    image_layout: &ImageLayout,
 ) -> Result<()> {
     let labels = columns
         .iter()
         .map(|(_, _, column)| column.name.to_owned())
         .collect::<Vec<_>>();
-    write_header_row_with_handlers(worksheet, 0, columns, &labels, sheet_name, style, handlers)
+    write_header_row_with_handlers(
+        worksheet,
+        0,
+        columns,
+        &labels,
+        sheet_name,
+        style,
+        handlers,
+        image_layout,
+    )
 }
 
 fn write_dynamic_headers_with_handlers(
@@ -1855,6 +1943,7 @@ fn write_dynamic_headers_with_handlers(
     sheet_name: &str,
     style: SheetStyleContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
+    image_layout: &ImageLayout,
 ) -> Result<()> {
     if head.len() != columns.len() {
         return Err(ExcelError::Format(format!(
@@ -1872,12 +1961,20 @@ fn write_dynamic_headers_with_handlers(
             .map(|path| path.get(level).cloned().unwrap_or_default())
             .collect::<Vec<_>>();
         write_header_row_with_handlers(
-            worksheet, row_index, columns, &labels, sheet_name, style, handlers,
+            worksheet,
+            row_index,
+            columns,
+            &labels,
+            sheet_name,
+            style,
+            handlers,
+            image_layout,
         )?;
     }
     merge_dynamic_head_groups(worksheet, columns, head, style)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_header_row_with_handlers(
     worksheet: &mut Worksheet,
     row_index: u32,
@@ -1886,6 +1983,7 @@ fn write_header_row_with_handlers(
     sheet_name: &str,
     style: SheetStyleContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
+    image_layout: &ImageLayout,
 ) -> Result<()> {
     let row_context = WriteRowContext {
         sheet_name: sheet_name.to_owned(),
@@ -1925,6 +2023,7 @@ fn write_header_row_with_handlers(
                     column,
                     value,
                     format_context,
+                    image_layout,
                 )?,
             }
         }
@@ -1997,6 +2096,7 @@ fn write_data_row(
     columns: &[(usize, usize, &'static ExcelColumn)],
     cells: &[CellValue],
 ) -> Result<()> {
+    let image_layout = ImageLayout::default();
     write_data_row_with_handlers(
         worksheet,
         row_index,
@@ -2009,9 +2109,11 @@ fn write_data_row(
             is_head: false,
         },
         &mut [],
+        &image_layout,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_data_row_with_handlers(
     worksheet: &mut Worksheet,
     row_index: u32,
@@ -2020,6 +2122,7 @@ fn write_data_row_with_handlers(
     sheet_name: &str,
     style: SheetStyleContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
+    image_layout: &ImageLayout,
 ) -> Result<()> {
     let row_context = WriteRowContext {
         sheet_name: sheet_name.to_owned(),
@@ -2053,6 +2156,7 @@ fn write_data_row_with_handlers(
                 metadata,
                 &context.value,
                 format_context,
+                image_layout,
             )?;
         }
         for handler in handlers.iter_mut() {
@@ -2072,6 +2176,7 @@ fn write_cell(
     metadata: &ExcelColumn,
     value: &CellValue,
     style: CellFormatContext<'_>,
+    image_layout: &ImageLayout,
 ) -> Result<()> {
     let format = cell_format(style);
     match value {
@@ -2136,7 +2241,15 @@ fn write_cell(
                 .map_err(format_error)?;
         }
         CellValue::Comment { value, text } => {
-            write_cell(worksheet, row_index, column, metadata, value, style)?;
+            write_cell(
+                worksheet,
+                row_index,
+                column,
+                metadata,
+                value,
+                style,
+                image_layout,
+            )?;
             worksheet
                 .insert_note(row_index, column, &Note::new(text))
                 .map_err(format_error)?;
@@ -2146,6 +2259,20 @@ fn write_cell(
             worksheet
                 .insert_image_fit_to_cell(row_index, column, &image, true)
                 .map_err(format_error)?;
+        }
+        CellValue::Images { value, images } => {
+            write_cell(
+                worksheet,
+                row_index,
+                column,
+                metadata,
+                value,
+                style,
+                image_layout,
+            )?;
+            for image in images {
+                insert_image_data(worksheet, row_index, column, image, image_layout)?;
+            }
         }
     }
     Ok(())
@@ -2158,6 +2285,129 @@ fn image_from_buffer(bytes: &[u8]) -> Result<Image> {
         ));
     }
     Image::new_from_buffer(bytes).map_err(format_error)
+}
+
+fn insert_image_data(
+    worksheet: &mut Worksheet,
+    current_row: u32,
+    current_column: u16,
+    data: &ImageData,
+    layout: &ImageLayout,
+) -> Result<()> {
+    let anchor = data.get_anchor();
+    let coordinates = anchor.get_coordinates();
+    let first_row = resolve_anchor_coordinate(
+        current_row,
+        coordinates.get_first_row_index(),
+        coordinates.get_relative_first_row_index(),
+        "first row",
+    )?;
+    let first_column = resolve_anchor_coordinate(
+        u32::from(current_column),
+        coordinates.get_first_column_index().map(u32::from),
+        coordinates.get_relative_first_column_index(),
+        "first column",
+    )?;
+    let last_row = resolve_anchor_coordinate(
+        current_row,
+        coordinates.get_last_row_index(),
+        coordinates.get_relative_last_row_index(),
+        "last row",
+    )?;
+    let last_column = resolve_anchor_coordinate(
+        u32::from(current_column),
+        coordinates.get_last_column_index().map(u32::from),
+        coordinates.get_relative_last_column_index(),
+        "last column",
+    )?;
+    if first_row > last_row || first_column > last_column {
+        return Err(ExcelError::Format(
+            "image anchor start must not follow its end".to_owned(),
+        ));
+    }
+    let first_column = u16::try_from(first_column)
+        .map_err(|_| ExcelError::Format("image anchor column exceeds XLSX limit".to_owned()))?;
+    let last_column = u16::try_from(last_column)
+        .map_err(|_| ExcelError::Format("image anchor column exceeds XLSX limit".to_owned()))?;
+    if last_row >= 1_048_576 || last_column >= 16_384 {
+        return Err(ExcelError::Format(
+            "image anchor exceeds XLSX worksheet limits".to_owned(),
+        ));
+    }
+
+    let total_width = (first_column..=last_column).try_fold(0_u32, |width, column| {
+        width
+            .checked_add(layout.column_width(column))
+            .ok_or_else(|| ExcelError::Format("image anchor width overflow".to_owned()))
+    })?;
+    let total_height = (first_row..=last_row).try_fold(0_u32, |height, row| {
+        height
+            .checked_add(layout.row_height(row))
+            .ok_or_else(|| ExcelError::Format("image anchor height overflow".to_owned()))
+    })?;
+    let left = anchor.get_left().unwrap_or(0);
+    let right = anchor.get_right().unwrap_or(0);
+    let top = anchor.get_top().unwrap_or(0);
+    let bottom = anchor.get_bottom().unwrap_or(0);
+    let width = total_width
+        .checked_sub(left)
+        .and_then(|value| value.checked_sub(right))
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            ExcelError::Format("image horizontal margins consume its anchor".to_owned())
+        })?;
+    let height = total_height
+        .checked_sub(top)
+        .and_then(|value| value.checked_sub(bottom))
+        .filter(|value| *value > 0)
+        .ok_or_else(|| {
+            ExcelError::Format("image vertical margins consume its anchor".to_owned())
+        })?;
+    let movement = match anchor
+        .get_anchor_type()
+        .unwrap_or(AnchorType::MoveAndResize)
+    {
+        AnchorType::MoveAndResize => ObjectMovement::MoveAndSizeWithCells,
+        AnchorType::DontMoveDoResize | AnchorType::MoveDontResize => {
+            ObjectMovement::MoveButDontSizeWithCells
+        }
+        AnchorType::DontMoveAndResize => ObjectMovement::DontMoveOrSizeWithCells,
+    };
+    let image = image_from_buffer(data.image())?
+        .set_scale_to_size(width, height, false)
+        .set_object_movement(movement);
+    insert_scaled_image(worksheet, first_row, first_column, &image, left, top)
+}
+
+fn insert_scaled_image(
+    worksheet: &mut Worksheet,
+    row: u32,
+    column: u16,
+    image: &Image,
+    left: u32,
+    top: u32,
+) -> Result<()> {
+    worksheet
+        .insert_image_with_offset(row, column, image, left, top)
+        .map(|_| ())
+        .map_err(format_error)
+}
+
+fn resolve_anchor_coordinate(
+    current: u32,
+    absolute: Option<u32>,
+    relative: Option<i32>,
+    label: &str,
+) -> Result<u32> {
+    if let Some(absolute) = absolute.filter(|value| *value > 0) {
+        return Ok(absolute);
+    }
+    let Some(relative) = relative else {
+        return Ok(current);
+    };
+    current
+        .checked_add_signed(relative)
+        .ok_or_else(|| ExcelError::Format(format!("image anchor {label} is outside the worksheet")))
 }
 
 fn cell_format(context: CellFormatContext<'_>) -> Format {

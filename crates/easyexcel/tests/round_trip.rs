@@ -10,10 +10,11 @@ use std::thread;
 
 use chrono::NaiveDate;
 use easyexcel::{
-    AnalysisContext, BigInt, CellStyle, CellValue, Converter, EasyExcel, ExcelColumn, ExcelError,
-    ExcelRow, HorizontalAlignment, ImageInputStream, InputStreamImageConverter, IntoExcelCell,
-    PageReadListener, ReadConverterContext, ReadListener, Result, Url, UrlImageConverter,
-    VerticalAlignment, WriteConverterContext,
+    AnalysisContext, AnchorType, BigInt, CellStyle, CellValue, ClientAnchorData, Converter,
+    CoordinateData, EasyExcel, ExcelColumn, ExcelError, ExcelRow, HorizontalAlignment, ImageData,
+    ImageInputStream, InputStreamImageConverter, IntoExcelCell, PageReadListener,
+    ReadConverterContext, ReadListener, Result, Url, UrlImageConverter, VerticalAlignment,
+    WriteCellData, WriteConverterContext,
 };
 use tempfile::tempdir;
 use zip::ZipArchive;
@@ -50,6 +51,12 @@ struct StreamUrlImageRow {
     stream: ImageInputStream<Cursor<Vec<u8>>>,
     #[excel(name = "URL", index = 1, converter = UrlImageConverter)]
     url: Url,
+}
+
+#[derive(Debug, Clone, PartialEq, ExcelRow)]
+struct MultiImageRow {
+    #[excel(name = "Images", index = 0)]
+    cell: WriteCellData,
 }
 
 #[derive(Default)]
@@ -462,6 +469,56 @@ fn derive_uses_java_style_input_stream_and_url_image_converters() -> Result<()> 
         .map_err(|error| ExcelError::Format(error.to_string()))?
         .read_to_string(&mut drawing_xml)?;
     assert_eq!(drawing_xml.matches("<xdr:twoCellAnchor").count(), 2);
+    Ok(())
+}
+
+#[test]
+fn public_facade_round_trips_scalar_write_cell_data_and_emits_multiple_images() -> Result<()> {
+    let bytes = tiny_png();
+    let second_anchor = ClientAnchorData::new()
+        .coordinates(
+            CoordinateData::new()
+                .relative_first_column_index(1)
+                .relative_last_column_index(1),
+        )
+        .left(3)
+        .top(4)
+        .right(5)
+        .bottom(6)
+        .anchor_type(AnchorType::DontMoveAndResize);
+    let row = MultiImageRow {
+        cell: WriteCellData::new(CellValue::String("two images".to_owned())).image_data_list([
+            ImageData::new(bytes.clone()),
+            ImageData::new(bytes).anchor(second_anchor),
+        ]),
+    };
+    let directory = tempdir()?;
+    let path = directory.path().join("multi-image.xlsx");
+    EasyExcel::write::<MultiImageRow>(&path)
+        .sheet("Images")
+        .column_width(0, 18)
+        .column_width(1, 12)
+        .do_write([row])?;
+
+    let rows = EasyExcel::read_sync::<MultiImageRow>(&path)
+        .sheet("Images")
+        .do_read_sync()?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].cell.value(),
+        &CellValue::String("two images".to_owned())
+    );
+    assert!(rows[0].cell.images().is_empty());
+
+    let mut archive = ZipArchive::new(File::open(&path)?)
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    let mut drawing_xml = String::new();
+    archive
+        .by_name("xl/drawings/drawing1.xml")
+        .map_err(|error| ExcelError::Format(error.to_string()))?
+        .read_to_string(&mut drawing_xml)?;
+    assert_eq!(drawing_xml.matches("<xdr:twoCellAnchor").count(), 2);
+    assert_eq!(drawing_xml.matches("editAs=\"absolute\"").count(), 1);
     Ok(())
 }
 

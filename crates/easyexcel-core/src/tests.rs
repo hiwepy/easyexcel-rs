@@ -278,6 +278,91 @@ fn input_stream_and_url_converters_match_java_ownership_and_timeout_semantics() 
 }
 
 #[test]
+fn write_cell_image_data_matches_java_coordinate_anchor_and_list_model() -> Result<()> {
+    let coordinates = CoordinateData::new()
+        .first_row_index(3)
+        .first_column_index(4)
+        .last_row_index(5)
+        .last_column_index(6)
+        .relative_first_row_index(-1)
+        .relative_first_column_index(-2)
+        .relative_last_row_index(2)
+        .relative_last_column_index(3);
+    assert_eq!(coordinates.get_first_row_index(), Some(3));
+    assert_eq!(coordinates.get_first_column_index(), Some(4));
+    assert_eq!(coordinates.get_last_row_index(), Some(5));
+    assert_eq!(coordinates.get_last_column_index(), Some(6));
+    assert_eq!(coordinates.get_relative_first_row_index(), Some(-1));
+    assert_eq!(coordinates.get_relative_first_column_index(), Some(-2));
+    assert_eq!(coordinates.get_relative_last_row_index(), Some(2));
+    assert_eq!(coordinates.get_relative_last_column_index(), Some(3));
+    assert_eq!(CoordinateData::default(), CoordinateData::new());
+
+    let anchor = ClientAnchorData::new()
+        .coordinates(coordinates)
+        .top(1)
+        .right(2)
+        .bottom(3)
+        .left(4)
+        .anchor_type(AnchorType::DontMoveAndResize);
+    assert_eq!(anchor.get_coordinates(), coordinates);
+    assert_eq!(anchor.get_top(), Some(1));
+    assert_eq!(anchor.get_right(), Some(2));
+    assert_eq!(anchor.get_bottom(), Some(3));
+    assert_eq!(anchor.get_left(), Some(4));
+    assert_eq!(
+        anchor.get_anchor_type(),
+        Some(AnchorType::DontMoveAndResize)
+    );
+    assert_eq!(ClientAnchorData::default(), ClientAnchorData::new());
+    assert_eq!(AnchorType::default(), AnchorType::MoveAndResize);
+
+    let image_types = [
+        ImageType::Emf,
+        ImageType::Wmf,
+        ImageType::Pict,
+        ImageType::Jpeg,
+        ImageType::Png,
+        ImageType::Dib,
+    ];
+    assert_eq!(image_types.len(), 6);
+    let first = ImageData::new([1, 2, 3])
+        .image_type(ImageType::Png)
+        .anchor(anchor);
+    assert_eq!(first.image(), &[1, 2, 3]);
+    assert_eq!(first.get_image_type(), Some(ImageType::Png));
+    assert_eq!(first.get_anchor(), anchor);
+    assert_eq!(ImageData::default().image(), &[]);
+
+    let second = ImageData::new(vec![4, 5, 6]);
+    let data = WriteCellData::new(CellValue::String("caption".to_owned()))
+        .image(first.clone())
+        .image(second.clone());
+    assert_eq!(data.value(), &CellValue::String("caption".to_owned()));
+    assert_eq!(data.images(), &[first.clone(), second.clone()]);
+    let replaced = data.clone().image_data_list([second.clone()]);
+    assert_eq!(replaced.images(), &[second]);
+    assert_eq!(
+        WriteCellData::from_image(vec![7, 8]).images()[0].image(),
+        &[7, 8]
+    );
+    let conversion = context(None);
+    let converted = data.to_excel_cell(&conversion)?;
+    assert_eq!(converted.as_text(), "caption");
+    assert_eq!(converted.data_type(), CellDataType::String);
+    assert!(!converted.is_empty());
+    assert_eq!(
+        WriteCellData::from_excel_cell(Some(&CellValue::Bool(true)), &conversion)?.value(),
+        &CellValue::Bool(true)
+    );
+    assert_eq!(
+        WriteCellData::from_excel_cell(None, &conversion)?.value(),
+        &CellValue::Empty
+    );
+    Ok(())
+}
+
+#[test]
 fn row_data_resolves_index_before_header_name() {
     let explicit = ExcelColumn::new("first", "Header", Some(1), 3, Some("0")).with_column_width(24);
     let named = ExcelColumn::new("second", "Header", None, i32::MAX, None);

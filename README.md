@@ -289,6 +289,27 @@ read defaults. String paths can opt in explicitly with
 annotation-selected `StringImageConverter`; unreadable files return an error
 instead of writing a path as cell text.
 
+`WriteCellData` preserves an ordinary scalar together with Java-compatible
+`imageDataList` entries. Each `ImageData` can use absolute or relative first/last
+cell coordinates, pixel margins, and all four POI anchor modes; multiple images
+are emitted in list order as independent XLSX drawing anchors:
+
+```rust,no_run
+use easyexcel::{
+    AnchorType, CellValue, ClientAnchorData, CoordinateData, ImageData, WriteCellData,
+};
+
+let anchor = ClientAnchorData::new()
+    .coordinates(CoordinateData::new().relative_last_column_index(1))
+    .left(4)
+    .right(4)
+    .anchor_type(AnchorType::MoveAndResize);
+let png_bytes = std::fs::read("logo.png")?;
+let cell = WriteCellData::new(CellValue::String("product".to_owned()))
+    .image(ImageData::new(png_bytes).anchor(anchor));
+# Ok::<(), std::io::Error>(())
+```
+
 Java `extraRead` maps to `.extra_read(CellExtraType::...)`. Enable `Comment`,
 `Hyperlink`, or `Merge` on an XLSX reader and implement `ReadListener::extra`
 to receive a `CellExtra` with optional text and zero-based first/last row and

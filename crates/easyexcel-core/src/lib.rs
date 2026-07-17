@@ -108,6 +108,13 @@ pub enum CellValue {
     },
     /// Encoded PNG, JPEG, GIF, or BMP image bytes.
     Image(Vec<u8>),
+    /// A scalar cell decorated with Java-compatible `WriteCellData.imageDataList` entries.
+    Images {
+        /// Scalar value written before the drawings are added.
+        value: Box<CellValue>,
+        /// Images and their worksheet anchor metadata.
+        images: Vec<ImageData>,
+    },
 }
 
 impl CellValue {
@@ -130,7 +137,7 @@ impl CellValue {
             Self::Date(value) => value.format("%Y-%m-%d").to_string(),
             Self::DateTime(value) => value.format("%Y-%m-%d %H:%M:%S").to_string(),
             Self::Hyperlink { text, .. } => text.clone(),
-            Self::Comment { value, .. } => value.as_text(),
+            Self::Comment { value, .. } | Self::Images { value, .. } => value.as_text(),
         }
     }
 
@@ -145,9 +152,396 @@ impl CellValue {
             Self::Date(_) | Self::DateTime(_) => CellDataType::Date,
             Self::Error(_) => CellDataType::Error,
             Self::Formula(_) => CellDataType::Formula,
-            Self::Comment { value, .. } => value.data_type(),
+            Self::Comment { value, .. } | Self::Images { value, .. } => value.data_type(),
             Self::Image(_) => CellDataType::Image,
         }
+    }
+}
+
+/// Cell coordinates used by Java `CoordinateData` decorations.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(clippy::struct_field_names)]
+pub struct CoordinateData {
+    first_row_index: Option<u32>,
+    first_column_index: Option<u16>,
+    last_row_index: Option<u32>,
+    last_column_index: Option<u16>,
+    relative_first_row_index: Option<i32>,
+    relative_first_column_index: Option<i32>,
+    relative_last_row_index: Option<i32>,
+    relative_last_column_index: Option<i32>,
+}
+
+impl CoordinateData {
+    /// Creates coordinates that default to the decorated cell.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            first_row_index: None,
+            first_column_index: None,
+            last_row_index: None,
+            last_column_index: None,
+            relative_first_row_index: None,
+            relative_first_column_index: None,
+            relative_last_row_index: None,
+            relative_last_column_index: None,
+        }
+    }
+
+    /// Sets the absolute first row. Like Java, zero defers to the relative coordinate.
+    #[must_use]
+    pub const fn first_row_index(mut self, value: u32) -> Self {
+        self.first_row_index = Some(value);
+        self
+    }
+
+    /// Sets the absolute first column. Like Java, zero defers to the relative coordinate.
+    #[must_use]
+    pub const fn first_column_index(mut self, value: u16) -> Self {
+        self.first_column_index = Some(value);
+        self
+    }
+
+    /// Sets the absolute last row. Like Java, zero defers to the relative coordinate.
+    #[must_use]
+    pub const fn last_row_index(mut self, value: u32) -> Self {
+        self.last_row_index = Some(value);
+        self
+    }
+
+    /// Sets the absolute last column. Like Java, zero defers to the relative coordinate.
+    #[must_use]
+    pub const fn last_column_index(mut self, value: u16) -> Self {
+        self.last_column_index = Some(value);
+        self
+    }
+
+    /// Sets the first row relative to the decorated cell.
+    #[must_use]
+    pub const fn relative_first_row_index(mut self, value: i32) -> Self {
+        self.relative_first_row_index = Some(value);
+        self
+    }
+
+    /// Sets the first column relative to the decorated cell.
+    #[must_use]
+    pub const fn relative_first_column_index(mut self, value: i32) -> Self {
+        self.relative_first_column_index = Some(value);
+        self
+    }
+
+    /// Sets the last row relative to the decorated cell.
+    #[must_use]
+    pub const fn relative_last_row_index(mut self, value: i32) -> Self {
+        self.relative_last_row_index = Some(value);
+        self
+    }
+
+    /// Sets the last column relative to the decorated cell.
+    #[must_use]
+    pub const fn relative_last_column_index(mut self, value: i32) -> Self {
+        self.relative_last_column_index = Some(value);
+        self
+    }
+
+    /// Returns the absolute first row.
+    #[must_use]
+    pub const fn get_first_row_index(self) -> Option<u32> {
+        self.first_row_index
+    }
+
+    /// Returns the absolute first column.
+    #[must_use]
+    pub const fn get_first_column_index(self) -> Option<u16> {
+        self.first_column_index
+    }
+
+    /// Returns the absolute last row.
+    #[must_use]
+    pub const fn get_last_row_index(self) -> Option<u32> {
+        self.last_row_index
+    }
+
+    /// Returns the absolute last column.
+    #[must_use]
+    pub const fn get_last_column_index(self) -> Option<u16> {
+        self.last_column_index
+    }
+
+    /// Returns the relative first row.
+    #[must_use]
+    pub const fn get_relative_first_row_index(self) -> Option<i32> {
+        self.relative_first_row_index
+    }
+
+    /// Returns the relative first column.
+    #[must_use]
+    pub const fn get_relative_first_column_index(self) -> Option<i32> {
+        self.relative_first_column_index
+    }
+
+    /// Returns the relative last row.
+    #[must_use]
+    pub const fn get_relative_last_row_index(self) -> Option<i32> {
+        self.relative_last_row_index
+    }
+
+    /// Returns the relative last column.
+    #[must_use]
+    pub const fn get_relative_last_column_index(self) -> Option<i32> {
+        self.relative_last_column_index
+    }
+}
+
+/// Java `ClientAnchorData.AnchorType` equivalent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AnchorType {
+    /// Move and resize with the anchor cells.
+    #[default]
+    MoveAndResize,
+    /// POI's completeness-only mode; XLSX serializes it as a one-cell anchor.
+    DontMoveDoResize,
+    /// Move with cells without resizing.
+    MoveDontResize,
+    /// Do not move or resize with cells.
+    DontMoveAndResize,
+}
+
+/// Client-anchor margins and movement behavior.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClientAnchorData {
+    coordinates: CoordinateData,
+    top: Option<u32>,
+    right: Option<u32>,
+    bottom: Option<u32>,
+    left: Option<u32>,
+    anchor_type: Option<AnchorType>,
+}
+
+impl ClientAnchorData {
+    /// Creates a default anchor for the decorated cell.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            coordinates: CoordinateData::new(),
+            top: None,
+            right: None,
+            bottom: None,
+            left: None,
+            anchor_type: None,
+        }
+    }
+
+    /// Sets its absolute and relative cell coordinates.
+    #[must_use]
+    pub const fn coordinates(mut self, value: CoordinateData) -> Self {
+        self.coordinates = value;
+        self
+    }
+
+    /// Sets the top margin in pixels.
+    #[must_use]
+    pub const fn top(mut self, value: u32) -> Self {
+        self.top = Some(value);
+        self
+    }
+
+    /// Sets the right margin in pixels.
+    #[must_use]
+    pub const fn right(mut self, value: u32) -> Self {
+        self.right = Some(value);
+        self
+    }
+
+    /// Sets the bottom margin in pixels.
+    #[must_use]
+    pub const fn bottom(mut self, value: u32) -> Self {
+        self.bottom = Some(value);
+        self
+    }
+
+    /// Sets the left margin in pixels.
+    #[must_use]
+    pub const fn left(mut self, value: u32) -> Self {
+        self.left = Some(value);
+        self
+    }
+
+    /// Sets the object movement and resize behavior.
+    #[must_use]
+    pub const fn anchor_type(mut self, value: AnchorType) -> Self {
+        self.anchor_type = Some(value);
+        self
+    }
+
+    /// Returns the coordinates.
+    #[must_use]
+    pub const fn get_coordinates(self) -> CoordinateData {
+        self.coordinates
+    }
+
+    /// Returns the top margin in pixels.
+    #[must_use]
+    pub const fn get_top(self) -> Option<u32> {
+        self.top
+    }
+
+    /// Returns the right margin in pixels.
+    #[must_use]
+    pub const fn get_right(self) -> Option<u32> {
+        self.right
+    }
+
+    /// Returns the bottom margin in pixels.
+    #[must_use]
+    pub const fn get_bottom(self) -> Option<u32> {
+        self.bottom
+    }
+
+    /// Returns the left margin in pixels.
+    #[must_use]
+    pub const fn get_left(self) -> Option<u32> {
+        self.left
+    }
+
+    /// Returns the movement and resize behavior.
+    #[must_use]
+    pub const fn get_anchor_type(self) -> Option<AnchorType> {
+        self.anchor_type
+    }
+}
+
+/// Java `ImageData.ImageType` equivalent metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageType {
+    /// Extended Windows metafile.
+    Emf,
+    /// Windows metafile.
+    Wmf,
+    /// Macintosh PICT.
+    Pict,
+    /// JPEG.
+    Jpeg,
+    /// PNG.
+    Png,
+    /// Device-independent bitmap.
+    Dib,
+}
+
+/// One Java-compatible image and its client anchor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImageData {
+    image: Vec<u8>,
+    image_type: Option<ImageType>,
+    anchor: ClientAnchorData,
+}
+
+impl ImageData {
+    /// Creates image data from encoded bytes.
+    #[must_use]
+    pub fn new(image: impl Into<Vec<u8>>) -> Self {
+        Self {
+            image: image.into(),
+            image_type: None,
+            anchor: ClientAnchorData::new(),
+        }
+    }
+
+    /// Sets optional Java image-type metadata.
+    #[must_use]
+    pub const fn image_type(mut self, value: ImageType) -> Self {
+        self.image_type = Some(value);
+        self
+    }
+
+    /// Sets the client anchor.
+    #[must_use]
+    pub const fn anchor(mut self, value: ClientAnchorData) -> Self {
+        self.anchor = value;
+        self
+    }
+
+    /// Returns the encoded image bytes.
+    #[must_use]
+    pub fn image(&self) -> &[u8] {
+        &self.image
+    }
+
+    /// Returns the optional image-type metadata.
+    #[must_use]
+    pub const fn get_image_type(&self) -> Option<ImageType> {
+        self.image_type
+    }
+
+    /// Returns the client anchor.
+    #[must_use]
+    pub const fn get_anchor(&self) -> ClientAnchorData {
+        self.anchor
+    }
+}
+
+/// Java `WriteCellData` subset that preserves a scalar plus `imageDataList`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WriteCellData {
+    value: CellValue,
+    image_data_list: Vec<ImageData>,
+}
+
+impl WriteCellData {
+    /// Creates decorated cell data from a scalar value.
+    #[must_use]
+    pub const fn new(value: CellValue) -> Self {
+        Self {
+            value,
+            image_data_list: Vec::new(),
+        }
+    }
+
+    /// Creates an empty scalar cell with one image, matching Java's byte-array constructor.
+    #[must_use]
+    pub fn from_image(image: impl Into<Vec<u8>>) -> Self {
+        Self::new(CellValue::Empty).image(ImageData::new(image))
+    }
+
+    /// Appends one image entry.
+    #[must_use]
+    pub fn image(mut self, value: ImageData) -> Self {
+        self.image_data_list.push(value);
+        self
+    }
+
+    /// Replaces the full image list.
+    #[must_use]
+    pub fn image_data_list(mut self, value: impl IntoIterator<Item = ImageData>) -> Self {
+        self.image_data_list = value.into_iter().collect();
+        self
+    }
+
+    /// Returns the scalar cell value.
+    #[must_use]
+    pub const fn value(&self) -> &CellValue {
+        &self.value
+    }
+
+    /// Returns all image entries in insertion order.
+    #[must_use]
+    pub fn images(&self) -> &[ImageData] {
+        &self.image_data_list
+    }
+}
+
+impl IntoExcelCell for WriteCellData {
+    fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
+        Ok(CellValue::Images {
+            value: Box::new(self.value.clone()),
+            images: self.image_data_list.clone(),
+        })
+    }
+}
+
+impl FromExcelCell for WriteCellData {
+    fn from_excel_cell(cell: Option<&CellValue>, _context: &ConvertContext) -> Result<Self> {
+        Ok(Self::new(cell.cloned().unwrap_or(CellValue::Empty)))
     }
 }
 

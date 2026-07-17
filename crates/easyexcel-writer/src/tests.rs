@@ -7,7 +7,10 @@ use std::rc::Rc;
 
 use calamine::{Data, Dimensions, Reader, Xlsx, open_workbook};
 use chrono::NaiveDate;
-use easyexcel_core::BigDecimal;
+use easyexcel_core::{
+    BigDecimal, ClientAnchorData, CoordinateData, ImageData, ImageType, IntoExcelCell,
+    WriteCellData,
+};
 use tempfile::tempdir;
 use zip::ZipArchive;
 
@@ -347,6 +350,43 @@ impl ExcelRow for SparseRow {
 
     fn to_row(&self) -> Result<Vec<CellValue>> {
         Ok(vec![CellValue::String("value".to_owned())])
+    }
+}
+
+struct AnchoredImageRow {
+    cell: WriteCellData,
+}
+
+impl ExcelRow for AnchoredImageRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] =
+            &[ExcelColumn::new("cell", "Images", Some(0), 0, None).with_column_width(20)];
+        COLUMNS
+    }
+
+    fn write_metadata() -> &'static ExcelWriteMetadata {
+        const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new()
+            .head_row_height(18)
+            .content_row_height(30);
+        &METADATA
+    }
+
+    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+        Ok(Self {
+            cell: WriteCellData::new(CellValue::Empty),
+        })
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![self.cell.to_excel_cell(
+            &easyexcel_core::ConvertContext {
+                sheet_name: "Images".to_owned(),
+                row_index: 1,
+                column_index: Some(0),
+                field: "cell",
+                format: None,
+            },
+        )?])
     }
 }
 
@@ -1479,6 +1519,217 @@ fn writer_emits_headers_and_every_supported_cell_type() -> Result<()> {
 }
 
 #[test]
+fn write_cell_data_emits_multiple_images_with_java_anchor_semantics() -> Result<()> {
+    let bytes = tiny_png();
+    let spanning = ClientAnchorData::new()
+        .coordinates(
+            CoordinateData::new()
+                .relative_last_row_index(1)
+                .relative_last_column_index(1),
+        )
+        .left(5)
+        .top(6)
+        .right(7)
+        .bottom(8)
+        .anchor_type(AnchorType::MoveDontResize);
+    let zero_absolute_defers = ClientAnchorData::new()
+        .coordinates(
+            CoordinateData::new()
+                .first_row_index(0)
+                .first_column_index(0)
+                .relative_first_row_index(1)
+                .relative_first_column_index(1)
+                .relative_last_row_index(1)
+                .relative_last_column_index(1),
+        )
+        .anchor_type(AnchorType::DontMoveDoResize);
+    let absolute = ClientAnchorData::new()
+        .coordinates(
+            CoordinateData::new()
+                .first_row_index(4)
+                .first_column_index(3)
+                .last_row_index(4)
+                .last_column_index(3),
+        )
+        .anchor_type(AnchorType::DontMoveAndResize);
+    let cell = WriteCellData::new(CellValue::String("caption".to_owned())).image_data_list([
+        ImageData::new(bytes.clone()).image_type(ImageType::Png),
+        ImageData::new(bytes.clone()).anchor(spanning),
+        ImageData::new(bytes.clone()).anchor(zero_absolute_defers),
+        ImageData::new(bytes).anchor(absolute),
+    ]);
+    let directory = tempdir()?;
+    let path = directory.path().join("multiple-images.xlsx");
+    write_xlsx::<AnchoredImageRow, _>(
+        &path,
+        &WriteOptions {
+            sheet_name: "Images".to_owned(),
+            column_widths: vec![(1, 12)],
+            ..WriteOptions::default()
+        },
+        [AnchoredImageRow { cell }],
+    )?;
+
+    let mut workbook: Xlsx<_> = open_workbook(&path).map_err(test_error)?;
+    let range = workbook.worksheet_range("Images").map_err(test_error)?;
+    assert_eq!(
+        range.get_value((1, 0)),
+        Some(&Data::String("caption".to_owned()))
+    );
+    let drawing = zip_entry(&path, "xl/drawings/drawing1.xml")?;
+    assert_eq!(drawing.matches("<xdr:twoCellAnchor").count(), 4);
+    assert_eq!(drawing.matches("editAs=\"oneCell\"").count(), 2);
+    assert_eq!(drawing.matches("editAs=\"absolute\"").count(), 1);
+    assert!(drawing.contains("<xdr:col>3</xdr:col>"));
+    assert!(drawing.contains("<xdr:row>4</xdr:row>"));
+    Ok(())
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn image_anchor_layout_and_validation_cover_java_coordinate_boundaries() -> Result<()> {
+    let columns = selected_columns(AnchoredImageRow::schema(), &WriteOptions::default());
+    let layout = ImageLayout::new(
+        &columns,
+        &WriteOptions {
+            column_widths: vec![(0, 12), (2, 0)],
+            ..WriteOptions::default()
+        },
+        AnchoredImageRow::write_metadata(),
+        1,
+    )?;
+    assert_eq!(layout.column_width(0), 89);
+    assert_eq!(layout.column_width(1), 64);
+    assert_eq!(layout.column_width(2), 0);
+    assert_eq!(layout.row_height(0), 24);
+    assert_eq!(layout.row_height(1), 40);
+    assert_eq!(excel_column_width_pixels(0), 0);
+    assert_eq!(excel_row_height_pixels(None), 20);
+    assert_eq!(resolve_anchor_coordinate(4, Some(3), Some(8), "row")?, 3);
+    assert_eq!(resolve_anchor_coordinate(4, Some(0), Some(-2), "row")?, 2);
+    assert_eq!(resolve_anchor_coordinate(4, None, None, "row")?, 4);
+    assert!(resolve_anchor_coordinate(0, None, Some(-1), "row").is_err());
+
+    let bytes = tiny_png();
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    let invalid_anchors = [
+        ClientAnchorData::new().coordinates(CoordinateData::new().relative_first_row_index(-1)),
+        ClientAnchorData::new().coordinates(CoordinateData::new().relative_first_column_index(-1)),
+        ClientAnchorData::new().coordinates(CoordinateData::new().relative_last_row_index(-1)),
+        ClientAnchorData::new().coordinates(CoordinateData::new().relative_last_column_index(-1)),
+        ClientAnchorData::new()
+            .coordinates(CoordinateData::new().first_row_index(2).last_row_index(1)),
+        ClientAnchorData::new().coordinates(
+            CoordinateData::new()
+                .relative_first_column_index(70_000)
+                .relative_last_column_index(70_000),
+        ),
+        ClientAnchorData::new()
+            .coordinates(CoordinateData::new().relative_last_column_index(70_000)),
+        ClientAnchorData::new().coordinates(
+            CoordinateData::new()
+                .first_row_index(1_048_576)
+                .last_row_index(1_048_576),
+        ),
+        ClientAnchorData::new().left(64),
+        ClientAnchorData::new().top(20),
+    ];
+    for anchor in invalid_anchors {
+        assert!(
+            insert_image_data(
+                worksheet,
+                0,
+                0,
+                &ImageData::new(bytes.clone()).anchor(anchor),
+                &ImageLayout::default(),
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        insert_image_data(
+            worksheet,
+            0,
+            0,
+            &ImageData::new([1, 2, 3]),
+            &ImageLayout::default(),
+        )
+        .is_err()
+    );
+
+    let width_overflow = ImageLayout {
+        column_widths: HashMap::from([(0, u32::MAX)]),
+        ..ImageLayout::default()
+    };
+    let two_columns =
+        ClientAnchorData::new().coordinates(CoordinateData::new().relative_last_column_index(1));
+    assert!(
+        insert_image_data(
+            worksheet,
+            0,
+            0,
+            &ImageData::new(bytes.clone()).anchor(two_columns),
+            &width_overflow,
+        )
+        .is_err()
+    );
+    let height_overflow = ImageLayout {
+        content_row_height: u32::MAX,
+        ..ImageLayout::default()
+    };
+    let two_rows =
+        ClientAnchorData::new().coordinates(CoordinateData::new().relative_last_row_index(1));
+    assert!(
+        insert_image_data(
+            worksheet,
+            0,
+            0,
+            &ImageData::new(bytes.clone()).anchor(two_rows),
+            &height_overflow,
+        )
+        .is_err()
+    );
+    let valid_image = image_from_buffer(&bytes)?;
+    assert!(insert_scaled_image(worksheet, u32::MAX, 0, &valid_image, 0, 0).is_err());
+    let metadata = ExcelWriteMetadata::new();
+    let style = SheetStyleContext::content(None, &metadata).column(&TEST_COLUMN);
+    assert!(
+        write_cell(
+            worksheet,
+            0,
+            0,
+            &TEST_COLUMN,
+            &CellValue::Images {
+                value: Box::new(CellValue::Decimal(
+                    "9".repeat(400).parse().expect("valid huge decimal"),
+                )),
+                images: Vec::new(),
+            },
+            style,
+            &ImageLayout::default(),
+        )
+        .is_err()
+    );
+    assert!(
+        write_cell(
+            worksheet,
+            0,
+            0,
+            &TEST_COLUMN,
+            &CellValue::Images {
+                value: Box::new(CellValue::Empty),
+                images: vec![ImageData::new([1, 2, 3])],
+            },
+            style,
+            &ImageLayout::default(),
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
 fn decimal_writer_rejects_values_outside_xlsx_numeric_range() {
     let huge: BigDecimal = "9".repeat(400).parse().expect("valid large decimal");
     let metadata = ExcelWriteMetadata::new();
@@ -1493,6 +1744,7 @@ fn decimal_writer_rejects_values_outside_xlsx_numeric_range() {
             &TEST_COLUMN,
             &CellValue::Decimal(huge),
             style,
+            &ImageLayout::default(),
         )
         .is_err()
     );
@@ -1504,6 +1756,7 @@ fn decimal_writer_rejects_values_outside_xlsx_numeric_range() {
             &TEST_COLUMN,
             &CellValue::Decimal("1.5".parse().expect("valid decimal")),
             style,
+            &ImageLayout::default(),
         )
         .is_err()
     );
@@ -1927,6 +2180,26 @@ fn every_handler_failure_stage_is_propagated() -> Result<()> {
             "Sheet1",
             SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new()),
             &mut handlers,
+            &ImageLayout::default(),
+        )
+        .is_err()
+    );
+    let worksheet = workbook.add_worksheet();
+    let columns = selected_columns(EveryCell::schema(), &WriteOptions::default());
+    let head = columns
+        .iter()
+        .map(|_| vec!["Head".to_owned()])
+        .collect::<Vec<_>>();
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(InvalidHeaderValueHandler)];
+    assert!(
+        write_dynamic_headers_with_handlers(
+            worksheet,
+            &columns,
+            &head,
+            "Sheet2",
+            SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new()),
+            &mut handlers,
+            &ImageLayout::default(),
         )
         .is_err()
     );
