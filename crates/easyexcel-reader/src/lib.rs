@@ -41,6 +41,8 @@ pub struct ReadOptions {
     pub head_row_number: u32,
     /// Whether rows containing only empty cells are ignored.
     pub ignore_empty_row: bool,
+    /// Whether leading and trailing whitespace is removed from string cells.
+    pub auto_trim: bool,
     /// Password used to decrypt an encrypted OOXML workbook.
     pub password: Option<String>,
     /// Character encoding used when reading CSV input.
@@ -53,6 +55,7 @@ impl Default for ReadOptions {
             sheet: SheetSelector::First,
             head_row_number: 1,
             ignore_empty_row: true,
+            auto_trim: true,
             password: None,
             charset: CsvCharset::default(),
         }
@@ -86,7 +89,7 @@ where
     let mut row_metadata = (!options.ignore_empty_row)
         .then(|| source.reader().and_then(XlsxRowMetadata::new))
         .transpose()?;
-    let names = selected_sheet_names(&workbook, &options.sheet)?;
+    let names = selected_sheet_names(&workbook, &options.sheet, options.auto_trim)?;
     for (sheet_no, sheet_name) in names {
         let last_explicit_row = row_metadata
             .as_mut()
@@ -188,7 +191,7 @@ where
     L: ReadListener<T>,
 {
     let mut workbook: Xls<_> = open_workbook(path).map_err(format_error)?;
-    let sheets = select_xls_sheets(workbook.worksheets(), &options.sheet)?;
+    let sheets = select_xls_sheets(workbook.worksheets(), &options.sheet, options.auto_trim)?;
     for (sheet_no, sheet_name, range) in sheets {
         let mut consumer = TypedRowConsumer::<T> { listener };
         if read_range(&range, sheet_no, &sheet_name, options, &mut consumer)? == ReadFlow::Stop {
@@ -334,13 +337,15 @@ impl<T: ExcelRow> RowConsumer for TypedRowConsumer<'_, T> {
 fn selected_sheet_names<RS: std::io::Read + std::io::Seek>(
     workbook: &Xlsx<RS>,
     selector: &SheetSelector,
+    auto_trim: bool,
 ) -> Result<Vec<(usize, String)>> {
-    select_sheet_names(workbook.sheet_names(), selector)
+    select_sheet_names(workbook.sheet_names(), selector, auto_trim)
 }
 
 fn select_sheet_names(
     names: Vec<String>,
     selector: &SheetSelector,
+    auto_trim: bool,
 ) -> Result<Vec<(usize, String)>> {
     match selector {
         SheetSelector::First => names
@@ -355,8 +360,9 @@ fn select_sheet_names(
             .ok_or_else(|| ExcelError::SheetNotFound(index.to_string())),
         SheetSelector::Name(name) => names
             .iter()
-            .position(|candidate| candidate == name)
-            .map(|index| vec![(index, name.clone())])
+            .enumerate()
+            .find(|(_, candidate)| sheet_name_matches(candidate, name, auto_trim))
+            .map(|(index, candidate)| vec![(index, candidate.clone())])
             .ok_or_else(|| ExcelError::SheetNotFound(name.clone())),
         SheetSelector::All => Ok(names.into_iter().enumerate().collect()),
     }
@@ -365,6 +371,7 @@ fn select_sheet_names(
 fn select_xls_sheets(
     sheets: Vec<(String, Range<Data>)>,
     selector: &SheetSelector,
+    auto_trim: bool,
 ) -> Result<Vec<(usize, String, Range<Data>)>> {
     match selector {
         SheetSelector::First => sheets
@@ -380,8 +387,8 @@ fn select_xls_sheets(
         SheetSelector::Name(name) => sheets
             .into_iter()
             .enumerate()
-            .find(|(_, (candidate, _))| candidate == name)
-            .map(|(index, (_, range))| vec![(index, name.clone(), range)])
+            .find(|(_, (candidate, _))| sheet_name_matches(candidate, name, auto_trim))
+            .map(|(index, (candidate, range))| vec![(index, candidate, range)])
             .ok_or_else(|| ExcelError::SheetNotFound(name.clone())),
         SheetSelector::All => Ok(sheets
             .into_iter()
@@ -549,7 +556,7 @@ fn process_row<T>(
     sheet_no: usize,
     sheet_name: &str,
     row_index: u32,
-    cells: Vec<CellValue>,
+    mut cells: Vec<CellValue>,
     options: &ReadOptions,
     headers: &mut Arc<HashMap<String, usize>>,
     listener: &mut dyn ReadListener<T>,
@@ -557,6 +564,9 @@ fn process_row<T>(
 where
     T: ExcelRow,
 {
+    if options.auto_trim {
+        trim_string_cells(&mut cells);
+    }
     let context = AnalysisContext::new(sheet_name, sheet_no, row_index);
     if row_index < options.head_row_number {
         let current_headers = Arc::new(header_map(&cells));
@@ -566,7 +576,7 @@ where
         let result = listener.invoke_head(&current_headers, &context);
         return listener_result(result, listener, &context);
     }
-    if options.ignore_empty_row && cells.iter().all(CellValue::is_empty) {
+    if options.ignore_empty_row && cells.iter().all(is_empty_read_cell) {
         return Ok(ReadFlow::Continue);
     }
 
@@ -578,6 +588,33 @@ where
         }
         Err(error) => listener_error(error, listener, &context),
     }
+}
+
+fn trim_string_cells(cells: &mut [CellValue]) {
+    for cell in cells {
+        if let CellValue::String(value) = cell {
+            let trimmed = java_trim(value);
+            if trimmed.len() != value.len() {
+                *value = trimmed.to_owned();
+            }
+        }
+    }
+}
+
+fn is_empty_read_cell(cell: &CellValue) -> bool {
+    cell.is_empty() || matches!(cell, CellValue::String(value) if value.is_empty())
+}
+
+fn sheet_name_matches(candidate: &str, requested: &str, auto_trim: bool) -> bool {
+    if auto_trim {
+        java_trim(candidate) == java_trim(requested)
+    } else {
+        candidate == requested
+    }
+}
+
+fn java_trim(value: &str) -> &str {
+    value.trim_matches(|character| character <= '\u{20}')
 }
 
 fn listener_result<T>(
@@ -633,7 +670,7 @@ fn from_calamine(value: &DataRef<'_>) -> CellValue {
                 CellValue::Float(value.as_f64())
             }
         }
-        DataRef::Error(value) => CellValue::Error(format!("{value:?}")),
+        DataRef::Error(value) => CellValue::String(value.to_string()),
     }
 }
 
@@ -655,7 +692,7 @@ fn from_data(value: &Data) -> CellValue {
                 CellValue::Float(value.as_f64())
             }
         }
-        Data::Error(value) => CellValue::Error(format!("{value:?}")),
+        Data::Error(value) => CellValue::String(value.to_string()),
     }
 }
 

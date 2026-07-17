@@ -170,6 +170,13 @@ where
         self
     }
 
+    /// Enables or disables Java EasyExcel-compatible string trimming.
+    #[must_use]
+    pub const fn auto_trim(mut self, enabled: bool) -> Self {
+        self.options.auto_trim = enabled;
+        self
+    }
+
     /// Sets the password for an encrypted OOXML workbook.
     #[must_use]
     pub fn password(mut self, password: impl Into<String>) -> Self {
@@ -222,6 +229,20 @@ where
     #[must_use]
     pub const fn head_row_number(mut self, rows: u32) -> Self {
         self.options.head_row_number = rows;
+        self
+    }
+
+    /// Includes or skips rows containing no values.
+    #[must_use]
+    pub const fn ignore_empty_row(mut self, ignore: bool) -> Self {
+        self.options.ignore_empty_row = ignore;
+        self
+    }
+
+    /// Enables or disables Java EasyExcel-compatible string trimming.
+    #[must_use]
+    pub const fn auto_trim(mut self, enabled: bool) -> Self {
+        self.options.auto_trim = enabled;
         self
     }
 

@@ -124,23 +124,29 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .all_sheets()
         .head_row_number(3)
         .ignore_empty_row(false)
+        .auto_trim(false)
         .password("read-secret")
         .charset("GBK");
     assert_eq!(read.path, PathBuf::from("input.xlsx"));
     assert_eq!(read.options.sheet, SheetSelector::All);
     assert_eq!(read.options.head_row_number, 3);
     assert!(!read.options.ignore_empty_row);
+    assert!(!read.options.auto_trim);
     assert_eq!(read.options.password.as_deref(), Some("read-secret"));
     assert_eq!(read.options.charset.name(), "GBK");
 
     let sync = EasyExcel::read_sync::<Value>("sync.xlsx")
         .sheet("Values")
         .head_row_number(2)
+        .ignore_empty_row(false)
+        .auto_trim(false)
         .password("sync-secret")
         .charset(CsvCharset::new("UTF-16BE"));
     assert_eq!(sync.path, PathBuf::from("sync.xlsx"));
     assert_eq!(sync.options.sheet, SheetSelector::Name("Values".to_owned()));
     assert_eq!(sync.options.head_row_number, 2);
+    assert!(!sync.options.ignore_empty_row);
+    assert!(!sync.options.auto_trim);
     assert_eq!(sync.options.password.as_deref(), Some("sync-secret"));
     assert_eq!(sync.options.charset.name(), "UTF-16BE");
 

@@ -66,6 +66,49 @@ impl ExcelRow for TestRow {
     }
 }
 
+#[derive(Debug, PartialEq)]
+struct RawRow(Vec<CellValue>);
+
+impl ExcelRow for RawRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] = &[
+            ExcelColumn::new("shared", "Shared", Some(0), 0, None),
+            ExcelColumn::new("inline", "Inline", Some(1), 1, None),
+            ExcelColumn::new("boolean", "Boolean", Some(2), 2, None),
+            ExcelColumn::new("integer", "Integer", Some(3), 3, None),
+            ExcelColumn::new("float", "Float", Some(4), 4, None),
+            ExcelColumn::new("formula_number", "Formula number", Some(5), 5, None),
+            ExcelColumn::new("formula_string", "Formula string", Some(6), 6, None),
+            ExcelColumn::new("error", "Error", Some(7), 7, None),
+            ExcelColumn::new("date", "Date", Some(8), 8, None),
+        ];
+        COLUMNS
+    }
+
+    fn from_row(row: &RowData) -> Result<Self> {
+        Ok(Self(
+            Self::schema()
+                .iter()
+                .map(|column| row.cell(column).cloned().unwrap_or(CellValue::Empty))
+                .collect(),
+        ))
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(self.0.clone())
+    }
+}
+
+#[derive(Default)]
+struct RawProbe(Vec<RawRow>);
+
+impl ReadListener<RawRow> for RawProbe {
+    fn invoke(&mut self, data: RawRow, _context: &AnalysisContext) -> Result<()> {
+        self.0.push(data);
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 #[allow(clippy::struct_excessive_bools)]
 struct Probe {
@@ -151,6 +194,7 @@ fn options() -> ReadOptions {
         sheet: SheetSelector::First,
         head_row_number: 1,
         ignore_empty_row: true,
+        auto_trim: true,
         password: None,
         charset: CsvCharset::default(),
     }
@@ -193,6 +237,18 @@ fn rewrite_first_sheet(source: &Path, destination: &Path, replacement: &str) -> 
             entry.read_to_end(&mut bytes)?;
             writer.write_all(&bytes)?;
         }
+    }
+    writer.finish().map_err(test_error)?;
+    Ok(())
+}
+
+fn write_xlsx_package(path: &Path, entries: &[(&str, &str)]) -> Result<()> {
+    let mut writer = ZipWriter::new(fs::File::create(path)?);
+    for (name, contents) in entries {
+        writer
+            .start_file(*name, SimpleFileOptions::default())
+            .map_err(test_error)?;
+        writer.write_all(contents.as_bytes())?;
     }
     writer.finish().map_err(test_error)?;
     Ok(())
@@ -287,7 +343,7 @@ fn calamine_values_map_to_every_core_cell_variant() {
         ),
         (
             DataRef::Error(CellErrorType::Div0),
-            CellValue::Error("Div0".to_owned()),
+            CellValue::String("#DIV/0!".to_owned()),
         ),
     ];
     for (input, expected) in cases {
@@ -319,6 +375,10 @@ fn helpers_preserve_diagnostics_and_xlsx_column_limits() {
         "excel format error: broken"
     );
     assert!(!is_compound_document(&mut FaultyBufRead));
+    assert_eq!(java_trim("\0\t value \r\n"), "value");
+    assert_eq!(java_trim("\u{a0}value\u{a0}"), "\u{a0}value\u{a0}");
+    assert!(sheet_name_matches(" Sheet ", "Sheet", true));
+    assert!(!sheet_name_matches(" Sheet ", "Sheet", false));
 }
 
 #[test]
@@ -584,28 +644,177 @@ fn reads_java_easyexcel_encrypted_xlsx_fixture() -> Result<()> {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("mixed-cells.xlsx");
+    write_xlsx_package(
+        &path,
+        &[
+            (
+                "[Content_Types].xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>"#,
+            ),
+            (
+                "_rels/.rels",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#,
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <workbookPr date1904="1"/>
+  <sheets><sheet name="Mixed" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#,
+            ),
+            (
+                "xl/sharedStrings.xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1">
+  <si><r><t xml:space="preserve">  shared_x000D_</t></r><r><t xml:space="preserve">value  </t></r></si>
+</sst>"#,
+            ),
+            (
+                "xl/styles.xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="14"/></cellXfs>
+</styleSheet>"#,
+            ),
+            (
+                "xl/worksheets/sheet1.xml",
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:I2"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Shared</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Inline</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>Boolean</t></is></c>
+      <c r="D1" t="inlineStr"><is><t>Integer</t></is></c>
+      <c r="E1" t="inlineStr"><is><t>Float</t></is></c>
+      <c r="F1" t="inlineStr"><is><t>Formula number</t></is></c>
+      <c r="G1" t="inlineStr"><is><t>Formula string</t></is></c>
+      <c r="H1" t="inlineStr"><is><t>Error</t></is></c>
+      <c r="I1" t="inlineStr"><is><t>Date</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s"><v>0</v></c>
+      <c r="B2" t="inlineStr"><is><r><t xml:space="preserve">  inline </t></r><r><t xml:space="preserve">value  </t></r></is></c>
+      <c r="C2" t="b"><v>1</v></c>
+      <c r="D2" t="n"><v>42</v></c>
+      <c r="E2" t="n"><v>3.5</v></c>
+      <c r="F2"><f>SUM(D2:E2)</f><v>45.5</v></c>
+      <c r="G2" t="str"><f>CONCAT("cache","d")</f><v>cached</v></c>
+      <c r="H2" t="e"><v>#DIV/0!</v></c>
+      <c r="I2" s="1"><v>1</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+            ),
+        ],
+    )?;
+
+    let mut probe = RawProbe::default();
+    read_xlsx::<RawRow, _>(&path, &options(), &mut probe)?;
+    assert_eq!(probe.0.len(), 1);
+    assert_eq!(
+        probe.0[0].0[0],
+        CellValue::String("shared\rvalue".to_owned())
+    );
+    assert_eq!(
+        probe.0[0].0[1],
+        CellValue::String("inline value".to_owned())
+    );
+    assert_eq!(probe.0[0].0[2], CellValue::Bool(true));
+    assert_eq!(probe.0[0].0[3], CellValue::Float(42.0));
+    assert_eq!(probe.0[0].0[4], CellValue::Float(3.5));
+    assert_eq!(probe.0[0].0[5], CellValue::Float(45.5));
+    assert_eq!(probe.0[0].0[6], CellValue::String("cached".to_owned()));
+    assert_eq!(probe.0[0].0[7], CellValue::String("#DIV/0!".to_owned()));
+    assert_eq!(probe.0[0].0[8].as_text(), "1904-01-02 00:00:00");
+
+    let mut untrimmed = RawProbe::default();
+    read_xlsx::<RawRow, _>(
+        &path,
+        &ReadOptions {
+            auto_trim: false,
+            ..options()
+        },
+        &mut untrimmed,
+    )?;
+    assert_eq!(
+        untrimmed.0[0].0[0],
+        CellValue::String("  shared\rvalue  ".to_owned())
+    );
+    assert_eq!(
+        untrimmed.0[0].0[1],
+        CellValue::String("  inline value  ".to_owned())
+    );
+    Ok(())
+}
+
+#[test]
 fn sheet_selection_supports_first_index_name_all_and_missing_values() -> Result<()> {
     let (_directory, path) = workbook_fixture()?;
     let workbook: Xlsx<_> = open_workbook(path).map_err(test_error)?;
     assert_eq!(
-        selected_sheet_names(&workbook, &SheetSelector::First)?,
+        selected_sheet_names(&workbook, &SheetSelector::First, true)?,
         vec![(0, "First".to_owned())]
     );
     assert_eq!(
-        selected_sheet_names(&workbook, &SheetSelector::Index(1))?,
+        selected_sheet_names(&workbook, &SheetSelector::Index(1), true)?,
         vec![(1, "Second".to_owned())]
     );
     assert_eq!(
-        selected_sheet_names(&workbook, &SheetSelector::Name("Second".to_owned()))?,
+        selected_sheet_names(&workbook, &SheetSelector::Name("Second".to_owned()), true,)?,
         vec![(1, "Second".to_owned())]
     );
     assert_eq!(
-        selected_sheet_names(&workbook, &SheetSelector::All)?.len(),
+        selected_sheet_names(&workbook, &SheetSelector::All, true)?.len(),
         2
     );
-    assert!(selected_sheet_names(&workbook, &SheetSelector::Index(2)).is_err());
-    assert!(selected_sheet_names(&workbook, &SheetSelector::Name("Missing".to_owned())).is_err());
-    assert!(select_sheet_names(Vec::new(), &SheetSelector::First).is_err());
+    assert!(selected_sheet_names(&workbook, &SheetSelector::Index(2), true).is_err());
+    assert!(
+        selected_sheet_names(&workbook, &SheetSelector::Name("Missing".to_owned()), true,).is_err()
+    );
+    assert!(select_sheet_names(Vec::new(), &SheetSelector::First, true).is_err());
+    assert_eq!(
+        select_sheet_names(
+            vec![" First ".to_owned()],
+            &SheetSelector::Name("First".to_owned()),
+            true,
+        )?,
+        vec![(0, " First ".to_owned())]
+    );
+    assert!(
+        select_sheet_names(
+            vec![" First ".to_owned()],
+            &SheetSelector::Name("First".to_owned()),
+            false,
+        )
+        .is_err()
+    );
 
     let legacy = || {
         vec![
@@ -613,16 +822,21 @@ fn sheet_selection_supports_first_index_name_all_and_missing_values() -> Result<
             ("Second".to_owned(), Range::empty()),
         ]
     };
-    let first = select_xls_sheets(legacy(), &SheetSelector::First)?;
+    let first = select_xls_sheets(legacy(), &SheetSelector::First, true)?;
     assert_eq!((first[0].0, first[0].1.as_str()), (0, "First"));
-    let second = select_xls_sheets(legacy(), &SheetSelector::Index(1))?;
+    let second = select_xls_sheets(legacy(), &SheetSelector::Index(1), true)?;
     assert_eq!((second[0].0, second[0].1.as_str()), (1, "Second"));
-    let named = select_xls_sheets(legacy(), &SheetSelector::Name("Second".to_owned()))?;
+    let named = select_xls_sheets(legacy(), &SheetSelector::Name("Second".to_owned()), true)?;
     assert_eq!((named[0].0, named[0].1.as_str()), (1, "Second"));
-    assert_eq!(select_xls_sheets(legacy(), &SheetSelector::All)?.len(), 2);
-    assert!(select_xls_sheets(legacy(), &SheetSelector::Index(2)).is_err());
-    assert!(select_xls_sheets(legacy(), &SheetSelector::Name("Missing".to_owned())).is_err());
-    assert!(select_xls_sheets(Vec::new(), &SheetSelector::First).is_err());
+    assert_eq!(
+        select_xls_sheets(legacy(), &SheetSelector::All, true)?.len(),
+        2
+    );
+    assert!(select_xls_sheets(legacy(), &SheetSelector::Index(2), true).is_err());
+    assert!(
+        select_xls_sheets(legacy(), &SheetSelector::Name("Missing".to_owned()), true,).is_err()
+    );
+    assert!(select_xls_sheets(Vec::new(), &SheetSelector::First, true).is_err());
     Ok(())
 }
 
@@ -880,7 +1094,7 @@ fn row_processing_handles_headers_skips_data_and_listener_failures() -> Result<(
         0,
         "First",
         0,
-        vec![CellValue::String("Value".to_owned()), CellValue::Empty],
+        vec![CellValue::String(" Value ".to_owned()), CellValue::Empty],
         &options(),
         &mut headers,
         &mut probe,
@@ -1000,6 +1214,53 @@ fn row_processing_handles_headers_skips_data_and_listener_failures() -> Result<(
         ReadFlow::Continue
     );
     assert_eq!(tolerated_invoke.errors, 1);
+
+    let mut trimming_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    process_row::<TestRow>(
+        0,
+        "First",
+        0,
+        vec![CellValue::String("  trimmed  ".to_owned())],
+        &no_head,
+        &mut headers,
+        &mut trimming_probe,
+    )?;
+    assert_eq!(trimming_probe.rows, vec![TestRow("trimmed".to_owned())]);
+    process_row::<TestRow>(
+        0,
+        "First",
+        1,
+        vec![CellValue::String("   ".to_owned())],
+        &no_head,
+        &mut headers,
+        &mut trimming_probe,
+    )?;
+    assert_eq!(trimming_probe.rows.len(), 1);
+
+    let mut untrimmed_probe = Probe {
+        continue_reading: true,
+        ..Probe::default()
+    };
+    process_row::<TestRow>(
+        0,
+        "First",
+        0,
+        vec![CellValue::String("  preserved  ".to_owned())],
+        &ReadOptions {
+            head_row_number: 0,
+            auto_trim: false,
+            ..options()
+        },
+        &mut headers,
+        &mut untrimmed_probe,
+    )?;
+    assert_eq!(
+        untrimmed_probe.rows,
+        vec![TestRow("  preserved  ".to_owned())]
+    );
     Ok(())
 }
 

@@ -24,6 +24,7 @@ let listener = PageReadListener::new(1_000, |rows, _context| save(rows));
 
 EasyExcel::read::<User, _>("users.xlsx", listener)
     .sheet("Users")
+    .auto_trim(true)
     .do_read()?;
 # Ok(())
 # }
@@ -162,6 +163,16 @@ exception routing. With `ignore_empty_row(false)`, a row-metadata-only OOXML
 scan also preserves leading, intermediate, and trailing empty-row callbacks;
 the default path skips that extra scan. The remaining SAX compatibility work is
 tracked in [the compatibility contract](docs/compatibility.md#xlsx-streaming-boundary).
+Shared and inline rich strings, booleans, numbers, cached formula results,
+error text, and 1900/1904 dates follow Java's typed read behavior. String cells
+and headers are trimmed by default; call `.auto_trim(false)` to preserve their
+outer whitespace. The same option controls whitespace-tolerant sheet-name
+matching, using Java `String.trim()` semantics.
+
+Run `./scripts/benchmark-million-rows.sh` for the release-scale streaming
+benchmark. It writes and reads one million typed rows and reports elapsed time,
+peak RSS, and XLSX size; pass a smaller row count as the first argument for a
+quick smoke run.
 
 Password-protected `.xlsx` files use the same Java-style builder call on both
 read and write paths:

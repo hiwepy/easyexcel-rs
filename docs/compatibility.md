@@ -18,6 +18,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `EasyExcel.read(file, head, listener)` | `EasyExcel::read::<T, _>(file, listener)` | implemented |
 | `headRowNumber` | `head_row_number` | implemented |
 | `ignoreEmptyRow` | `ignore_empty_row` | implemented |
+| `autoTrim` | `auto_trim` | implemented: defaults to `true`; sheet-name matching, content/header strings, and trim-to-empty row handling match Java |
 | `sheet(Integer/String)` | `sheet(index/name)` | implemented |
 | `doRead` | `do_read` | implemented |
 | `doReadSync` | `read_sync(...).do_read_sync()` | implemented |
@@ -48,7 +49,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
 | CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, stateful same-sheet multi-write, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; JVM-only charset providers remain |
-| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate/trailing empty rows, row conversion, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; comments, hyperlinks, merged-cell extras, and disk-backed shared-string caching remain |
+| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, numbers, dates, cached formula results, error text, row conversion, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; raw formula metadata, comments, hyperlinks, merged-cell extras, and disk-backed shared-string caching remain |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
@@ -75,6 +76,17 @@ callback is followed by `has_next`; `false` stops the complete workbook; and a
 stopped sheet does not invoke `do_after_all_analysed`. Conversion and listener
 callback failures both pass through `on_exception`.
 
+String cells are trimmed by default, including header strings, matching Java's
+`GlobalConfiguration.autoTrim = true`. A string that becomes empty after
+trimming participates in Java-compatible empty-row filtering. Name-based sheet
+selection trims both the requested and actual name while retaining the actual
+workbook name in callbacks. Trimming uses Java `String.trim()` semantics, so
+only leading and trailing characters at or below U+0020 are removed. Shared strings
+and inline rich-text runs are concatenated, Excel `_xHHHH_` escapes are
+decoded, formula cells expose their cached typed value, error cells expose
+their literal text, and date values honor the workbook's 1900/1904 windowing.
+Raw formula metadata remains a separate compatibility gap.
+
 Like Java's `RowTagHandler`, the dispatcher synthesizes every missing row before
 the first cell-bearing row and between later cell-bearing rows. This preserves
 empty header callbacks and `ignore_empty_row(false)` data callbacks without
@@ -91,6 +103,23 @@ disk-backed cache. It also does not expose Java's comments, hyperlinks, and
 merged-cell extra-data events. Those gaps require focused extensions around
 the OOXML stream, not a second implementation of the already-streaming basic
 cell path.
+
+## Million-row benchmark
+
+The release benchmark is reproducible and intentionally excluded from normal
+test runs:
+
+```shell
+./scripts/benchmark-million-rows.sh
+```
+
+It writes 1,000,000 typed rows with the constant-memory XLSX writer, reads them
+through the event listener without collecting rows, verifies the observed row
+count, and reports write/read time plus output size. `/usr/bin/time -l` on
+macOS or `/usr/bin/time -v` on Linux records peak RSS for the complete run. A
+smaller smoke run can be selected with the first argument, for example
+`./scripts/benchmark-million-rows.sh 1000`. The latest measured environment and
+results are recorded in [benchmarks.md](benchmarks.md).
 
 ## Encryption boundary
 
