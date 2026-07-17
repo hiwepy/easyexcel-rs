@@ -11,8 +11,9 @@ use easyexcel_core::{
     AnchorType, CellValue, Converter, ConverterRegistry, CsvCharset, ExcelBorderStyle,
     ExcelCellStyle, ExcelColor, ExcelColumn, ExcelDataFormat, ExcelError, ExcelFillPattern,
     ExcelFontScript, ExcelFontStyle, ExcelHorizontalAlignment, ExcelRow, ExcelUnderline,
-    ExcelVerticalAlignment, ExcelWriteMetadata, ImageData, Result, WriteCellContext, WriteHandler,
-    WriteRowContext, WriteSheetContext, WriteWorkbookContext,
+    ExcelVerticalAlignment, ExcelWriteMetadata, ImageData, Result, RichTextStringData,
+    WriteCellContext, WriteFont, WriteHandler, WriteRowContext, WriteSheetContext,
+    WriteWorkbookContext,
 };
 use encoding_rs::{CoderResult, Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use ms_offcrypto_writer::Ecma376AgileWriter;
@@ -2169,6 +2170,7 @@ fn write_data_row_with_handlers(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn write_cell(
     worksheet: &mut Worksheet,
     row_index: u32,
@@ -2260,6 +2262,9 @@ fn write_cell(
                 .insert_image_fit_to_cell(row_index, column, &image, true)
                 .map_err(format_error)?;
         }
+        CellValue::RichText(value) => {
+            write_rich_text(worksheet, row_index, column, value, &format)?;
+        }
         CellValue::Images { value, images } => {
             write_cell(
                 worksheet,
@@ -2285,6 +2290,133 @@ fn image_from_buffer(bytes: &[u8]) -> Result<Image> {
         ));
     }
     Image::new_from_buffer(bytes).map_err(format_error)
+}
+
+fn write_rich_text(
+    worksheet: &mut Worksheet,
+    row: u32,
+    column: u16,
+    data: &RichTextStringData,
+    cell_format: &Format,
+) -> Result<()> {
+    if data.text_string().is_empty() {
+        worksheet
+            .write_string_with_format(row, column, "", cell_format)
+            .map(|_| ())
+            .map_err(format_error)?;
+        return Ok(());
+    }
+    let runs = rich_text_runs(data)?;
+    let references = runs
+        .iter()
+        .map(|(format, text)| (format, text.as_str()))
+        .collect::<Vec<_>>();
+    worksheet
+        .write_rich_string_with_format(row, column, &references, cell_format)
+        .map(|_| ())
+        .map_err(format_error)
+}
+
+fn rich_text_runs(data: &RichTextStringData) -> Result<Vec<(Format, String)>> {
+    let text = data.text_string();
+    let utf16_length = text.encode_utf16().count();
+    let mut boundaries = vec![0, utf16_length];
+    for interval in data.interval_fonts() {
+        let start = interval.start_index();
+        let end = interval.end_index();
+        if start >= end || end > utf16_length {
+            return Err(ExcelError::Format(format!(
+                "rich-text font range [{start}, {end}) is outside UTF-16 length {utf16_length}"
+            )));
+        }
+        if utf16_byte_index(text, start).is_none() || utf16_byte_index(text, end).is_none() {
+            return Err(ExcelError::Format(format!(
+                "rich-text font range [{start}, {end}) splits a UTF-16 surrogate pair"
+            )));
+        }
+        boundaries.push(start);
+        boundaries.push(end);
+    }
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    boundaries
+        .windows(2)
+        .map(|window| {
+            let start = window[0];
+            let end = window[1];
+            let start_byte = utf16_byte_index(text, start).expect("validated UTF-16 boundary");
+            let end_byte = utf16_byte_index(text, end).expect("validated UTF-16 boundary");
+            let font = data
+                .interval_fonts()
+                .iter()
+                .rev()
+                .find(|interval| interval.start_index() <= start && interval.end_index() >= end)
+                .map_or(data.write_font(), |interval| Some(interval.write_font()));
+            Ok((
+                font.map_or_else(Format::new, rich_text_format),
+                text[start_byte..end_byte].to_owned(),
+            ))
+        })
+        .collect()
+}
+
+fn utf16_byte_index(text: &str, target: usize) -> Option<usize> {
+    let mut utf16_index = 0;
+    for (byte_index, character) in text.char_indices() {
+        if utf16_index == target {
+            return Some(byte_index);
+        }
+        utf16_index += character.len_utf16();
+        if utf16_index > target {
+            return None;
+        }
+    }
+    (utf16_index == target).then_some(text.len())
+}
+
+fn rich_text_format(font: &WriteFont) -> Format {
+    let mut format = Format::new();
+    if let Some(name) = font.get_font_name() {
+        format = format.set_font_name(name);
+    }
+    if let Some(size) = font.get_font_height_in_points() {
+        format = format.set_font_size(size);
+    }
+    if let Some(italic) = font.get_italic() {
+        format = if italic {
+            format.set_italic()
+        } else {
+            format.unset_italic()
+        };
+    }
+    if let Some(strikeout) = font.get_strikeout() {
+        format = if strikeout {
+            format.set_font_strikethrough()
+        } else {
+            format.unset_font_strikethrough()
+        };
+    }
+    if let Some(color) = font.get_color() {
+        format = format.set_font_color(annotation_color(color));
+    }
+    if let Some(script) = font.get_type_offset() {
+        format = format.set_font_script(annotation_font_script(script));
+    }
+    if let Some(underline) = font.get_underline() {
+        format = format.set_underline(annotation_underline(underline));
+    }
+    if let Some(charset) = font.get_charset() {
+        format = format.set_font_charset(charset);
+    }
+    if let Some(bold) = font.get_bold() {
+        format = if bold {
+            format.set_bold()
+        } else {
+            format.unset_bold()
+        };
+    }
+    format
 }
 
 fn insert_image_data(

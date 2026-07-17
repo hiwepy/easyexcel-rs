@@ -108,6 +108,8 @@ pub enum CellValue {
     },
     /// Encoded PNG, JPEG, GIF, or BMP image bytes.
     Image(Vec<u8>),
+    /// Text with whole-string and interval font metadata.
+    RichText(RichTextStringData),
     /// A scalar cell decorated with Java-compatible `WriteCellData.imageDataList` entries.
     Images {
         /// Scalar value written before the drawings are added.
@@ -137,6 +139,7 @@ impl CellValue {
             Self::Date(value) => value.format("%Y-%m-%d").to_string(),
             Self::DateTime(value) => value.format("%Y-%m-%d %H:%M:%S").to_string(),
             Self::Hyperlink { text, .. } => text.clone(),
+            Self::RichText(value) => value.text_string().to_owned(),
             Self::Comment { value, .. } | Self::Images { value, .. } => value.as_text(),
         }
     }
@@ -150,6 +153,7 @@ impl CellValue {
             Self::Bool(_) => CellDataType::Boolean,
             Self::Int(_) | Self::Float(_) | Self::Decimal(_) => CellDataType::Number,
             Self::Date(_) | Self::DateTime(_) => CellDataType::Date,
+            Self::RichText(_) => CellDataType::RichTextString,
             Self::Error(_) => CellDataType::Error,
             Self::Formula(_) => CellDataType::Formula,
             Self::Comment { value, .. } | Self::Images { value, .. } => value.data_type(),
@@ -480,6 +484,270 @@ impl ImageData {
     }
 }
 
+/// Runtime font metadata equivalent to Java `WriteFont`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WriteFont {
+    font_name: Option<String>,
+    font_height_in_points: Option<f64>,
+    italic: Option<bool>,
+    strikeout: Option<bool>,
+    color: Option<ExcelColor>,
+    type_offset: Option<ExcelFontScript>,
+    underline: Option<ExcelUnderline>,
+    charset: Option<u8>,
+    bold: Option<bool>,
+}
+
+impl WriteFont {
+    /// Creates font metadata with every property unspecified.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            font_name: None,
+            font_height_in_points: None,
+            italic: None,
+            strikeout: None,
+            color: None,
+            type_offset: None,
+            underline: None,
+            charset: None,
+            bold: None,
+        }
+    }
+
+    /// Sets the font family name.
+    #[must_use]
+    pub fn font_name(mut self, value: impl Into<String>) -> Self {
+        self.font_name = Some(value.into());
+        self
+    }
+
+    /// Sets the font size in points.
+    #[must_use]
+    pub const fn font_height_in_points(mut self, value: f64) -> Self {
+        self.font_height_in_points = Some(value);
+        self
+    }
+
+    /// Sets italic rendering.
+    #[must_use]
+    pub const fn italic(mut self, value: bool) -> Self {
+        self.italic = Some(value);
+        self
+    }
+
+    /// Sets strike-through rendering.
+    #[must_use]
+    pub const fn strikeout(mut self, value: bool) -> Self {
+        self.strikeout = Some(value);
+        self
+    }
+
+    /// Sets an indexed or RGB font color.
+    #[must_use]
+    pub const fn color(mut self, value: ExcelColor) -> Self {
+        self.color = Some(value);
+        self
+    }
+
+    /// Sets superscript or subscript rendering.
+    #[must_use]
+    pub const fn type_offset(mut self, value: ExcelFontScript) -> Self {
+        self.type_offset = Some(value);
+        self
+    }
+
+    /// Sets underline rendering.
+    #[must_use]
+    pub const fn underline(mut self, value: ExcelUnderline) -> Self {
+        self.underline = Some(value);
+        self
+    }
+
+    /// Sets the font character set.
+    #[must_use]
+    pub const fn charset(mut self, value: u8) -> Self {
+        self.charset = Some(value);
+        self
+    }
+
+    /// Sets bold rendering.
+    #[must_use]
+    pub const fn bold(mut self, value: bool) -> Self {
+        self.bold = Some(value);
+        self
+    }
+
+    /// Returns the optional font family name.
+    #[must_use]
+    pub fn get_font_name(&self) -> Option<&str> {
+        self.font_name.as_deref()
+    }
+
+    /// Returns the optional font size.
+    #[must_use]
+    pub const fn get_font_height_in_points(&self) -> Option<f64> {
+        self.font_height_in_points
+    }
+
+    /// Returns the optional italic flag.
+    #[must_use]
+    pub const fn get_italic(&self) -> Option<bool> {
+        self.italic
+    }
+
+    /// Returns the optional strike-through flag.
+    #[must_use]
+    pub const fn get_strikeout(&self) -> Option<bool> {
+        self.strikeout
+    }
+
+    /// Returns the optional font color.
+    #[must_use]
+    pub const fn get_color(&self) -> Option<ExcelColor> {
+        self.color
+    }
+
+    /// Returns the optional superscript/subscript mode.
+    #[must_use]
+    pub const fn get_type_offset(&self) -> Option<ExcelFontScript> {
+        self.type_offset
+    }
+
+    /// Returns the optional underline mode.
+    #[must_use]
+    pub const fn get_underline(&self) -> Option<ExcelUnderline> {
+        self.underline
+    }
+
+    /// Returns the optional character set.
+    #[must_use]
+    pub const fn get_charset(&self) -> Option<u8> {
+        self.charset
+    }
+
+    /// Returns the optional bold flag.
+    #[must_use]
+    pub const fn get_bold(&self) -> Option<bool> {
+        self.bold
+    }
+}
+
+/// One Java `RichTextStringData.IntervalFont` range using UTF-16 indices.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntervalFont {
+    start_index: usize,
+    end_index: usize,
+    write_font: WriteFont,
+}
+
+impl IntervalFont {
+    /// Creates a half-open font range `[start_index, end_index)`.
+    #[must_use]
+    pub const fn new(start_index: usize, end_index: usize, write_font: WriteFont) -> Self {
+        Self {
+            start_index,
+            end_index,
+            write_font,
+        }
+    }
+
+    /// Returns the inclusive UTF-16 start index.
+    #[must_use]
+    pub const fn start_index(&self) -> usize {
+        self.start_index
+    }
+
+    /// Returns the exclusive UTF-16 end index.
+    #[must_use]
+    pub const fn end_index(&self) -> usize {
+        self.end_index
+    }
+
+    /// Returns the interval font.
+    #[must_use]
+    pub const fn write_font(&self) -> &WriteFont {
+        &self.write_font
+    }
+}
+
+/// Java `RichTextStringData` equivalent.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RichTextStringData {
+    text_string: String,
+    write_font: Option<WriteFont>,
+    interval_font_list: Vec<IntervalFont>,
+}
+
+impl RichTextStringData {
+    /// Creates rich-text metadata for a string.
+    #[must_use]
+    pub fn new(text_string: impl Into<String>) -> Self {
+        Self {
+            text_string: text_string.into(),
+            write_font: None,
+            interval_font_list: Vec::new(),
+        }
+    }
+
+    /// Applies a font to the entire string.
+    #[must_use]
+    pub fn apply_font(mut self, write_font: WriteFont) -> Self {
+        self.write_font = Some(write_font);
+        self
+    }
+
+    /// Applies a font to a half-open UTF-16 character range.
+    #[must_use]
+    pub fn apply_font_range(
+        mut self,
+        start_index: usize,
+        end_index: usize,
+        write_font: WriteFont,
+    ) -> Self {
+        self.interval_font_list
+            .push(IntervalFont::new(start_index, end_index, write_font));
+        self
+    }
+
+    /// Replaces all interval font entries.
+    #[must_use]
+    pub fn interval_font_list(mut self, value: impl IntoIterator<Item = IntervalFont>) -> Self {
+        self.interval_font_list = value.into_iter().collect();
+        self
+    }
+
+    /// Returns the underlying text.
+    #[must_use]
+    pub fn text_string(&self) -> &str {
+        &self.text_string
+    }
+
+    /// Returns the optional whole-string font.
+    #[must_use]
+    pub const fn write_font(&self) -> Option<&WriteFont> {
+        self.write_font.as_ref()
+    }
+
+    /// Returns interval fonts in application order.
+    #[must_use]
+    pub fn interval_fonts(&self) -> &[IntervalFont] {
+        &self.interval_font_list
+    }
+}
+
+impl IntoExcelCell for RichTextStringData {
+    fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
+        Ok(CellValue::RichText(self.clone()))
+    }
+}
+
+impl FromExcelCell for RichTextStringData {
+    fn from_excel_cell(cell: Option<&CellValue>, _context: &ConvertContext) -> Result<Self> {
+        Ok(Self::new(cell.map_or_else(String::new, CellValue::as_text)))
+    }
+}
+
 /// Java `WriteCellData` subset that preserves a scalar plus `imageDataList`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WriteCellData {
@@ -501,6 +769,12 @@ impl WriteCellData {
     #[must_use]
     pub fn from_image(image: impl Into<Vec<u8>>) -> Self {
         Self::new(CellValue::Empty).image(ImageData::new(image))
+    }
+
+    /// Creates a rich-text cell, matching Java's `RICH_TEXT_STRING` cell data type.
+    #[must_use]
+    pub const fn from_rich_text(value: RichTextStringData) -> Self {
+        Self::new(CellValue::RichText(value))
     }
 
     /// Appends one image entry.

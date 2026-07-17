@@ -390,6 +390,27 @@ impl ExcelRow for AnchoredImageRow {
     }
 }
 
+struct RichTextRow {
+    value: RichTextStringData,
+}
+
+impl ExcelRow for RichTextRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("value", "Rich", Some(0), 0, None)];
+        COLUMNS
+    }
+
+    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+        Ok(Self {
+            value: RichTextStringData::default(),
+        })
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![CellValue::RichText(self.value.clone())])
+    }
+}
+
 impl ExcelRow for EveryCell {
     fn schema() -> &'static [ExcelColumn] {
         const COLUMNS: &[ExcelColumn] = &[
@@ -1582,6 +1603,108 @@ fn write_cell_data_emits_multiple_images_with_java_anchor_semantics() -> Result<
     assert_eq!(drawing.matches("editAs=\"absolute\"").count(), 1);
     assert!(drawing.contains("<xdr:col>3</xdr:col>"));
     assert!(drawing.contains("<xdr:row>4</xdr:row>"));
+    Ok(())
+}
+
+#[test]
+fn rich_text_writer_applies_java_whole_and_utf16_interval_fonts() -> Result<()> {
+    let whole = WriteFont::new()
+        .font_name("Aptos")
+        .font_height_in_points(13.0)
+        .italic(true)
+        .strikeout(true)
+        .color(ExcelColor::Indexed(10))
+        .type_offset(ExcelFontScript::Subscript)
+        .underline(ExcelUnderline::Single)
+        .charset(1)
+        .bold(true);
+    let override_font = WriteFont::new()
+        .italic(false)
+        .strikeout(false)
+        .color(ExcelColor::Rgb(0x00_80_00))
+        .type_offset(ExcelFontScript::None)
+        .underline(ExcelUnderline::None)
+        .bold(false);
+    let rich = RichTextStringData::new("A😀BC")
+        .apply_font(whole)
+        .apply_font_range(1, 3, override_font.clone())
+        .apply_font_range(3, 5, WriteFont::new().color(ExcelColor::Indexed(11)))
+        .apply_font_range(4, 5, override_font);
+    let runs = rich_text_runs(&rich)?;
+    assert_eq!(
+        runs.iter()
+            .map(|(_, text)| text.as_str())
+            .collect::<Vec<_>>(),
+        ["A", "😀", "B", "C"]
+    );
+    assert_eq!(utf16_byte_index("A😀BC", 0), Some(0));
+    assert_eq!(utf16_byte_index("A😀BC", 1), Some(1));
+    assert_eq!(utf16_byte_index("A😀BC", 2), None);
+    assert_eq!(utf16_byte_index("A😀BC", 5), Some("A😀BC".len()));
+    assert_eq!(utf16_byte_index("A😀BC", 6), None);
+    assert_eq!(rich_text_runs(&RichTextStringData::new("plain"))?.len(), 1);
+    assert!(
+        rich_text_runs(&RichTextStringData::new("abc").apply_font_range(1, 1, WriteFont::new()))
+            .is_err()
+    );
+    assert!(
+        rich_text_runs(&RichTextStringData::new("abc").apply_font_range(0, 4, WriteFont::new()))
+            .is_err()
+    );
+    assert!(
+        rich_text_runs(&RichTextStringData::new("😀").apply_font_range(0, 1, WriteFont::new()))
+            .is_err()
+    );
+    let _ = rich_text_format(&WriteFont::new());
+
+    let directory = tempdir()?;
+    let path = directory.path().join("rich-text.xlsx");
+    write_xlsx::<RichTextRow, _>(
+        &path,
+        &WriteOptions::default(),
+        [
+            RichTextRow {
+                value: rich.clone(),
+            },
+            RichTextRow {
+                value: RichTextStringData::new(""),
+            },
+        ],
+    )?;
+    let shared_strings = zip_entry(&path, "xl/sharedStrings.xml")?;
+    assert!(shared_strings.contains("<t>A</t>"));
+    assert!(shared_strings.contains("<t>😀</t>"));
+    assert!(shared_strings.contains("rgb=\"FF008000\""));
+    assert!(shared_strings.contains("<vertAlign val=\"subscript\"/>"));
+
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    let invalid = RichTextStringData::new("abc").apply_font_range(2, 2, WriteFont::new());
+    assert!(write_rich_text(worksheet, 0, 0, &invalid, &Format::new()).is_err());
+    let metadata = ExcelWriteMetadata::new();
+    assert!(
+        write_cell(
+            worksheet,
+            0,
+            0,
+            &TEST_COLUMN,
+            &CellValue::RichText(invalid),
+            SheetStyleContext::content(None, &metadata).column(&TEST_COLUMN),
+            &ImageLayout::default(),
+        )
+        .is_err()
+    );
+    assert!(
+        write_rich_text(
+            worksheet,
+            u32::MAX,
+            0,
+            &RichTextStringData::new(""),
+            &Format::new(),
+        )
+        .is_err()
+    );
+    assert!(write_rich_text(worksheet, u32::MAX, 0, &rich, &Format::new()).is_err());
     Ok(())
 }
 

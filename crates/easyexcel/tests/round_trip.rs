@@ -11,10 +11,11 @@ use std::thread;
 use chrono::NaiveDate;
 use easyexcel::{
     AnalysisContext, AnchorType, BigInt, CellStyle, CellValue, ClientAnchorData, Converter,
-    CoordinateData, EasyExcel, ExcelColumn, ExcelError, ExcelRow, HorizontalAlignment, ImageData,
-    ImageInputStream, InputStreamImageConverter, IntoExcelCell, PageReadListener,
-    ReadConverterContext, ReadListener, Result, Url, UrlImageConverter, VerticalAlignment,
-    WriteCellData, WriteConverterContext,
+    CoordinateData, EasyExcel, ExcelColor, ExcelColumn, ExcelError, ExcelFontScript, ExcelRow,
+    ExcelUnderline, HorizontalAlignment, ImageData, ImageInputStream, InputStreamImageConverter,
+    IntoExcelCell, PageReadListener, ReadConverterContext, ReadListener, Result,
+    RichTextStringData, Url, UrlImageConverter, VerticalAlignment, WriteCellData,
+    WriteConverterContext, WriteFont,
 };
 use tempfile::tempdir;
 use zip::ZipArchive;
@@ -57,6 +58,12 @@ struct StreamUrlImageRow {
 struct MultiImageRow {
     #[excel(name = "Images", index = 0)]
     cell: WriteCellData,
+}
+
+#[derive(Debug, Clone, PartialEq, ExcelRow)]
+struct RichTextFacadeRow {
+    #[excel(name = "Rich", index = 0)]
+    value: RichTextStringData,
 }
 
 #[derive(Default)]
@@ -519,6 +526,50 @@ fn public_facade_round_trips_scalar_write_cell_data_and_emits_multiple_images() 
         .read_to_string(&mut drawing_xml)?;
     assert_eq!(drawing_xml.matches("<xdr:twoCellAnchor").count(), 2);
     assert_eq!(drawing_xml.matches("editAs=\"absolute\"").count(), 1);
+    Ok(())
+}
+
+#[test]
+fn public_facade_writes_rich_text_and_reads_its_plain_value() -> Result<()> {
+    let rich = RichTextStringData::new("红色😀下标")
+        .apply_font(WriteFont::new().font_name("Aptos").bold(true))
+        .apply_font_range(
+            0,
+            2,
+            WriteFont::new()
+                .color(ExcelColor::Indexed(10))
+                .underline(ExcelUnderline::Single),
+        )
+        .apply_font_range(
+            2,
+            4,
+            WriteFont::new()
+                .color(ExcelColor::Rgb(0x00_80_00))
+                .type_offset(ExcelFontScript::Subscript),
+        );
+    let directory = tempdir()?;
+    let path = directory.path().join("rich-text.xlsx");
+    EasyExcel::write::<RichTextFacadeRow>(&path)
+        .sheet("Rich")
+        .do_write([RichTextFacadeRow {
+            value: rich.clone(),
+        }])?;
+
+    let rows = EasyExcel::read_sync::<RichTextFacadeRow>(&path)
+        .sheet("Rich")
+        .do_read_sync()?;
+    assert_eq!(rows[0].value.text_string(), rich.text_string());
+    assert!(rows[0].value.interval_fonts().is_empty());
+    let mut archive = ZipArchive::new(File::open(&path)?)
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    let mut shared_strings = String::new();
+    archive
+        .by_name("xl/sharedStrings.xml")
+        .map_err(|error| ExcelError::Format(error.to_string()))?
+        .read_to_string(&mut shared_strings)?;
+    assert!(shared_strings.contains("<r>"));
+    assert!(shared_strings.contains("红色"));
+    assert!(shared_strings.contains("😀"));
     Ok(())
 }
 

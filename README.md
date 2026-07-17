@@ -310,6 +310,13 @@ let cell = WriteCellData::new(CellValue::String("product".to_owned()))
 # Ok::<(), std::io::Error>(())
 ```
 
+`RichTextStringData` mirrors Java's whole-string `WriteFont` plus ordered
+`IntervalFont` overrides. Range indices use Java UTF-16 code units, so Chinese,
+emoji, overlapping ranges, superscript/subscript, underline, color, font name,
+size, charset, bold, italic, and strike-through retain Java semantics. XLSX
+stores real rich-text runs; typed reads return the plain text with no invented
+format metadata.
+
 Java `extraRead` maps to `.extra_read(CellExtraType::...)`. Enable `Comment`,
 `Hyperlink`, or `Merge` on an XLSX reader and implement `ReadListener::extra`
 to receive a `CellExtra` with optional text and zero-based first/last row and

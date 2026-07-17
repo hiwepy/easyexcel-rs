@@ -363,6 +363,69 @@ fn write_cell_image_data_matches_java_coordinate_anchor_and_list_model() -> Resu
 }
 
 #[test]
+fn rich_text_data_matches_java_write_font_and_utf16_interval_model() -> Result<()> {
+    let font = WriteFont::new()
+        .font_name("Aptos")
+        .font_height_in_points(12.5)
+        .italic(true)
+        .strikeout(false)
+        .color(ExcelColor::Rgb(0x12_34_56))
+        .type_offset(ExcelFontScript::Superscript)
+        .underline(ExcelUnderline::Double)
+        .charset(1)
+        .bold(true);
+    assert_eq!(font.get_font_name(), Some("Aptos"));
+    assert_eq!(font.get_font_height_in_points(), Some(12.5));
+    assert_eq!(font.get_italic(), Some(true));
+    assert_eq!(font.get_strikeout(), Some(false));
+    assert_eq!(font.get_color(), Some(ExcelColor::Rgb(0x12_34_56)));
+    assert_eq!(font.get_type_offset(), Some(ExcelFontScript::Superscript));
+    assert_eq!(font.get_underline(), Some(ExcelUnderline::Double));
+    assert_eq!(font.get_charset(), Some(1));
+    assert_eq!(font.get_bold(), Some(true));
+    assert_eq!(WriteFont::default(), WriteFont::new());
+
+    let interval = IntervalFont::new(0, 2, font.clone());
+    assert_eq!(interval.start_index(), 0);
+    assert_eq!(interval.end_index(), 2);
+    assert_eq!(interval.write_font(), &font);
+    let rich = RichTextStringData::new("红色green")
+        .apply_font(WriteFont::new().bold(false))
+        .apply_font_range(0, 2, font.clone());
+    assert_eq!(rich.text_string(), "红色green");
+    assert_eq!(rich.write_font().and_then(WriteFont::get_bold), Some(false));
+    assert_eq!(rich.interval_fonts(), std::slice::from_ref(&interval));
+    assert_eq!(
+        rich.clone()
+            .interval_font_list([interval.clone()])
+            .interval_fonts(),
+        &[interval]
+    );
+    let conversion = context(None);
+    let cell = rich.to_excel_cell(&conversion)?;
+    assert_eq!(cell.as_text(), "红色green");
+    assert_eq!(cell.data_type(), CellDataType::RichTextString);
+    assert!(!cell.is_empty());
+    assert_eq!(
+        RichTextStringData::from_excel_cell(
+            Some(&CellValue::String("plain".to_owned())),
+            &conversion
+        )?
+        .text_string(),
+        "plain"
+    );
+    assert_eq!(
+        RichTextStringData::from_excel_cell(None, &conversion)?.text_string(),
+        ""
+    );
+    assert!(matches!(
+        WriteCellData::from_rich_text(rich).value(),
+        CellValue::RichText(_)
+    ));
+    Ok(())
+}
+
+#[test]
 fn row_data_resolves_index_before_header_name() {
     let explicit = ExcelColumn::new("first", "Header", Some(1), 3, Some("0")).with_column_width(24);
     let named = ExcelColumn::new("second", "Header", None, i32::MAX, None);
