@@ -41,8 +41,8 @@ fn package_bytes(entries: &[(&str, &[u8])]) -> Cursor<Vec<u8>> {
     output
 }
 
-fn archive(entries: &[(&str, &str)]) -> ZipArchive<Cursor<Vec<u8>>> {
-    ZipArchive::new(package(entries)).expect("valid ZIP archive")
+fn archive(entries: &[(&str, &str)]) -> ZipArchive<Box<dyn ReadSeek>> {
+    ZipArchive::new(Box::new(package(entries)) as Box<dyn ReadSeek>).expect("valid ZIP archive")
 }
 
 fn xlsx_input_archive(entries: &[(&str, &str)]) -> ZipArchive<XlsxInput> {
@@ -52,6 +52,14 @@ fn xlsx_input_archive(entries: &[(&str, &str)]) -> ZipArchive<XlsxInput> {
 fn xlsx_input(entries: &[(&str, &str)]) -> XlsxInput {
     let bytes: Arc<[u8]> = Arc::from(package(entries).into_inner());
     XlsxInput::Memory(Cursor::new(bytes))
+}
+
+fn display_xml_reader<'a, R: Read + Seek>(
+    archive: &'a mut ZipArchive<R>,
+    path: &str,
+) -> Result<XmlReader<Box<dyn BufRead + 'a>>> {
+    let file = archive.by_name(path).map_err(format_error)?;
+    Ok(boxed_xml_reader(BufReader::new(file)))
 }
 
 fn valid_entries() -> Vec<(&'static str, &'static str)> {
@@ -88,6 +96,7 @@ fn valid_entries() -> Vec<(&'static str, &'static str)> {
 #[test]
 fn metadata_resolves_strict_case_insensitive_relationships_and_rows() -> Result<()> {
     let mut metadata = XlsxRowMetadata::new(package(&valid_entries()))?;
+    assert!(metadata.display_cells("Missing").is_err());
     assert_eq!(metadata.last_explicit_row("A&B")?, Some(4));
     assert!(metadata.last_explicit_row("Chart").is_err());
     assert!(metadata.last_explicit_row("Missing").is_err());
@@ -96,12 +105,173 @@ fn metadata_resolves_strict_case_insensitive_relationships_and_rows() -> Result<
         archive: archive(&[]),
         path_cache: HashMap::new(),
         sheet_paths: HashMap::from([("MissingPart".to_owned(), "missing.xml".to_owned())]),
+        cell_formats: vec![XlsxNumberFormat::Builtin(0)],
+        date_1904: false,
     };
+    assert!(missing_part.display_cells("MissingPart").is_err());
     assert!(missing_part.last_explicit_row("MissingPart").is_err());
 
     let mut missing_sheet_entries = valid_entries();
     missing_sheet_entries.pop();
     assert!(XlsxRowMetadata::new(package(&missing_sheet_entries)).is_err());
+    Ok(())
+}
+
+#[test]
+fn display_cell_stream_formats_exact_numbers_and_tracks_sparse_coordinates() -> Result<()> {
+    let formats = vec![
+        XlsxNumberFormat::Builtin(0),
+        XlsxNumberFormat::Custom("0.00_ ".to_owned()),
+    ];
+    assert_eq!(formats[0].display(1.0, false).as_deref(), Some("1"));
+    assert_eq!(
+        formats[1].display(24.199_812_4, false).as_deref(),
+        Some("24.20")
+    );
+    assert_eq!(XlsxNumberFormat::Builtin(999).display(1.0, false), None);
+
+    let mut archive = archive(&[(
+        "sheet.xml",
+        r#"<worksheet><sheetData>
+<row r="2"><c r="B2" s="1"><v><![CDATA[2087.0249999999996]]></v></c><c t="inlineStr"><is><t>text</t></is></c></row>
+<row><c><v>0</v></c><c s="99"><v>1</v></c><c t="n"></c></row>
+</sheetData></worksheet>"#,
+    )]);
+    let reader = display_xml_reader(&mut archive, "sheet.xml")?;
+    let mut cells = XlsxDisplayCellReader::new(reader, &formats, false)?;
+
+    let first = cells.next_cell()?.expect("first display cell");
+    assert_eq!(first.position, (1, 1));
+    assert_eq!(first.display_value.as_deref(), Some("2087.03"));
+    assert_eq!(
+        first.decimal_value.expect("decimal").to_string(),
+        "2087.025"
+    );
+    let inline = cells.next_cell()?.expect("inline string cell");
+    assert_eq!(inline.position, (1, 2));
+    assert_eq!(inline.display_value, None);
+    assert_eq!(inline.decimal_value, None);
+    let zero = cells.next_cell()?.expect("zero cell");
+    assert_eq!(zero.position, (2, 0));
+    assert_eq!(zero.display_value.as_deref(), Some("0"));
+    assert_eq!(zero.decimal_value.expect("zero decimal").to_string(), "0");
+    let unknown_style = cells.next_cell()?.expect("unknown-style cell");
+    assert_eq!(unknown_style.position, (2, 1));
+    assert_eq!(unknown_style.display_value, None);
+    assert_eq!(
+        unknown_style.decimal_value.expect("decimal").to_string(),
+        "1"
+    );
+    let empty_numeric = cells.next_cell()?.expect("empty numeric cell");
+    assert_eq!(empty_numeric.position, (2, 2));
+    assert_eq!(empty_numeric.display_value, None);
+    assert_eq!(empty_numeric.decimal_value, None);
+    assert!(cells.next_cell()?.is_none());
+    let infinity = excel_display_number(f64::INFINITY);
+    assert!(infinity.is_infinite() && infinity.is_sign_positive());
+    Ok(())
+}
+
+#[test]
+fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()> {
+    let formats = vec![XlsxNumberFormat::Builtin(0)];
+    for xml in ["<worksheet/>", "<worksheet><"] {
+        let mut archive = archive(&[("sheet.xml", xml)]);
+        let reader = display_xml_reader(&mut archive, "sheet.xml")?;
+        assert!(XlsxDisplayCellReader::new(reader, &formats, false).is_err());
+    }
+
+    for xml in [
+        "<worksheet><sheetData>",
+        "<worksheet><sheetData><row r=></row></sheetData></worksheet>",
+        "<worksheet><sheetData><row r=\"0\"></row></sheetData></worksheet>",
+        "<worksheet><sheetData><row><c r=></c></row></sheetData></worksheet>",
+        "<worksheet><sheetData><row><c r=\"XFE1\"></c></row></sheetData></worksheet>",
+        "<worksheet><sheetData><row><c s=\"bad\"></c></row></sheetData></worksheet>",
+        "<worksheet><sheetData><row><c><v>bad</v></c></row></sheetData></worksheet>",
+        "<worksheet><sheetData><row><c><v>NaN</v></c></row></sheetData></worksheet>",
+        "<worksheet><sheetData><row><c><v><",
+        "<worksheet><sheetData><row><c><v>1",
+        "<worksheet><sheetData><",
+    ] {
+        let mut archive = archive(&[("sheet.xml", xml)]);
+        let reader = display_xml_reader(&mut archive, "sheet.xml")?;
+        let mut cells = XlsxDisplayCellReader::new(reader, &formats, false)?;
+        assert!(cells.next_cell().is_err(), "{xml}");
+    }
+
+    for bytes in [
+        b"<worksheet><sheetData><row><c><v>\xff</v></c></row></sheetData></worksheet>".as_slice(),
+        b"<worksheet><sheetData><row><c><v><![CDATA[\xff]]></v></c></row></sheetData></worksheet>"
+            .as_slice(),
+    ] {
+        let mut archive =
+            ZipArchive::new(package_bytes(&[("sheet.xml", bytes)])).expect("ZIP archive");
+        let reader = display_xml_reader(&mut archive, "sheet.xml")?;
+        let mut cells = XlsxDisplayCellReader::new(reader, &formats, false)?;
+        assert!(cells.next_cell().is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn style_parser_maps_custom_builtin_defaults_and_rejects_invalid_xml() -> Result<()> {
+    let xml = r#"<styleSheet>
+<numFmts><numFmt numFmtId="164" formatCode="0.00"/><numFmt numFmtId="165"/></numFmts>
+<cellXfs><xf numFmtId="164"/><xf numFmtId="14"/><xf/></cellXfs>
+</styleSheet>"#;
+    let mut styles = archive(&[("styles.xml", xml)]);
+    let cache = path_cache(&styles);
+    let expected = vec![
+        XlsxNumberFormat::Custom("0.00".to_owned()),
+        XlsxNumberFormat::Builtin(14),
+        XlsxNumberFormat::Builtin(0),
+    ];
+    assert_eq!(
+        read_cell_formats(&mut styles, &cache, "styles.xml")?,
+        expected
+    );
+    let mut styles = xlsx_input_archive(&[("styles.xml", xml)]);
+    let cache = path_cache(&styles);
+    assert_eq!(
+        read_cell_formats(&mut styles, &cache, "styles.xml")?,
+        expected
+    );
+
+    let mut empty = archive(&[("styles.xml", "<styleSheet/>")]);
+    let cache = path_cache(&empty);
+    assert_eq!(
+        read_cell_formats(&mut empty, &cache, "styles.xml")?,
+        vec![XlsxNumberFormat::Builtin(0)]
+    );
+    let mut empty = xlsx_input_archive(&[("styles.xml", "<styleSheet/>")]);
+    let cache = path_cache(&empty);
+    assert_eq!(
+        read_cell_formats(&mut empty, &cache, "styles.xml")?,
+        vec![XlsxNumberFormat::Builtin(0)]
+    );
+
+    let mut missing = archive(&[]);
+    let cache = path_cache(&missing);
+    assert!(read_cell_formats(&mut missing, &cache, "missing.xml").is_err());
+    let mut missing = xlsx_input_archive(&[]);
+    let cache = path_cache(&missing);
+    assert!(read_cell_formats(&mut missing, &cache, "missing.xml").is_err());
+    for xml in [
+        "<styleSheet>",
+        "<styleSheet><",
+        "<styleSheet><numFmt numFmtId=\"bad\" formatCode=\"0\"/></styleSheet>",
+        "<styleSheet><cellXfs><xf numFmtId=\"bad\"/></cellXfs></styleSheet>",
+        "<styleSheet><cellXfs><xf numFmtId=></xf></cellXfs></styleSheet>",
+        "<styleSheet><numFmt numFmtId=></numFmt></styleSheet>",
+    ] {
+        let mut styles = archive(&[("styles.xml", xml)]);
+        let cache = path_cache(&styles);
+        assert!(read_cell_formats(&mut styles, &cache, "styles.xml").is_err());
+        let mut styles = xlsx_input_archive(&[("styles.xml", xml)]);
+        let cache = path_cache(&styles);
+        assert!(read_cell_formats(&mut styles, &cache, "styles.xml").is_err());
+    }
     Ok(())
 }
 
@@ -233,13 +403,14 @@ fn workbook_parser_rejects_missing_attributes_relationships_and_xml() {
         "<workbook><sheets><sheet name=\"Name\"/></sheets></workbook>",
         "<workbook><sheets><sheet name=\"Name\" id=\"missing\"/></sheets></workbook>",
         "<workbook><sheets><sheet name=\"Name\" id=></sheet></sheets></workbook>",
+        "<workbook><workbookPr date1904=></workbookPr></workbook>",
         "<workbook>",
         "<workbook><",
     ] {
         let mut workbook = archive(&[("xl/workbook.xml", xml)]);
         let cache = path_cache(&workbook);
         assert!(
-            read_sheet_paths(
+            read_workbook_metadata(
                 &mut workbook,
                 &cache,
                 "xl/workbook.xml",
@@ -252,7 +423,7 @@ fn workbook_parser_rejects_missing_attributes_relationships_and_xml() {
     let mut missing = archive(&[]);
     let cache = path_cache(&missing);
     assert!(
-        read_sheet_paths(
+        read_workbook_metadata(
             &mut missing,
             &cache,
             "xl/workbook.xml",
@@ -273,7 +444,7 @@ fn workbook_parser_rejects_missing_attributes_relationships_and_xml() {
         "<workbook><sheets><sheet name=\"Name\" id=\"sheet\"/></sheets></workbook>",
     )]);
     let cache = path_cache(&workbook);
-    assert!(read_sheet_paths(&mut workbook, &cache, "xl/workbook.xml", &escaping,).is_err());
+    assert!(read_workbook_metadata(&mut workbook, &cache, "xl/workbook.xml", &escaping,).is_err());
 }
 
 #[test]
@@ -309,6 +480,37 @@ fn metadata_constructor_reports_each_package_boundary() {
         ]))
         .is_err()
     );
+
+    let base_relationships = "<Relationships><Relationship Id=\"sheet\" Type=\"x/worksheet\" Target=\"sheets/First.XML\"/>";
+    for (styles_target, styles_xml) in [
+        ("../../../outside.xml", None),
+        ("styles.xml", Some("<styleSheet>")),
+    ] {
+        let workbook_relationships = format!(
+            "{base_relationships}<Relationship Id=\"styles\" Type=\"x/styles\" Target=\"{styles_target}\"/></Relationships>"
+        );
+        let workbook = "<workbook><sheets><sheet name=\"A\" id=\"sheet\"/></sheets></workbook>";
+        let mut entries = vec![
+            (
+                "_rels/.rels",
+                "<Relationships><Relationship Id=\"office\" Type=\"x/officeDocument\" Target=\"custom/workbook.xml\"/></Relationships>",
+            ),
+            ("custom/workbook.xml", workbook),
+            (
+                "custom/sheets/First.XML",
+                "<worksheet><sheetData/></worksheet>",
+            ),
+            (
+                "custom/_rels/workbook.xml.rels",
+                workbook_relationships.as_str(),
+            ),
+        ];
+        if let Some(styles_xml) = styles_xml {
+            entries.push(("custom/styles.xml", styles_xml));
+        }
+        assert!(XlsxRowMetadata::new(package(&entries)).is_err());
+        assert!(XlsxRowMetadata::new(xlsx_input(&entries)).is_err());
+    }
 }
 
 #[test]

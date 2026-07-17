@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
+/// Arbitrary-precision decimal type used for Java `BigDecimal`-compatible cells.
+pub use bigdecimal::BigDecimal;
 use chrono::{NaiveDate, NaiveDateTime};
 use thiserror::Error;
 
@@ -71,6 +73,8 @@ pub enum CellValue {
     Int(i64),
     /// A floating-point cell.
     Float(f64),
+    /// An arbitrary-precision decimal cell matching Java `BigDecimal` reads.
+    Decimal(BigDecimal),
     /// A date-only cell.
     Date(NaiveDate),
     /// A date and time cell.
@@ -113,6 +117,7 @@ impl CellValue {
             Self::Bool(value) => value.to_string(),
             Self::Int(value) => value.to_string(),
             Self::Float(value) => value.to_string(),
+            Self::Decimal(value) => value.to_string(),
             Self::Date(value) => value.format("%Y-%m-%d").to_string(),
             Self::DateTime(value) => value.format("%Y-%m-%d %H:%M:%S").to_string(),
             Self::Hyperlink { text, .. } => text.clone(),
@@ -168,6 +173,7 @@ pub struct ReadCellData {
     column_index: usize,
     raw_value: CellValue,
     data: CellValue,
+    display_value: String,
     formula: Option<FormulaData>,
 }
 
@@ -177,6 +183,7 @@ impl ReadCellData {
         column_index: usize,
         raw_value: CellValue,
         data: CellValue,
+        display_value: String,
         formula: Option<FormulaData>,
     ) -> Self {
         Self {
@@ -184,6 +191,7 @@ impl ReadCellData {
             column_index,
             raw_value,
             data,
+            display_value,
             formula,
         }
     }
@@ -210,6 +218,12 @@ impl ReadCellData {
     #[must_use]
     pub const fn data(&self) -> &CellValue {
         &self.data
+    }
+
+    /// Returns the Java-compatible formatted display text.
+    #[must_use]
+    pub fn display_value(&self) -> &str {
+        &self.display_value
     }
 
     /// Returns formula metadata when the cell contains a formula.
@@ -808,6 +822,8 @@ pub struct RowData {
     cells: Vec<CellValue>,
     headers: Arc<HashMap<String, usize>>,
     formulas: HashMap<usize, FormulaData>,
+    display_values: HashMap<usize, String>,
+    decimal_values: HashMap<usize, BigDecimal>,
     present_columns: HashSet<usize>,
     read_default_return: ReadDefaultReturn,
 }
@@ -828,6 +844,8 @@ impl RowData {
             cells,
             headers,
             formulas: HashMap::new(),
+            display_values: HashMap::new(),
+            decimal_values: HashMap::new(),
             present_columns,
             read_default_return: ReadDefaultReturn::default(),
         }
@@ -837,6 +855,20 @@ impl RowData {
     #[must_use]
     pub fn with_formulas(mut self, formulas: HashMap<usize, FormulaData>) -> Self {
         self.formulas = formulas;
+        self
+    }
+
+    /// Attaches Java-compatible formatted display text by physical column index.
+    #[must_use]
+    pub fn with_display_values(mut self, display_values: HashMap<usize, String>) -> Self {
+        self.display_values = display_values;
+        self
+    }
+
+    /// Attaches exact OOXML decimal values by physical column index.
+    #[must_use]
+    pub fn with_decimal_values(mut self, decimal_values: HashMap<usize, BigDecimal>) -> Self {
+        self.decimal_values = decimal_values;
         self
     }
 
@@ -903,15 +935,29 @@ impl RowData {
             .get(column_index)
             .cloned()
             .unwrap_or(CellValue::Empty);
+        let raw_value = if matches!(raw_value, CellValue::Int(_) | CellValue::Float(_)) {
+            self.decimal_values
+                .get(&column_index)
+                .cloned()
+                .map_or(raw_value, CellValue::Decimal)
+        } else {
+            raw_value
+        };
         let data = actual_cell_value(&raw_value);
+        let display_value = self
+            .display_values
+            .get(&column_index)
+            .cloned()
+            .unwrap_or_else(|| raw_value.as_text());
         match self.read_default_return {
-            ReadDefaultReturn::String => DynamicValue::String(raw_value.as_text()),
+            ReadDefaultReturn::String => DynamicValue::String(display_value),
             ReadDefaultReturn::ActualData => DynamicValue::ActualData(data),
             ReadDefaultReturn::ReadCellData => DynamicValue::ReadCellData(ReadCellData::new(
                 self.row_index,
                 column_index,
                 raw_value,
                 data,
+                display_value,
                 self.formulas.get(&column_index).cloned(),
             )),
         }
@@ -1250,6 +1296,7 @@ impl FromExcelCell for bool {
             CellValue::Bool(value) => Ok(*value),
             CellValue::Int(value) => Ok(*value != 0),
             CellValue::Float(value) => Ok(*value != 0.0),
+            CellValue::Decimal(value) => Ok(value != &BigDecimal::from(0)),
             CellValue::String(value) if value.eq_ignore_ascii_case("true") || value == "1" => {
                 Ok(true)
             }
@@ -1302,6 +1349,7 @@ where
     let text = match value {
         CellValue::Int(inner) => inner.to_string(),
         CellValue::Float(inner) if inner.fract() == 0.0 => inner.to_string(),
+        CellValue::Decimal(inner) if inner == &inner.with_scale(0) => inner.to_string(),
         CellValue::String(inner) => inner.clone(),
         other => return Err(context.invalid(other, target)),
     };
@@ -1353,11 +1401,35 @@ where
     let text = match value {
         CellValue::Int(inner) => inner.to_string(),
         CellValue::Float(inner) => inner.to_string(),
+        CellValue::Decimal(inner) => inner.to_string(),
         CellValue::String(inner) => inner.clone(),
         other => return Err(context.invalid(other, target)),
     };
     text.parse::<T>()
         .map_err(|_| context.invalid(value, target))
+}
+
+impl FromExcelCell for BigDecimal {
+    fn from_excel_cell(value: Option<&CellValue>, context: &ConvertContext) -> Result<Self> {
+        let value = value.unwrap_or(&CellValue::Empty);
+        match value {
+            CellValue::Decimal(inner) => Ok(inner.clone()),
+            CellValue::Int(inner) => Ok(Self::from(*inner)),
+            CellValue::Float(inner) => {
+                Self::from_str(&inner.to_string()).map_err(|_| context.invalid(value, "BigDecimal"))
+            }
+            CellValue::String(inner) => {
+                Self::from_str(inner).map_err(|_| context.invalid(value, "BigDecimal"))
+            }
+            other => Err(context.invalid(other, "BigDecimal")),
+        }
+    }
+}
+
+impl IntoExcelCell for BigDecimal {
+    fn to_excel_cell(&self, _context: &ConvertContext) -> Result<CellValue> {
+        Ok(CellValue::Decimal(self.clone()))
+    }
 }
 
 impl FromExcelCell for NaiveDate {

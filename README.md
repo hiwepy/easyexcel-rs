@@ -134,9 +134,11 @@ logical path for handler context.
 
 Java's no-model `Map<Integer, ...>` reads map to the ordered `DynamicRow` type.
 The default mode returns strings, while `ActualData` preserves scalar cell
-types and `ReadCellData` exposes the raw value, converted value, physical
-coordinates, and formula metadata. Missing physical columns are represented by
-`DynamicValue::Null`, so sparse rows retain Java-compatible indexes:
+types and exact numeric cells as the re-exported `BigDecimal` type.
+`ReadCellData` exposes the exact raw/converted value, Excel-formatted display
+text, physical coordinates, and formula metadata. Missing physical columns are
+represented by `DynamicValue::Null`, so sparse rows retain Java-compatible
+indexes:
 
 ```rust,no_run
 use easyexcel::{DynamicRow, DynamicValue, EasyExcel, ReadDefaultReturn};
@@ -198,6 +200,13 @@ error text, and 1900/1904 dates follow Java's typed read behavior. String cells
 and headers are trimmed by default; call `.auto_trim(false)` to preserve their
 outer whitespace. The same option controls whitespace-tolerant sheet-name
 matching, using Java `String.trim()` semantics.
+
+Schema-less XLSX reads stream the worksheet XML a second time in lockstep with
+Calamine to reproduce Java's formatted `STRING`, exact `ACTUAL_DATA`, and
+`READ_CELL_DATA` behavior. The companion stream resolves built-in/custom number
+formats and the 1900/1904 date system, normalizes Excel's 15-significant-digit
+numeric representation, and releases each cell immediately. A position or EOF
+mismatch between the two streams is a typed format error.
 
 For formula cells, typed fields receive Excel's cached result. The original
 expression remains available separately through `RowData::formula()` and

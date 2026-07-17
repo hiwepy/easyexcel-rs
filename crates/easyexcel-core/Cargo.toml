@@ -8,9 +8,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+bigdecimal.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 
 [lints]
 workspace = true
-

@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Seek};
 
+use bigdecimal::BigDecimal;
 use easyexcel_core::{CellExtra, CellExtraType, ExcelError, Result};
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Decoder, Reader as XmlReader, XmlVersion};
+use ssfmt::{DateSystem, FormatOptions, format, format_code_from_id};
 use zip::ZipArchive;
 
 const MAX_XLSX_ROW_NUMBER: u32 = 1_048_576;
@@ -13,14 +15,66 @@ const MAX_XLSX_COLUMN_NUMBER: usize = 16_384;
 type Relationships = HashMap<String, (String, String)>;
 type RawRelationships = HashMap<String, (String, String, bool)>;
 
-pub(crate) struct XlsxRowMetadata<R> {
-    archive: ZipArchive<R>,
+trait ReadSeek: Read + Seek {}
+
+impl<T: Read + Seek> ReadSeek for T {}
+
+pub(crate) struct XlsxRowMetadata {
+    archive: ZipArchive<Box<dyn ReadSeek>>,
     path_cache: HashMap<String, String>,
     sheet_paths: HashMap<String, String>,
+    cell_formats: Vec<XlsxNumberFormat>,
+    date_1904: bool,
 }
 
-impl<R: Read + Seek> XlsxRowMetadata<R> {
-    pub(crate) fn new(input: R) -> Result<Self> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum XlsxNumberFormat {
+    Builtin(u32),
+    Custom(String),
+}
+
+impl XlsxNumberFormat {
+    fn display(&self, value: f64, date_1904: bool) -> Option<String> {
+        let options = FormatOptions {
+            date_system: if date_1904 {
+                DateSystem::Date1904
+            } else {
+                DateSystem::Date1900
+            },
+            ..FormatOptions::default()
+        };
+        match self {
+            Self::Builtin(id) => {
+                format_code_from_id(*id).and_then(|code| format(value, code, &options).ok())
+            }
+            Self::Custom(code) => format(value, code, &options).ok(),
+        }
+        .map(|value| value.trim().to_owned())
+    }
+}
+
+pub(crate) struct XlsxDisplayCell {
+    pub(crate) position: (u32, usize),
+    pub(crate) display_value: Option<String>,
+    pub(crate) decimal_value: Option<BigDecimal>,
+}
+
+pub(crate) struct XlsxDisplayCellReader<'a> {
+    reader: XmlReader<Box<dyn BufRead + 'a>>,
+    cell_formats: &'a [XlsxNumberFormat],
+    date_1904: bool,
+    row_index: u32,
+    column_index: usize,
+    buffer: Vec<u8>,
+    cell_buffer: Vec<u8>,
+}
+
+impl XlsxRowMetadata {
+    pub(crate) fn new(input: impl Read + Seek + 'static) -> Result<Self> {
+        Self::new_boxed(Box::new(input))
+    }
+
+    fn new_boxed(input: Box<dyn ReadSeek>) -> Result<Self> {
         let mut archive = ZipArchive::new(input).map_err(format_error)?;
         let path_cache = path_cache(&archive);
         let package_relationships = read_relationships(&mut archive, &path_cache, "_rels/.rels")?;
@@ -35,12 +89,20 @@ impl<R: Read + Seek> XlsxRowMetadata<R> {
         let workbook_relationships_path = relationship_part_name(&workbook_path);
         let workbook_relationships =
             read_relationships(&mut archive, &path_cache, &workbook_relationships_path)?;
-        let sheet_paths = read_sheet_paths(
+        let (sheet_paths, date_1904) = read_workbook_metadata(
             &mut archive,
             &path_cache,
             &workbook_path,
             &workbook_relationships,
         )?;
+        let cell_formats = workbook_relationships
+            .values()
+            .find(|(_, relationship_type)| relationship_type.ends_with("/styles"))
+            .map(|(target, _)| resolve_target(&workbook_path, target))
+            .transpose()?
+            .map(|styles_path| read_cell_formats(&mut archive, &path_cache, &styles_path))
+            .transpose()?
+            .unwrap_or_else(|| vec![XlsxNumberFormat::Builtin(0)]);
         for path in sheet_paths.values() {
             if !path_cache.contains_key(&path.to_ascii_lowercase()) {
                 return Err(ExcelError::Format(format!(
@@ -52,7 +114,21 @@ impl<R: Read + Seek> XlsxRowMetadata<R> {
             archive,
             path_cache,
             sheet_paths,
+            cell_formats,
+            date_1904,
         })
+    }
+
+    pub(crate) fn display_cells(&mut self, sheet_name: &str) -> Result<XlsxDisplayCellReader<'_>> {
+        let path = self
+            .sheet_paths
+            .get(sheet_name)
+            .cloned()
+            .ok_or_else(|| ExcelError::SheetNotFound(sheet_name.to_owned()))?;
+        let actual_path = cached_path(&self.path_cache, &path);
+        let file = self.archive.by_name(actual_path).map_err(format_error)?;
+        let reader = boxed_xml_reader(BufReader::new(file));
+        XlsxDisplayCellReader::new(reader, &self.cell_formats, self.date_1904)
     }
 
     pub(crate) fn last_explicit_row(&mut self, sheet_name: &str) -> Result<Option<u32>> {
@@ -107,6 +183,164 @@ impl<R: Read + Seek> XlsxRowMetadata<R> {
     }
 }
 
+impl<'a> XlsxDisplayCellReader<'a> {
+    fn new(
+        mut reader: XmlReader<Box<dyn BufRead + 'a>>,
+        cell_formats: &'a [XlsxNumberFormat],
+        date_1904: bool,
+    ) -> Result<Self> {
+        let mut buffer = Vec::with_capacity(256);
+        loop {
+            buffer.clear();
+            match reader.read_event_into(&mut buffer).map_err(format_error)? {
+                Event::Start(element) if element.local_name().as_ref() == b"sheetData" => break,
+                Event::Eof => {
+                    return Err(ExcelError::Format(
+                        "unexpected end of XML before worksheet data".to_owned(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        Ok(Self {
+            reader,
+            cell_formats,
+            date_1904,
+            row_index: 0,
+            column_index: 0,
+            buffer,
+            cell_buffer: Vec::with_capacity(256),
+        })
+    }
+
+    pub(crate) fn next_cell(&mut self) -> Result<Option<XlsxDisplayCell>> {
+        loop {
+            self.buffer.clear();
+            match self
+                .reader
+                .read_event_into(&mut self.buffer)
+                .map_err(format_error)?
+            {
+                Event::Start(element) if element.local_name().as_ref() == b"row" => {
+                    let values = attributes(&element, self.reader.decoder())?;
+                    self.row_index = values
+                        .get("r")
+                        .map_or(Ok(self.row_index), |value| parse_row_number(value))?;
+                    self.column_index = 0;
+                }
+                Event::Start(element) if element.local_name().as_ref() == b"c" => {
+                    let values = attributes(&element, self.reader.decoder())?;
+                    let position = values
+                        .get("r")
+                        .map_or(Ok((self.row_index, self.column_index)), |reference| {
+                            parse_cell_reference(reference)
+                        })?;
+                    let style_index = values
+                        .get("s")
+                        .map(|value| value.parse::<usize>().map_err(format_error))
+                        .transpose()?
+                        .unwrap_or_default();
+                    let numeric = values.get("t").is_none_or(|value| value == "n");
+                    let (display_value, decimal_value) =
+                        self.read_cell_display(style_index, numeric)?;
+                    self.row_index = position.0;
+                    self.column_index = position.1.saturating_add(1);
+                    return Ok(Some(XlsxDisplayCell {
+                        position,
+                        display_value,
+                        decimal_value,
+                    }));
+                }
+                Event::End(element) if element.local_name().as_ref() == b"row" => {
+                    self.row_index = self.row_index.saturating_add(1);
+                    self.column_index = 0;
+                }
+                Event::End(element) if element.local_name().as_ref() == b"sheetData" => {
+                    return Ok(None);
+                }
+                Event::Eof => {
+                    return Err(ExcelError::Format(
+                        "unexpected end of XML in worksheet data".to_owned(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn read_cell_display(
+        &mut self,
+        style_index: usize,
+        numeric: bool,
+    ) -> Result<(Option<String>, Option<BigDecimal>)> {
+        let mut in_value = false;
+        let mut raw_value = String::new();
+        loop {
+            self.cell_buffer.clear();
+            match self
+                .reader
+                .read_event_into(&mut self.cell_buffer)
+                .map_err(format_error)?
+            {
+                Event::Start(element) if element.local_name().as_ref() == b"v" => {
+                    in_value = true;
+                }
+                Event::Text(value) if in_value => {
+                    raw_value.push_str(
+                        &value
+                            .xml_content(XmlVersion::Implicit1_0)
+                            .map_err(format_error)?,
+                    );
+                }
+                Event::CData(value) if in_value => {
+                    raw_value.push_str(
+                        &value
+                            .xml_content(XmlVersion::Implicit1_0)
+                            .map_err(format_error)?,
+                    );
+                }
+                Event::End(element) if element.local_name().as_ref() == b"v" => {
+                    in_value = false;
+                }
+                Event::End(element) if element.local_name().as_ref() == b"c" => {
+                    if !numeric || raw_value.is_empty() {
+                        return Ok((None, None));
+                    }
+                    let number =
+                        excel_display_number(raw_value.parse::<f64>().map_err(format_error)?);
+                    if !number.is_finite() {
+                        return Err(ExcelError::Format(
+                            "non-finite XLSX numeric cell value".to_owned(),
+                        ));
+                    }
+                    let decimal = number
+                        .to_string()
+                        .parse::<BigDecimal>()
+                        .expect("a finite f64 string is always a valid decimal");
+                    let display_value = self
+                        .cell_formats
+                        .get(style_index)
+                        .and_then(|format| format.display(number, self.date_1904));
+                    return Ok((display_value, Some(decimal)));
+                }
+                Event::Eof => {
+                    return Err(ExcelError::Format(
+                        "unexpected end of XML in worksheet cell".to_owned(),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn excel_display_number(value: f64) -> f64 {
+    if value == 0.0 || !value.is_finite() {
+        return value;
+    }
+    format!("{value:.14e}").parse().unwrap_or(value)
+}
+
 fn path_cache<R: Read + Seek>(archive: &ZipArchive<R>) -> HashMap<String, String> {
     let mut paths = HashMap::with_capacity(archive.len());
     for name in archive.file_names() {
@@ -135,6 +369,15 @@ fn xml_reader<'a, R: Read + Seek>(
     config.check_comments = false;
     config.expand_empty_elements = true;
     Ok(reader)
+}
+
+fn boxed_xml_reader<'a>(input: impl BufRead + 'a) -> XmlReader<Box<dyn BufRead + 'a>> {
+    let mut reader = XmlReader::from_reader(Box::new(input) as Box<dyn BufRead + 'a>);
+    let config = reader.config_mut();
+    config.check_end_names = false;
+    config.check_comments = false;
+    config.expand_empty_elements = true;
+    reader
 }
 
 fn read_relationships<R: Read + Seek>(
@@ -422,18 +665,77 @@ fn parse_cell_reference(reference: &str) -> Result<(u32, usize)> {
     Ok((parse_row_number(row)?, one_based_column - 1))
 }
 
-fn read_sheet_paths<R: Read + Seek>(
+fn read_cell_formats<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     cache: &HashMap<String, String>,
-    workbook_path: &str,
-    relationships: &Relationships,
-) -> Result<HashMap<String, String>> {
-    let mut reader = xml_reader(archive, cache, workbook_path)?;
-    let mut sheets = HashMap::new();
+    styles_path: &str,
+) -> Result<Vec<XlsxNumberFormat>> {
+    let mut reader = xml_reader(archive, cache, styles_path)?;
+    let mut custom_formats = HashMap::new();
+    let mut cell_formats = Vec::new();
+    let mut in_cell_formats = false;
     let mut buffer = Vec::with_capacity(256);
     loop {
         buffer.clear();
         match reader.read_event_into(&mut buffer).map_err(format_error)? {
+            Event::Start(element) if element.local_name().as_ref() == b"numFmt" => {
+                let values = attributes(&element, reader.decoder())?;
+                if let (Some(id), Some(code)) = (values.get("numFmtId"), values.get("formatCode")) {
+                    custom_formats.insert(id.parse::<u32>().map_err(format_error)?, code.clone());
+                }
+            }
+            Event::Start(element) if element.local_name().as_ref() == b"cellXfs" => {
+                in_cell_formats = true;
+            }
+            Event::Start(element) if in_cell_formats && element.local_name().as_ref() == b"xf" => {
+                let values = attributes(&element, reader.decoder())?;
+                let id = values
+                    .get("numFmtId")
+                    .map(|value| value.parse::<u32>().map_err(format_error))
+                    .transpose()?
+                    .unwrap_or_default();
+                cell_formats.push(custom_formats.get(&id).map_or_else(
+                    || XlsxNumberFormat::Builtin(id),
+                    |code| XlsxNumberFormat::Custom(code.clone()),
+                ));
+            }
+            Event::End(element) if element.local_name().as_ref() == b"cellXfs" => {
+                in_cell_formats = false;
+            }
+            Event::End(element) if element.local_name().as_ref() == b"styleSheet" => break,
+            Event::Eof => {
+                return Err(ExcelError::Format(
+                    "unexpected end of XML in styles".to_owned(),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if cell_formats.is_empty() {
+        cell_formats.push(XlsxNumberFormat::Builtin(0));
+    }
+    Ok(cell_formats)
+}
+
+fn read_workbook_metadata<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    cache: &HashMap<String, String>,
+    workbook_path: &str,
+    relationships: &Relationships,
+) -> Result<(HashMap<String, String>, bool)> {
+    let mut reader = xml_reader(archive, cache, workbook_path)?;
+    let mut sheets = HashMap::new();
+    let mut date_1904 = false;
+    let mut buffer = Vec::with_capacity(256);
+    loop {
+        buffer.clear();
+        match reader.read_event_into(&mut buffer).map_err(format_error)? {
+            Event::Start(element) if element.local_name().as_ref() == b"workbookPr" => {
+                let values = attributes(&element, reader.decoder())?;
+                date_1904 = values
+                    .get("date1904")
+                    .is_some_and(|value| matches!(value.as_str(), "1" | "true"));
+            }
             Event::Start(element) if element.local_name().as_ref() == b"sheet" => {
                 let sheet_attributes = attributes(&element, reader.decoder())?;
                 let name = sheet_attributes
@@ -461,7 +763,7 @@ fn read_sheet_paths<R: Read + Seek>(
             _ => {}
         }
     }
-    Ok(sheets)
+    Ok((sheets, date_1904))
 }
 
 fn attributes(element: &BytesStart<'_>, decoder: Decoder) -> Result<HashMap<String, String>> {

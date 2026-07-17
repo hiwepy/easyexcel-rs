@@ -703,6 +703,127 @@ fn reads_java_easyexcel_legacy_multisheet_fixture() -> Result<()> {
     Ok(())
 }
 
+fn java_compatibility_fixture(directory: &TempDir, name: &str) -> Result<std::path::PathBuf> {
+    let encoded = match name {
+        "t01.xls" => include_str!("fixtures/java-compat-t01.xls.gz.b64"),
+        "t02.xlsx" => include_str!("fixtures/java-compat-t02.xlsx.gz.b64"),
+        "t03.xlsx" => include_str!("fixtures/java-compat-t03.xlsx.gz.b64"),
+        "t04.xlsx" => include_str!("fixtures/java-compat-t04.xlsx.gz.b64"),
+        "t05.xlsx" => include_str!("fixtures/java-compat-t05.xlsx.gz.b64"),
+        "t06.xlsx" => include_str!("fixtures/java-compat-t06.xlsx.gz.b64"),
+        "t07.xlsx" => include_str!("fixtures/java-compat-t07.xlsx.gz.b64"),
+        "t09.xlsx" => include_str!("fixtures/java-compat-t09.xlsx.gz.b64"),
+        _ => {
+            return Err(ExcelError::Format(format!(
+                "unknown compatibility fixture: {name}"
+            )));
+        }
+    };
+    let compressed = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(test_error)?;
+    let mut decoder = GzDecoder::new(compressed.as_slice());
+    let mut workbook = Vec::new();
+    decoder.read_to_end(&mut workbook).map_err(test_error)?;
+    let path = directory.path().join(name);
+    fs::write(&path, workbook).map_err(test_error)?;
+    Ok(path)
+}
+
+fn read_java_compatibility_rows(
+    directory: &TempDir,
+    name: &str,
+    head_row_number: u32,
+    read_default_return: ReadDefaultReturn,
+) -> Result<Vec<DynamicRow>> {
+    let path = java_compatibility_fixture(directory, name)?;
+    let options = ReadOptions {
+        head_row_number,
+        read_default_return,
+        ..ReadOptions::default()
+    };
+    let mut listener = DynamicProbe::default();
+    if path.extension().is_some_and(|extension| extension == "xls") {
+        read_xls::<DynamicRow, _>(&path, &options, &mut listener)?;
+    } else {
+        read_xlsx::<DynamicRow, _>(&path, &options, &mut listener)?;
+    }
+    Ok(listener.0)
+}
+
+#[test]
+fn reads_java_official_compatibility_fixtures() -> Result<()> {
+    let directory = tempdir().map_err(test_error)?;
+    let t01 = read_java_compatibility_rows(&directory, "t01.xls", 1, ReadDefaultReturn::String)?;
+    assert_eq!(t01.len(), 2);
+    assert_eq!(
+        t01[1].get(0),
+        Some(&DynamicValue::String("Q235(碳钢)".to_owned()))
+    );
+
+    let t02 = read_java_compatibility_rows(&directory, "t02.xlsx", 0, ReadDefaultReturn::String)?;
+    assert_eq!(t02.len(), 3);
+    assert_eq!(
+        t02[2].get(2),
+        Some(&DynamicValue::String("1，2-戊二醇".to_owned()))
+    );
+
+    let t03 = read_java_compatibility_rows(&directory, "t03.xlsx", 1, ReadDefaultReturn::String)?;
+    assert_eq!(t03.len(), 1);
+    assert_eq!(t03[0].values().len(), 12);
+
+    let t04 = read_java_compatibility_rows(&directory, "t04.xlsx", 1, ReadDefaultReturn::String)?;
+    assert_eq!(t04.len(), 56);
+    assert_eq!(
+        t04[0].get(5),
+        Some(&DynamicValue::String("QQSJK28F152A012242S0081".to_owned()))
+    );
+
+    let t05 = read_java_compatibility_rows(&directory, "t05.xlsx", 1, ReadDefaultReturn::String)?;
+    for (row, expected) in [
+        "2023-01-01 00:00:00",
+        "2023-01-01 00:00:00",
+        "2023-01-01 00:00:00",
+        "2023-01-01 00:00:01",
+        "2023-01-01 00:00:01",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            t05[row].get(0),
+            Some(&DynamicValue::String(expected.to_owned()))
+        );
+    }
+
+    let t06 = read_java_compatibility_rows(&directory, "t06.xlsx", 0, ReadDefaultReturn::String)?;
+    assert_eq!(
+        t06[0].get(2),
+        Some(&DynamicValue::String("2087.03".to_owned()))
+    );
+
+    let t07_actual =
+        read_java_compatibility_rows(&directory, "t07.xlsx", 1, ReadDefaultReturn::ActualData)?;
+    let Some(DynamicValue::ActualData(CellValue::Decimal(actual))) = t07_actual[0].get(11) else {
+        panic!("expected actual decimal value");
+    };
+    assert_eq!(actual.to_string(), "24.1998124");
+    let t07_string =
+        read_java_compatibility_rows(&directory, "t07.xlsx", 1, ReadDefaultReturn::String)?;
+    assert_eq!(
+        t07_string[0].get(11),
+        Some(&DynamicValue::String("24.20".to_owned()))
+    );
+
+    let t09 = read_java_compatibility_rows(&directory, "t09.xlsx", 0, ReadDefaultReturn::String)?;
+    assert_eq!(t09.len(), 1);
+    assert_eq!(
+        t09[0].get(0),
+        Some(&DynamicValue::String("SH_x000D_Z002".to_owned()))
+    );
+    Ok(())
+}
+
 #[test]
 fn reads_java_easyexcel_encrypted_xlsx_fixture() -> Result<()> {
     let directory = tempdir()?;
@@ -1030,7 +1151,7 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
     );
     assert_eq!(
         strings.0[0].get(8),
-        Some(&DynamicValue::String("1904-01-02 00:00:00".to_owned()))
+        Some(&DynamicValue::String("1/2/04".to_owned()))
     );
 
     let mut actual = DynamicProbe::default();
@@ -1048,7 +1169,9 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
     );
     assert_eq!(
         actual.0[0].get(5),
-        Some(&DynamicValue::ActualData(CellValue::Float(45.5)))
+        Some(&DynamicValue::ActualData(CellValue::Decimal(
+            "45.5".parse().map_err(test_error)?
+        )))
     );
     assert_eq!(
         actual.0[0].get(7),
@@ -1071,12 +1194,88 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
     else {
         panic!("expected formula read cell data");
     };
-    assert_eq!(formula_cell.raw_value(), &CellValue::Float(45.5));
-    assert_eq!(formula_cell.data(), &CellValue::Float(45.5));
+    let expected_decimal = CellValue::Decimal("45.5".parse().map_err(test_error)?);
+    assert_eq!(formula_cell.raw_value(), &expected_decimal);
+    assert_eq!(formula_cell.data(), &expected_decimal);
     assert_eq!(
         formula_cell.formula().map(FormulaData::formula_value),
         Some("SUM(D2:E2)")
     );
+    Ok(())
+}
+
+#[test]
+fn xlsx_display_stream_rejects_early_end_position_mismatch_and_extra_cells() -> Result<()> {
+    let (directory, base) = workbook_fixture()?;
+    let cases = [
+        (
+            "display-ended.xlsx",
+            r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Value</t></is></c></row></sheetData></worksheet>"#,
+            "ended before cell stream",
+        ),
+        (
+            "display-mismatch.xlsx",
+            r#"<worksheet><sheetData><row r="1"><c r="B1" t="inlineStr"><is><t>Value</t></is></c></row></sheetData></worksheet>"#,
+            "cell mismatch",
+        ),
+        (
+            "display-extra.xlsx",
+            r#"<worksheet><sheetData>
+<row r="1"><c r="A1" t="inlineStr"><is><t>Value</t></is></c></row>
+<row r="2"><c r="A2" t="inlineStr"><is><t>one</t></is></c></row>
+<row r="3"><c r="A3" t="inlineStr"><is><t>extra</t></is></c></row>
+</sheetData></worksheet>"#,
+            "cells missing from cell stream",
+        ),
+        (
+            "display-cell-xml-error.xlsx",
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v><"#,
+            "",
+        ),
+        (
+            "display-tail-xml-error.xlsx",
+            r#"<worksheet><sheetData>
+<row r="1"><c r="A1" t="inlineStr"><is><t>Value</t></is></c></row>
+<row r="2"><c r="A2" t="inlineStr"><is><t>one</t></is></c></row><"#,
+            "",
+        ),
+    ];
+
+    for (name, replacement, expected) in cases {
+        let metadata_path = directory.path().join(name);
+        rewrite_first_sheet(&base, &metadata_path, replacement)?;
+        let workbook_source = XlsxSource::open(&base, None)?;
+        let mut workbook = Xlsx::new(workbook_source.reader()?).map_err(test_error)?;
+        let metadata_source = XlsxSource::open(&metadata_path, None)?;
+        let mut metadata = XlsxRowMetadata::new(metadata_source.reader()?)?;
+        let mut display_reader = metadata.display_cells("First")?;
+        let mut listener = DynamicProbe::default();
+        let mut consumer = TypedRowConsumer::<DynamicRow> {
+            listener: &mut listener,
+        };
+        let error = read_sheet(
+            &mut workbook,
+            0,
+            "First",
+            None,
+            &[],
+            Some(&mut display_reader),
+            &options(),
+            &mut consumer,
+        )
+        .expect_err("display and cell streams must agree");
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+    Ok(())
+}
+
+#[test]
+fn dynamic_xlsx_reports_display_stream_initialization_errors() -> Result<()> {
+    let (directory, base) = workbook_fixture()?;
+    let malformed = directory.path().join("missing-sheet-data.xlsx");
+    rewrite_first_sheet(&base, &malformed, "<worksheet/>")?;
+    let mut listener = DynamicProbe::default();
+    assert!(read_xlsx::<DynamicRow, _>(&malformed, &options(), &mut listener).is_err());
     Ok(())
 }
 
@@ -1794,6 +1993,7 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
             "Missing",
             None,
             &[],
+            None,
             &options(),
             &mut consumer
         )
@@ -1808,6 +2008,7 @@ fn public_reader_streams_all_sheets_and_reports_invalid_workbooks() -> Result<()
             "Missing",
             None,
             &[],
+            None,
             &options(),
             &mut consumer,
         )

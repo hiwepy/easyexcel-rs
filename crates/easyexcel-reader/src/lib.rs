@@ -16,7 +16,7 @@ use encoding_rs_io::DecodeReaderBytesBuilder;
 
 mod xlsx_rows;
 
-use xlsx_rows::XlsxRowMetadata;
+use xlsx_rows::{XlsxDisplayCellReader, XlsxRowMetadata};
 
 /// Selects a worksheet by index, name, or all sheets.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -91,10 +91,21 @@ where
     T: ExcelRow,
     L: ReadListener<T>,
 {
+    let mut consumer = TypedRowConsumer::<T> { listener };
+    read_xlsx_source_with_consumer(source, options, T::schema().is_empty(), &mut consumer)
+}
+
+fn read_xlsx_source_with_consumer(
+    source: &XlsxSource,
+    options: &ReadOptions,
+    needs_cell_metadata: bool,
+    consumer: &mut dyn RowConsumer,
+) -> Result<()> {
     let mut workbook = Xlsx::new(source.reader()?).map_err(format_error)?;
-    let mut row_metadata = (!options.ignore_empty_row || !options.extra_read.is_empty())
-        .then(|| source.reader().and_then(XlsxRowMetadata::new))
-        .transpose()?;
+    let mut row_metadata =
+        (!options.ignore_empty_row || !options.extra_read.is_empty() || needs_cell_metadata)
+            .then(|| source.reader().and_then(XlsxRowMetadata::new))
+            .transpose()?;
     let names = selected_sheet_names(&workbook, &options.sheet, options.auto_trim)?;
     for (sheet_no, sheet_name) in names {
         let (last_explicit_row, extras) = xlsx_sheet_metadata(
@@ -103,15 +114,25 @@ where
             options.ignore_empty_row,
             &options.extra_read,
         )?;
-        let mut consumer = TypedRowConsumer::<T> { listener };
+        let mut display_reader = if needs_cell_metadata {
+            Some(
+                row_metadata
+                    .as_mut()
+                    .expect("display metadata was initialized")
+                    .display_cells(&sheet_name)?,
+            )
+        } else {
+            None
+        };
         if read_sheet(
             &mut workbook,
             sheet_no,
             &sheet_name,
             last_explicit_row,
             &extras,
+            display_reader.as_mut(),
             options,
-            &mut consumer,
+            consumer,
         )? == ReadFlow::Stop
         {
             break;
@@ -121,7 +142,7 @@ where
 }
 
 fn xlsx_sheet_metadata(
-    metadata: Option<&mut XlsxRowMetadata<XlsxInput>>,
+    metadata: Option<&mut XlsxRowMetadata>,
     sheet_name: &str,
     ignore_empty_row: bool,
     enabled_extras: &HashSet<CellExtraType>,
@@ -318,6 +339,14 @@ enum ReadFlow {
     Stop,
 }
 
+#[derive(Default)]
+struct SourceRowMetadata {
+    formulas: HashMap<usize, FormulaData>,
+    display_values: HashMap<usize, String>,
+    decimal_values: HashMap<usize, bigdecimal::BigDecimal>,
+    present_columns: HashSet<usize>,
+}
+
 trait RowConsumer {
     #[allow(clippy::too_many_arguments)]
     fn process(
@@ -326,20 +355,7 @@ trait RowConsumer {
         sheet_name: &str,
         row_index: u32,
         cells: Vec<CellValue>,
-        present_columns: HashSet<usize>,
-        options: &ReadOptions,
-        headers: &mut Arc<HashMap<String, usize>>,
-    ) -> Result<ReadFlow>;
-
-    #[allow(clippy::too_many_arguments)]
-    fn process_with_formulas(
-        &mut self,
-        sheet_no: usize,
-        sheet_name: &str,
-        row_index: u32,
-        cells: Vec<CellValue>,
-        formulas: HashMap<usize, FormulaData>,
-        present_columns: HashSet<usize>,
+        metadata: SourceRowMetadata,
         options: &ReadOptions,
         headers: &mut Arc<HashMap<String, usize>>,
     ) -> Result<ReadFlow>;
@@ -360,7 +376,7 @@ impl<T: ExcelRow> RowConsumer for TypedRowConsumer<'_, T> {
         sheet_name: &str,
         row_index: u32,
         cells: Vec<CellValue>,
-        present_columns: HashSet<usize>,
+        metadata: SourceRowMetadata,
         options: &ReadOptions,
         headers: &mut Arc<HashMap<String, usize>>,
     ) -> Result<ReadFlow> {
@@ -369,32 +385,7 @@ impl<T: ExcelRow> RowConsumer for TypedRowConsumer<'_, T> {
             sheet_name,
             row_index,
             cells,
-            HashMap::new(),
-            present_columns,
-            options,
-            headers,
-            self.listener,
-        )
-    }
-
-    fn process_with_formulas(
-        &mut self,
-        sheet_no: usize,
-        sheet_name: &str,
-        row_index: u32,
-        cells: Vec<CellValue>,
-        formulas: HashMap<usize, FormulaData>,
-        present_columns: HashSet<usize>,
-        options: &ReadOptions,
-        headers: &mut Arc<HashMap<String, usize>>,
-    ) -> Result<ReadFlow> {
-        process_row_with_metadata::<T>(
-            sheet_no,
-            sheet_name,
-            row_index,
-            cells,
-            formulas,
-            present_columns,
+            metadata,
             options,
             headers,
             self.listener,
@@ -475,12 +466,14 @@ fn select_xls_sheets(
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn read_sheet<RS>(
     workbook: &mut Xlsx<RS>,
     sheet_no: usize,
     sheet_name: &str,
     last_explicit_row: Option<u32>,
     extras: &[CellExtra],
+    mut display_reader: Option<&mut XlsxDisplayCellReader<'_>>,
     options: &ReadOptions,
     consumer: &mut dyn RowConsumer,
 ) -> Result<ReadFlow>
@@ -493,6 +486,8 @@ where
     let mut current_index = None;
     let mut current_cells = Vec::new();
     let mut current_formulas = HashMap::new();
+    let mut current_display_values = HashMap::new();
+    let mut current_decimal_values = HashMap::new();
     let mut current_present_columns = HashSet::new();
     let mut headers = Arc::new(HashMap::new());
     let mut next_row_index = 0;
@@ -501,13 +496,17 @@ where
         let (row, column) = cell.pos;
         if current_index != Some(row) {
             if let Some(current) = current_index {
-                if consumer.process_with_formulas(
+                if consumer.process(
                     sheet_no,
                     sheet_name,
                     current,
                     std::mem::take(&mut current_cells),
-                    std::mem::take(&mut current_formulas),
-                    std::mem::take(&mut current_present_columns),
+                    SourceRowMetadata {
+                        formulas: std::mem::take(&mut current_formulas),
+                        display_values: std::mem::take(&mut current_display_values),
+                        decimal_values: std::mem::take(&mut current_decimal_values),
+                        present_columns: std::mem::take(&mut current_present_columns),
+                    },
                     options,
                     &mut headers,
                 )? == ReadFlow::Stop
@@ -531,6 +530,23 @@ where
             current_index = Some(row);
         }
         let column = to_column_index(column)?;
+        if let Some(display_reader) = display_reader.as_deref_mut() {
+            let display_cell = display_reader.next_cell()?.ok_or_else(|| {
+                ExcelError::Format("display-value stream ended before cell stream".to_owned())
+            })?;
+            if display_cell.position != (row, column) {
+                return Err(ExcelError::Format(format!(
+                    "display-value stream cell mismatch: expected ({row}, {column}), found ({}, {})",
+                    display_cell.position.0, display_cell.position.1
+                )));
+            }
+            if let Some(value) = display_cell.display_value {
+                current_display_values.insert(column, value);
+            }
+            if let Some(value) = display_cell.decimal_value {
+                current_decimal_values.insert(column, value);
+            }
+        }
         if current_cells.len() <= column {
             current_cells.resize(column + 1, CellValue::Empty);
         }
@@ -542,18 +558,30 @@ where
     }
 
     if let Some(row) = current_index
-        && consumer.process_with_formulas(
+        && consumer.process(
             sheet_no,
             sheet_name,
             row,
             current_cells,
-            current_formulas,
-            current_present_columns,
+            SourceRowMetadata {
+                formulas: current_formulas,
+                display_values: current_display_values,
+                decimal_values: current_decimal_values,
+                present_columns: current_present_columns,
+            },
             options,
             &mut headers,
         )? == ReadFlow::Stop
     {
         return Ok(ReadFlow::Stop);
+    }
+
+    if let Some(display_reader) = display_reader
+        && display_reader.next_cell()?.is_some()
+    {
+        return Err(ExcelError::Format(
+            "display-value stream contains cells missing from cell stream".to_owned(),
+        ));
     }
 
     if let Some(last_row) = last_explicit_row {
@@ -599,7 +627,7 @@ fn process_missing_rows(
             sheet_name,
             row_index,
             Vec::new(),
-            HashSet::new(),
+            SourceRowMetadata::default(),
             options,
             headers,
         )? == ReadFlow::Stop
@@ -641,7 +669,10 @@ fn read_range(
             sheet_name,
             row_index,
             cells,
-            present_columns,
+            SourceRowMetadata {
+                present_columns,
+                ..SourceRowMetadata::default()
+            },
             options,
             &mut headers,
         )? == ReadFlow::Stop
@@ -668,41 +699,15 @@ where
     T: ExcelRow,
 {
     let present_columns = (0..cells.len()).collect();
-    process_row_with_formulas(
-        sheet_no,
-        sheet_name,
-        row_index,
-        cells,
-        HashMap::new(),
-        present_columns,
-        options,
-        headers,
-        listener,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn process_row_with_formulas<T>(
-    sheet_no: usize,
-    sheet_name: &str,
-    row_index: u32,
-    cells: Vec<CellValue>,
-    formulas: HashMap<usize, FormulaData>,
-    present_columns: HashSet<usize>,
-    options: &ReadOptions,
-    headers: &mut Arc<HashMap<String, usize>>,
-    listener: &mut dyn ReadListener<T>,
-) -> Result<ReadFlow>
-where
-    T: ExcelRow,
-{
     process_row_with_metadata(
         sheet_no,
         sheet_name,
         row_index,
         cells,
-        formulas,
-        present_columns,
+        SourceRowMetadata {
+            present_columns,
+            ..SourceRowMetadata::default()
+        },
         options,
         headers,
         listener,
@@ -715,8 +720,7 @@ fn process_row_with_metadata<T>(
     sheet_name: &str,
     row_index: u32,
     mut cells: Vec<CellValue>,
-    formulas: HashMap<usize, FormulaData>,
-    present_columns: HashSet<usize>,
+    metadata: SourceRowMetadata,
     options: &ReadOptions,
     headers: &mut Arc<HashMap<String, usize>>,
     listener: &mut dyn ReadListener<T>,
@@ -724,6 +728,12 @@ fn process_row_with_metadata<T>(
 where
     T: ExcelRow,
 {
+    let SourceRowMetadata {
+        formulas,
+        display_values,
+        decimal_values,
+        present_columns,
+    } = metadata;
     if options.auto_trim {
         trim_string_cells(&mut cells);
     }
@@ -742,6 +752,8 @@ where
 
     let row = RowData::new(sheet_name, row_index, cells, Arc::clone(headers))
         .with_formulas(formulas)
+        .with_display_values(display_values)
+        .with_decimal_values(decimal_values)
         .with_present_columns(present_columns)
         .with_read_default_return(options.read_default_return);
     match T::from_row(&row) {

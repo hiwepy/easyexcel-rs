@@ -35,6 +35,10 @@ fn cell_values_have_stable_text_and_empty_semantics() {
         (CellValue::Bool(true), "true"),
         (CellValue::Int(-12), "-12"),
         (CellValue::Float(1.5), "1.5"),
+        (
+            CellValue::Decimal("123.450".parse().expect("valid decimal")),
+            "123.450",
+        ),
         (CellValue::Date(date), "2026-07-17"),
         (CellValue::DateTime(datetime), "2026-07-17 12:34:56"),
         (CellValue::Formula("SUM(A1:A2)".to_owned()), "SUM(A1:A2)"),
@@ -159,6 +163,7 @@ fn dynamic_rows_match_java_no_model_return_modes() -> Result<()> {
     ];
     let row = RowData::new("Dynamic", 7, cells.clone(), Arc::clone(&headers))
         .with_formulas(HashMap::from([(2, FormulaData::new("NA()"))]))
+        .with_display_values(HashMap::from([(2, "#N/A display".to_owned())]))
         .with_present_columns(HashSet::from([0, 2, 3]));
 
     assert_eq!(ReadDefaultReturn::default(), ReadDefaultReturn::String);
@@ -171,7 +176,7 @@ fn dynamic_rows_match_java_no_model_return_modes() -> Result<()> {
     assert_eq!(strings.get(1), Some(&DynamicValue::Null));
     assert_eq!(
         strings.get(2),
-        Some(&DynamicValue::String("#N/A".to_owned()))
+        Some(&DynamicValue::String("#N/A display".to_owned()))
     );
     assert_eq!(strings.get(3), Some(&DynamicValue::String(String::new())));
     assert_eq!(strings.get(4), Some(&DynamicValue::Null));
@@ -211,6 +216,7 @@ fn dynamic_rows_match_java_no_model_return_modes() -> Result<()> {
     assert_eq!(cell_data.column_index(), 2);
     assert_eq!(cell_data.raw_value(), &CellValue::Error("#N/A".to_owned()));
     assert_eq!(cell_data.data(), &CellValue::String("#N/A".to_owned()));
+    assert_eq!(cell_data.display_value(), "#N/A");
     assert_eq!(
         cell_data.formula().map(FormulaData::formula_value),
         Some("NA()")
@@ -226,7 +232,14 @@ fn dynamic_rows_match_java_no_model_return_modes() -> Result<()> {
 
 #[test]
 fn dynamic_rows_are_ordered_and_can_be_written_back() -> Result<()> {
-    let read_cell_data = ReadCellData::new(1, 4, CellValue::Int(9), CellValue::Int(9), None);
+    let read_cell_data = ReadCellData::new(
+        1,
+        4,
+        CellValue::Int(9),
+        CellValue::Int(9),
+        "9".to_owned(),
+        None,
+    );
     let row = DynamicRow::new(BTreeMap::from([
         (0, DynamicValue::String("first".to_owned())),
         (1, DynamicValue::Null),
@@ -281,6 +294,14 @@ fn strings_and_booleans_convert_in_both_directions() -> Result<()> {
         (CellValue::Int(0), false),
         (CellValue::Float(0.5), true),
         (CellValue::Float(0.0), false),
+        (
+            CellValue::Decimal("0.5".parse().expect("valid decimal")),
+            true,
+        ),
+        (
+            CellValue::Decimal("0".parse().expect("valid decimal")),
+            false,
+        ),
         (CellValue::String("TRUE".to_owned()), true),
         (CellValue::String("1".to_owned()), true),
         (CellValue::String("false".to_owned()), false),
@@ -306,6 +327,16 @@ macro_rules! assert_integer_type {
         assert_eq!(
             <$ty>::from_excel_cell(Some(&CellValue::String($value.to_string())), &context)?
                 .to_string(),
+            $value.to_string()
+        );
+        assert_eq!(
+            <$ty>::from_excel_cell(
+                Some(&CellValue::Decimal(
+                    $value.to_string().parse().expect("valid decimal"),
+                )),
+                &context,
+            )?
+            .to_string(),
             $value.to_string()
         );
         assert!(<$ty>::from_excel_cell(Some(&CellValue::Float(1.5)), &context).is_err());
@@ -340,6 +371,13 @@ fn every_integer_type_is_supported_and_edge_paths_are_checked() -> Result<()> {
         9
     );
     assert!(i32::from_excel_cell(Some(&CellValue::Float(8.5)), &context).is_err());
+    assert!(
+        i32::from_excel_cell(
+            Some(&CellValue::Decimal("8.5".parse().expect("valid decimal"),)),
+            &context,
+        )
+        .is_err()
+    );
     assert!(i32::from_excel_cell(Some(&CellValue::Bool(true)), &context).is_err());
     assert!(i32::from_excel_cell(Some(&CellValue::String("bad".to_owned())), &context).is_err());
     assert!(u8::from_excel_cell(Some(&CellValue::Int(300)), &context).is_err());
@@ -357,6 +395,10 @@ fn floating_point_types_support_numeric_and_string_cells() -> Result<()> {
     for value in [
         f32::from_excel_cell(Some(&CellValue::Int(2)), &context)?,
         f32::from_excel_cell(Some(&CellValue::Float(2.0)), &context)?,
+        f32::from_excel_cell(
+            Some(&CellValue::Decimal("2.0".parse().expect("valid decimal"))),
+            &context,
+        )?,
         f32::from_excel_cell(Some(&CellValue::String("2".to_owned())), &context)?,
     ] {
         assert!((value - 2.0).abs() < f32::EPSILON);
@@ -368,6 +410,10 @@ fn floating_point_types_support_numeric_and_string_cells() -> Result<()> {
     for value in [
         f64::from_excel_cell(Some(&CellValue::Int(3)), &context)?,
         f64::from_excel_cell(Some(&CellValue::Float(3.0)), &context)?,
+        f64::from_excel_cell(
+            Some(&CellValue::Decimal("3.0".parse().expect("valid decimal"))),
+            &context,
+        )?,
         f64::from_excel_cell(Some(&CellValue::String("3".to_owned())), &context)?,
     ] {
         assert!((value - 3.0).abs() < f64::EPSILON);
@@ -377,6 +423,43 @@ fn floating_point_types_support_numeric_and_string_cells() -> Result<()> {
     assert!(f64::from_excel_cell(None, &context).is_err());
     assert_eq!(1.25_f32.to_excel_cell(&context)?, CellValue::Float(1.25));
     assert_eq!(2.5_f64.to_excel_cell(&context)?, CellValue::Float(2.5));
+    Ok(())
+}
+
+#[test]
+fn big_decimal_converts_like_java_big_decimal() -> Result<()> {
+    let context = context(None);
+    let expected: BigDecimal = "123.450".parse().expect("valid decimal");
+    assert_eq!(
+        BigDecimal::from_excel_cell(Some(&CellValue::Decimal(expected.clone())), &context)?,
+        expected
+    );
+    assert_eq!(
+        BigDecimal::from_excel_cell(Some(&CellValue::Int(123)), &context)?,
+        BigDecimal::from(123)
+    );
+    assert_eq!(
+        BigDecimal::from_excel_cell(Some(&CellValue::Float(1.25)), &context)?,
+        "1.25".parse::<BigDecimal>().expect("valid decimal")
+    );
+    assert_eq!(
+        BigDecimal::from_excel_cell(Some(&CellValue::String("2.50".to_owned())), &context)?,
+        "2.50".parse::<BigDecimal>().expect("valid decimal")
+    );
+    assert!(BigDecimal::from_excel_cell(Some(&CellValue::Float(f64::NAN)), &context).is_err());
+    assert!(
+        BigDecimal::from_excel_cell(
+            Some(&CellValue::String("not-a-number".to_owned())),
+            &context
+        )
+        .is_err()
+    );
+    assert!(BigDecimal::from_excel_cell(Some(&CellValue::Bool(true)), &context).is_err());
+    assert!(BigDecimal::from_excel_cell(None, &context).is_err());
+    assert_eq!(
+        expected.to_excel_cell(&context)?,
+        CellValue::Decimal(expected)
+    );
     Ok(())
 }
 

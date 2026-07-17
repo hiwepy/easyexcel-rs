@@ -22,8 +22,8 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `sheet(Integer/String)` | `sheet(index/name)` | implemented |
 | `doRead` | `do_read` | implemented |
 | `doReadSync` | `read_sync(...).do_read_sync()` | implemented |
-| no-model `Map<Integer, String/Object/ReadCellData<?>>` | `DynamicRow` + `DynamicValue` | implemented: physical column indexes, sparse gaps, header-tail nulls, XLSX/XLS/CSV event and sync reads, and schema-less XLSX/CSV writes are verified |
-| `ReadDefaultReturnEnum.STRING/ACTUAL_DATA/READ_CELL_DATA` | `ReadDefaultReturn::{String, ActualData, ReadCellData}` | implemented: Java-compatible default, scalar typing, formula metadata, coordinates, and raw cell values |
+| no-model `Map<Integer, String/Object/ReadCellData<?>>` | `DynamicRow` + `DynamicValue` | implemented: physical column indexes, sparse gaps, header-tail nulls, XLSX/XLS/CSV event and sync reads, schema-less XLSX/CSV writes, and Java official compatibility fixtures `t01`–`t07`/`t09` are verified |
+| `ReadDefaultReturnEnum.STRING/ACTUAL_DATA/READ_CELL_DATA` | `ReadDefaultReturn::{String, ActualData, ReadCellData}` | implemented: Java-compatible default, Excel-formatted strings, exact `BigDecimal` numeric values, formula metadata, display text, coordinates, and raw cell values |
 | `ReadListener` | `ReadListener<T>` | implemented |
 | `extraRead(CellExtraTypeEnum)` / `ReadListener.extra` | `extra_read(CellExtraType)` / `ReadListener::extra` | implemented for XLSX comments, hyperlinks, and merged ranges; XLS/CSV return a typed unsupported error when requested |
 | `PageReadListener` | `PageReadListener<T>` | implemented |
@@ -31,7 +31,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `@ExcelProperty` | `#[excel(name, index, order, format)]` | implemented |
 | `@ExcelIgnore` | `#[excel(ignore)]` | implemented |
 | `@ExcelIgnoreUnannotated` | `#[excel(ignore_unannotated)]` | implemented |
-| built-in scalar converters | `FromExcelCell` / `IntoExcelCell` | partial |
+| built-in scalar converters | `FromExcelCell` / `IntoExcelCell` | partial: strings, booleans, signed/unsigned integers, floats, `BigDecimal`, `Option<T>`, `NaiveDate`, and `NaiveDateTime` are implemented; Java URL/locale/temporal converter inventory remains |
 | custom `Converter<T>` | `#[excel(converter = Type)]` + converter contexts | partial: field converter implemented |
 | `EasyExcel.write(file, head)` | `EasyExcel::write::<T>(file)` | implemented |
 | `sheet(Integer/String)` | `sheet_index(index)` / `sheet(name)` | implemented |
@@ -52,7 +52,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | dynamic and multi-level heads | `head(Vec<Vec<String>>)` | implemented |
 | template `fill` | OOXML-preserving template engine | partial: scalar, named/unnamed vertical and horizontal collections, row reuse, `forceNewRow`, `autoStyle`, formula/range metadata shifting implemented |
 | CSV read/write | extension-based CSV engine dispatch | partial: typed read/write, headers, column filters, listeners, write handlers, flexible rows, Java-style `charset`/`withBom`, stateful same-sheet multi-write, UTF-8/UTF-16/GBK streaming transcoding, official Java BOM fixtures, and case-insensitive `.csv` dispatch implemented; JVM-only charset providers remain |
-| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed/dynamic row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, numbers, dates, cached formula results plus `FormulaData`, error text, comment/hyperlink/merged-cell extras, typed and no-model rows, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; disk-backed shared-string caching remains |
+| XLSX SAX read lifecycle | Calamine `worksheet_cells_reader` + typed/dynamic row dispatcher | partial: worksheet cells are streamed through `quick-xml`; every header row, leading/intermediate/trailing empty rows, `autoTrim`, shared/inline rich strings, booleans, 15-significant-digit numbers, built-in/custom display formats, exact decimals, 1900/1904 dates, cached formula results plus `FormulaData`, error text, comment/hyperlink/merged-cell extras, typed and no-model rows, listener exception routing, post-callback `hasNext`, workbook-wide stop, and completion callbacks match Java; disk-backed shared-string caching remains |
 | XLS read | calamine BIFF/XLS engine | implemented: sheet selection, typed mapping, listeners, headers, coordinates, multi-sheet Java fixture; worksheet data is materialized in memory |
 | XLS write | backend capability guard | unsupported: returns a typed error instead of silently writing XLSX bytes |
 | XLSX password/encryption | `password` on read/write builders | partial: ECMA-376 Agile AES-256/SHA-512 write and Agile/Standard OOXML read implemented; correct, wrong, and missing-password paths tested; encrypted binary XLS is unsupported |
@@ -91,6 +91,16 @@ their literal text, and date values honor the workbook's 1900/1904 windowing.
 The original formula expression is retained separately as `FormulaData`, just
 like Java `ReadCellData.formulaData`; `RowData::formula` and custom converter
 contexts can inspect it without replacing the cached value.
+
+For no-model reads, a second worksheet event stream advances in exact physical
+cell lockstep with Calamine. It resolves `styles.xml`, custom and built-in
+number formats, and workbook date windowing without retaining prior rows.
+`STRING` returns the Java-style display value (including Excel date rounding),
+while `ACTUAL_DATA` and `READ_CELL_DATA` expose arbitrary-precision
+`BigDecimal` values after Excel's 15-significant-digit normalization. Premature
+EOF, extra cells, or coordinate disagreement between the streams fails with a
+typed format error instead of silently associating metadata with the wrong
+cell.
 
 When `extra_read` enables a category, the companion OOXML scanner also emits
 Java-style `CellExtra` values for comments, internal and external hyperlinks,

@@ -6,6 +6,7 @@ use std::io::{Read, Seek, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
+use bigdecimal::ToPrimitive;
 use easyexcel_core::{
     CellValue, CsvCharset, ExcelBorderStyle, ExcelCellStyle, ExcelColor, ExcelColumn,
     ExcelDataFormat, ExcelError, ExcelFillPattern, ExcelFontScript, ExcelFontStyle,
@@ -2073,6 +2074,17 @@ fn write_cell(
         CellValue::Float(value) => {
             worksheet
                 .write_number_with_format(row_index, column, *value, &format)
+                .map_err(format_error)?;
+        }
+        CellValue::Decimal(value) => {
+            let value = value
+                .to_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| {
+                    ExcelError::Format("decimal value exceeds XLSX numeric range".to_owned())
+                })?;
+            worksheet
+                .write_number_with_format(row_index, column, value, &format)
                 .map_err(format_error)?;
         }
         CellValue::Date(value) => {

@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use calamine::{Data, Dimensions, Reader, Xlsx, open_workbook};
 use chrono::NaiveDate;
+use easyexcel_core::BigDecimal;
 use tempfile::tempdir;
 use zip::ZipArchive;
 
@@ -372,6 +373,7 @@ impl ExcelRow for EveryCell {
             ExcelColumn::new("link", "Link", Some(11), 0, None),
             ExcelColumn::new("comment", "Comment", Some(12), 0, None),
             ExcelColumn::new("image", "Image", Some(13), 0, None),
+            ExcelColumn::new("decimal", "Decimal", Some(14), 0, None),
         ];
         const WIDE_COLUMNS: &[ExcelColumn] =
             &[ExcelColumn::new("wide", "Wide", Some(65_536), 0, None)];
@@ -430,6 +432,7 @@ fn every_cell() -> EveryCell {
                 text: "cell note".to_owned(),
             },
             CellValue::Image(tiny_png()),
+            CellValue::Decimal("123.45".parse().expect("valid decimal")),
         ],
         fail: false,
     }
@@ -1457,6 +1460,7 @@ fn writer_emits_headers_and_every_supported_cell_type() -> Result<()> {
         range.get_value((1, 12)),
         Some(&Data::String("annotated".to_owned()))
     );
+    assert_eq!(range.get_value((1, 14)), Some(&Data::Float(123.45)));
     let formulas = workbook.worksheet_formula("Values").map_err(test_error)?;
     assert!(
         formulas
@@ -1471,6 +1475,37 @@ fn writer_emits_headers_and_every_supported_cell_type() -> Result<()> {
     let names = zip_names(&path)?;
     assert!(names.iter().any(|name| name == "xl/media/image1.png"));
     Ok(())
+}
+
+#[test]
+fn decimal_writer_rejects_values_outside_xlsx_numeric_range() {
+    let huge: BigDecimal = "9".repeat(400).parse().expect("valid large decimal");
+    let metadata = ExcelWriteMetadata::new();
+    let style = SheetStyleContext::content(None, &metadata).column(&TEST_COLUMN);
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    assert!(
+        write_cell(
+            worksheet,
+            0,
+            0,
+            &TEST_COLUMN,
+            &CellValue::Decimal(huge),
+            style,
+        )
+        .is_err()
+    );
+    assert!(
+        write_cell(
+            worksheet,
+            u32::MAX,
+            0,
+            &TEST_COLUMN,
+            &CellValue::Decimal("1.5".parse().expect("valid decimal")),
+            style,
+        )
+        .is_err()
+    );
 }
 
 #[test]
