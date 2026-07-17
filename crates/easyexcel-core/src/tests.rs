@@ -66,6 +66,46 @@ fn cell_values_have_stable_text_and_empty_semantics() {
 }
 
 #[test]
+fn cell_values_expose_converter_dispatch_types() {
+    let date = NaiveDate::from_ymd_opt(2026, 7, 17).expect("valid date");
+    let datetime = date.and_hms_opt(12, 34, 56).expect("valid time");
+    let cases = [
+        (CellValue::Empty, CellDataType::Empty),
+        (CellValue::String(String::new()), CellDataType::String),
+        (CellValue::Bool(true), CellDataType::Boolean),
+        (CellValue::Int(1), CellDataType::Number),
+        (CellValue::Float(1.0), CellDataType::Number),
+        (
+            CellValue::Decimal(BigDecimal::from(1)),
+            CellDataType::Number,
+        ),
+        (CellValue::Date(date), CellDataType::Date),
+        (CellValue::DateTime(datetime), CellDataType::Date),
+        (CellValue::Error("#N/A".to_owned()), CellDataType::Error),
+        (CellValue::Formula("1+1".to_owned()), CellDataType::Formula),
+        (
+            CellValue::Hyperlink {
+                url: "https://example.com".to_owned(),
+                text: "link".to_owned(),
+            },
+            CellDataType::String,
+        ),
+        (
+            CellValue::Comment {
+                value: Box::new(CellValue::Bool(false)),
+                text: "note".to_owned(),
+            },
+            CellDataType::Boolean,
+        ),
+        (CellValue::Image(vec![1]), CellDataType::Image),
+    ];
+    for (cell, expected) in cases {
+        assert_eq!(cell.data_type(), expected);
+    }
+    assert_ne!(CellDataType::DirectString, CellDataType::RichTextString);
+}
+
+#[test]
 fn row_data_resolves_index_before_header_name() {
     let explicit = ExcelColumn::new("first", "Header", Some(1), 3, Some("0")).with_column_width(24);
     let named = ExcelColumn::new("second", "Header", None, i32::MAX, None);
@@ -658,6 +698,115 @@ fn custom_converter_contexts_support_both_directions_and_defaults() -> Result<()
     assert_eq!(PrefixConverter.convert_to_rust_data(&empty)?, "name:2:");
     assert!(UnsupportedConverter.convert_to_rust_data(&read).is_err());
     assert!(UnsupportedConverter.convert_to_excel_data(&write).is_err());
+    assert_eq!(
+        UnsupportedConverter.support_excel_type(),
+        CellDataType::String
+    );
+    Ok(())
+}
+
+struct BooleanPrefixConverter;
+
+impl Converter<String> for BooleanPrefixConverter {
+    fn support_excel_type(&self) -> CellDataType {
+        CellDataType::Boolean
+    }
+}
+
+struct U32Converter;
+
+impl Converter<u32> for U32Converter {}
+
+struct WrongReadTypeConverter;
+
+impl ErasedConverter for WrongReadTypeConverter {
+    fn target_type_id(&self) -> std::any::TypeId {
+        std::any::TypeId::of::<String>()
+    }
+
+    fn target_type_name(&self) -> &'static str {
+        "String"
+    }
+
+    fn support_excel_type(&self) -> CellDataType {
+        CellDataType::String
+    }
+
+    fn convert_to_rust_data(&self, _context: &ReadConverterContext<'_>) -> Result<Box<dyn Any>> {
+        Ok(Box::new(42_u32))
+    }
+
+    fn convert_to_excel_data(
+        &self,
+        _value: &dyn Any,
+        _column: &ExcelColumn,
+        _context: &ConvertContext,
+    ) -> Result<CellValue> {
+        Ok(CellValue::Empty)
+    }
+}
+
+#[test]
+fn converter_registry_matches_java_keys_precedence_and_contract_errors() -> Result<()> {
+    let column = ExcelColumn::new("name", "Name", Some(0), 0, None);
+    let context = context(None);
+    let cell = CellValue::String("alice".to_owned());
+    let read = ReadConverterContext::new(Some(&cell), &column, &context);
+
+    let mut registry = ConverterRegistry::default();
+    assert!(registry.is_empty());
+    assert_eq!(format!("{registry:?}"), "[]");
+    assert_eq!(registry.convert_to_rust_data::<String>(&read)?, None);
+    assert_eq!(
+        registry.convert_to_excel_data(&"bob".to_owned(), &column, &context)?,
+        None
+    );
+
+    registry.register::<String, _>(PrefixConverter);
+    assert!(!registry.is_empty());
+    assert!(format!("{registry:?}").contains("String"));
+    assert_eq!(registry.clone(), registry);
+    assert_eq!(
+        registry.convert_to_rust_data::<String>(&read)?,
+        Some("name:2:alice".to_owned())
+    );
+    assert_eq!(
+        registry.convert_to_excel_data(&"bob".to_owned(), &column, &context)?,
+        Some(CellValue::String("Name:1:bob".to_owned()))
+    );
+
+    let mut different_type = ConverterRegistry::default();
+    different_type.register::<u32, _>(U32Converter);
+    assert_ne!(registry, different_type);
+    let mut different_cell_type = ConverterRegistry::default();
+    different_cell_type.register::<String, _>(BooleanPrefixConverter);
+    assert_ne!(registry, different_cell_type);
+    assert_eq!(
+        registry
+            .merged_with(&different_cell_type)
+            .convert_to_rust_data::<String>(&read)?,
+        Some("name:2:alice".to_owned())
+    );
+
+    let mut unsupported = ConverterRegistry::default();
+    unsupported.register::<String, _>(UnsupportedConverter);
+    assert!(unsupported.convert_to_rust_data::<String>(&read).is_err());
+    assert!(
+        unsupported
+            .convert_to_excel_data(&"bob".to_owned(), &column, &context)
+            .is_err()
+    );
+
+    let typed = TypedConverter::<String, PrefixConverter> {
+        converter: PrefixConverter,
+        marker: std::marker::PhantomData,
+    };
+    assert!(ErasedConverter::convert_to_excel_data(&typed, &42_u32, &column, &context).is_err());
+
+    let invalid = ConverterRegistry {
+        converters: vec![Arc::new(WrongReadTypeConverter)],
+    };
+    assert!(invalid.convert_to_rust_data::<String>(&read).is_err());
     Ok(())
 }
 

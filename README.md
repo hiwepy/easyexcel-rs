@@ -192,6 +192,47 @@ writer.finish()?;
 # }
 ```
 
+Java-style global converters are registered on read or write builders. Read
+selection uses the Rust target type plus [`CellDataType`], while writes select
+by Rust type. A field-level `#[excel(converter = Type)]` remains the highest
+priority override.
+
+```rust,no_run
+use easyexcel::{
+    CellDataType, CellValue, Converter, EasyExcel, ReadConverterContext,
+    WriteConverterContext,
+};
+
+struct PrefixConverter;
+
+impl Converter<String> for PrefixConverter {
+    fn support_excel_type(&self) -> CellDataType {
+        CellDataType::String
+    }
+
+    fn convert_to_rust_data(
+        &self,
+        context: &ReadConverterContext<'_>,
+    ) -> easyexcel::Result<String> {
+        Ok(format!("custom:{}", context.cell().map_or_else(String::new, CellValue::as_text)))
+    }
+
+    fn convert_to_excel_data(
+        &self,
+        context: &WriteConverterContext<'_, String>,
+    ) -> easyexcel::Result<CellValue> {
+        Ok(CellValue::String(format!("custom:{}", context.value())))
+    }
+}
+
+# fn build<T: easyexcel::ExcelRow>(rows: Vec<T>) -> easyexcel::Result<()> {
+EasyExcel::write::<T>("users.xlsx")
+    .register_converter::<String, _>(PrefixConverter)
+    .do_write(rows)?;
+# Ok(())
+# }
+```
+
 Legacy `.xls` files use the same typed read builders and listener lifecycle.
 The binary worksheet is materialized by Calamine before dispatch; writing
 `.xls` returns an explicit unsupported-operation error instead of emitting an

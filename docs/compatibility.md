@@ -37,7 +37,7 @@ This document is the release gate, not a marketing checklist. A row is marked
 | `@ExcelIgnore` | `#[excel(ignore)]` | implemented |
 | `@ExcelIgnoreUnannotated` | `#[excel(ignore_unannotated)]` | implemented |
 | built-in scalar converters | `FromExcelCell` / `IntoExcelCell` | partial: strings, booleans, signed/unsigned integers, Java-compatible `BigInteger` (`BigInt`), floats, `BigDecimal`, `Option<T>`, `NaiveDate`, and `NaiveDateTime` are implemented; Java URL/image and remaining temporal converter inventory remains |
-| custom `Converter<T>` | `#[excel(converter = Type)]` + converter contexts | partial: field converter implemented |
+| custom `Converter<T>` / `registerConverter` | `#[excel(converter = Type)]` / `register_converter::<T, _>(value)` + converter contexts | implemented: read dispatch uses Rust target type plus Excel cell type; write dispatch uses the Rust type; later registrations override earlier ones, sheet registrations override workbook registrations, and field annotations have highest priority across event/sync read and one-shot/stateful XLSX/CSV write paths |
 | `EasyExcel.write(file, head)` | `EasyExcel::write::<T>(file)` | implemented |
 | `sheet(Integer/String)` | `sheet_index(index)` / `sheet(name)` | implemented |
 | `needHead` | `need_head` | implemented |
