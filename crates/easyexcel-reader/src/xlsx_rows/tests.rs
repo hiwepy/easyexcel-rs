@@ -96,7 +96,11 @@ fn valid_entries() -> Vec<(&'static str, &'static str)> {
 #[test]
 fn metadata_resolves_strict_case_insensitive_relationships_and_rows() -> Result<()> {
     let mut metadata = XlsxRowMetadata::new(package(&valid_entries()))?;
-    assert!(metadata.display_cells("Missing", false, false).is_err());
+    assert!(
+        metadata
+            .display_cells("Missing", false, false, Locale::default())
+            .is_err()
+    );
     assert_eq!(metadata.last_explicit_row("A&B")?, Some(4));
     assert!(metadata.last_explicit_row("Chart").is_err());
     assert!(metadata.last_explicit_row("Missing").is_err());
@@ -109,7 +113,7 @@ fn metadata_resolves_strict_case_insensitive_relationships_and_rows() -> Result<
     };
     assert!(
         missing_part
-            .display_cells("MissingPart", false, false)
+            .display_cells("MissingPart", false, false, Locale::default())
             .is_err()
     );
     assert!(missing_part.last_explicit_row("MissingPart").is_err());
@@ -126,33 +130,44 @@ fn display_cell_stream_formats_exact_numbers_and_tracks_sparse_coordinates() -> 
         XlsxNumberFormat::Builtin(0),
         XlsxNumberFormat::Custom("0.00_ ".to_owned()),
     ];
-    assert_eq!(formats[0].display(1.0, false, false).as_deref(), Some("1"));
     assert_eq!(
-        formats[1].display(24.199_812_4, false, false).as_deref(),
+        formats[0]
+            .display(1.0, false, false, &Locale::default())
+            .as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        formats[1]
+            .display(24.199_812_4, false, false, &Locale::default())
+            .as_deref(),
         Some("24.20")
     );
     assert_eq!(
-        XlsxNumberFormat::Builtin(999).display(1.0, false, false),
+        XlsxNumberFormat::Builtin(999).display(1.0, false, false, &Locale::default()),
         None
     );
     assert_eq!(
         XlsxNumberFormat::Custom(" General ".to_owned())
-            .display(123_456_789_012.0, false, false)
+            .display(123_456_789_012.0, false, false, &Locale::default())
             .as_deref(),
         Some("123456789012")
     );
     assert_eq!(
         formats[0]
-            .display(123_456_789_012.0, false, true)
+            .display(123_456_789_012.0, false, true, &Locale::default())
             .as_deref(),
         Some("1.23457E11")
     );
     assert_eq!(
-        formats[0].display(1E-11, false, false).as_deref(),
+        formats[0]
+            .display(1E-11, false, false, &Locale::default())
+            .as_deref(),
         Some("0")
     );
     assert_eq!(
-        formats[0].display(-1E-11, false, true).as_deref(),
+        formats[0]
+            .display(-1E-11, false, true, &Locale::default())
+            .as_deref(),
         Some("-1E-11")
     );
 
@@ -164,7 +179,7 @@ fn display_cell_stream_formats_exact_numbers_and_tracks_sparse_coordinates() -> 
 </sheetData></worksheet>"#,
     )]);
     let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-    let mut cells = XlsxDisplayCellReader::new(reader, &formats, false, false)?;
+    let mut cells = XlsxDisplayCellReader::new(reader, &formats, false, false, Locale::default())?;
 
     let first = cells.next_cell()?.expect("first display cell");
     assert_eq!(first.position, (1, 1));
@@ -199,12 +214,43 @@ fn display_cell_stream_formats_exact_numbers_and_tracks_sparse_coordinates() -> 
 }
 
 #[test]
+fn display_formats_numbers_dates_and_scientific_values_with_selected_locale() {
+    let german = crate::ExcelLocale::from_name("de_DE")
+        .expect("German locale")
+        .formatter();
+    assert_eq!(
+        XlsxNumberFormat::Custom("#,##0.00".to_owned())
+            .display(1_234.5, false, false, &german)
+            .as_deref(),
+        Some("1.234,50")
+    );
+    assert_eq!(
+        XlsxNumberFormat::Builtin(0)
+            .display(123_456_789_012.0, false, true, &german)
+            .as_deref(),
+        Some("1,23457E11")
+    );
+
+    let chinese = crate::ExcelLocale::from_name("zh_CN")
+        .expect("Chinese locale")
+        .formatter();
+    assert_eq!(
+        XlsxNumberFormat::Custom("mmmm dddd AM/PM".to_owned())
+            .display(1.25, false, false, &chinese)
+            .as_deref(),
+        Some("一月 星期日 上午")
+    );
+}
+
+#[test]
 fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()> {
     let formats = vec![XlsxNumberFormat::Builtin(0)];
     for xml in ["<worksheet/>", "<worksheet><"] {
         let mut archive = archive(&[("sheet.xml", xml)]);
         let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-        assert!(XlsxDisplayCellReader::new(reader, &formats, false, false).is_err());
+        assert!(
+            XlsxDisplayCellReader::new(reader, &formats, false, false, Locale::default()).is_err()
+        );
     }
 
     for xml in [
@@ -222,7 +268,8 @@ fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()>
     ] {
         let mut archive = archive(&[("sheet.xml", xml)]);
         let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-        let mut cells = XlsxDisplayCellReader::new(reader, &formats, false, false)?;
+        let mut cells =
+            XlsxDisplayCellReader::new(reader, &formats, false, false, Locale::default())?;
         assert!(cells.next_cell().is_err(), "{xml}");
     }
 
@@ -234,7 +281,8 @@ fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()>
         let mut archive =
             ZipArchive::new(package_bytes(&[("sheet.xml", bytes)])).expect("ZIP archive");
         let reader = display_xml_reader(&mut archive, "sheet.xml")?;
-        let mut cells = XlsxDisplayCellReader::new(reader, &formats, false, false)?;
+        let mut cells =
+            XlsxDisplayCellReader::new(reader, &formats, false, false, Locale::default())?;
         assert!(cells.next_cell().is_err());
     }
     Ok(())

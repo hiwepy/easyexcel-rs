@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
+pub use easyexcel_reader::ExcelLocale;
 use easyexcel_reader::{
     ReadOptions, ScientificFormatMode, SheetSelector, read_csv, read_xls, read_xlsx,
 };
@@ -214,6 +215,13 @@ where
         self
     }
 
+    /// Sets the locale used for formatted number and date display values.
+    #[must_use]
+    pub fn locale(mut self, locale: ExcelLocale) -> Self {
+        self.options.locale = locale;
+        self
+    }
+
     /// Sets the first physical data row to dispatch, zero-based and inclusive.
     ///
     /// Configured header rows are still analysed for name-based mapping.
@@ -364,6 +372,13 @@ where
         } else {
             ScientificFormatMode::Plain
         };
+        self
+    }
+
+    /// Sets the locale used while collecting formatted number and date values.
+    #[must_use]
+    pub fn locale(mut self, locale: ExcelLocale) -> Self {
+        self.options.locale = locale;
         self
     }
 

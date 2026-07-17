@@ -142,6 +142,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .use_scientific_format(true)
         .use_scientific_format(false)
         .use_scientific_format(true)
+        .locale(ExcelLocale::from_name("de-DE").expect("German locale"))
         .start_row(4)
         .end_row(8)
         .read_rows(5, 7)
@@ -162,6 +163,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         read.options.scientific_format,
         ScientificFormatMode::Scientific
     );
+    assert_eq!(read.options.locale.language_tag(), "de_DE");
     assert_eq!(read.options.start_row, Some(5));
     assert_eq!(read.options.end_row, Some(7));
     assert_eq!(
@@ -198,6 +200,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         .use_scientific_format(true)
         .use_scientific_format(false)
         .use_scientific_format(true)
+        .locale(ExcelLocale::from_name("zh-CN").expect("Chinese locale"))
         .start_row(3)
         .end_row(9)
         .read_rows(4, 6)
@@ -217,6 +220,7 @@ fn factories_and_builder_options_match_java_style_chaining() {
         sync.options.scientific_format,
         ScientificFormatMode::Scientific
     );
+    assert_eq!(sync.options.locale.language_tag(), "zh_CN");
     assert_eq!(sync.options.start_row, Some(4));
     assert_eq!(sync.options.end_row, Some(6));
     assert_eq!(

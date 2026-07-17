@@ -5,7 +5,7 @@ cargo llvm-cov clean --workspace
 cargo llvm-cov \
   --workspace \
   --all-features \
-  --ignore-filename-regex 'crates/easyexcel-derive/src/lib\.rs' \
+  --ignore-filename-regex 'crates/easyexcel-derive/src/lib\.rs|crates/easyexcel-reader/src/locale_generated\.rs' \
   --html \
   --output-dir coverage
 
@@ -13,7 +13,7 @@ cargo llvm-cov \
 # Its percentage threshold also rounds values such as 99.95% to 100, so require
 # the raw missed counts in the TOTAL row to be exactly zero.
 cargo llvm-cov report \
-  --ignore-filename-regex 'crates/easyexcel-derive/src/lib\.rs' \
+  --ignore-filename-regex 'crates/easyexcel-derive/src/lib\.rs|crates/easyexcel-reader/src/locale_generated\.rs' \
   --fail-under-lines 100 \
   --fail-under-regions 100 \
   --fail-under-functions 100 \

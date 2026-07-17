@@ -17,7 +17,11 @@ use easyexcel_core::{
 use encoding_rs::Encoding;
 use encoding_rs_io::DecodeReaderBytesBuilder;
 
+mod locale;
+mod locale_generated;
 mod xlsx_rows;
+
+pub use locale::ExcelLocale;
 
 use xlsx_rows::{XlsxDisplayCellReader, XlsxRowMetadata};
 
@@ -66,6 +70,8 @@ pub struct ReadOptions {
     pub use_1904_windowing: bool,
     /// General-format rendering mode for extreme numbers.
     pub scientific_format: ScientificFormatMode,
+    /// Locale used for formatted numeric and date display values.
+    pub locale: ExcelLocale,
     /// Physical first row dispatched as data, zero-based and inclusive.
     ///
     /// Header rows are still analysed so name-based mapping remains available.
@@ -100,6 +106,7 @@ impl Default for ReadOptions {
             auto_trim: true,
             use_1904_windowing: false,
             scientific_format: ScientificFormatMode::Plain,
+            locale: ExcelLocale::default(),
             start_row: None,
             end_row: None,
             header_aliases: HashMap::new(),
@@ -172,6 +179,7 @@ fn read_xlsx_source_with_consumer(
                         &sheet_name,
                         options.use_1904_windowing,
                         options.scientific_format.is_enabled(),
+                        options.locale.formatter(),
                     )?,
             )
         } else {

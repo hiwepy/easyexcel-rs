@@ -15,8 +15,10 @@ easyexcel-core = { path = "../easyexcel-core" }
 encoding_rs.workspace = true
 encoding_rs_io.workspace = true
 office-crypto.workspace = true
+pure-rust-locales.workspace = true
 quick-xml.workspace = true
 ssfmt.workspace = true
+sys-locale.workspace = true
 zip.workspace = true
 
 [dev-dependencies]

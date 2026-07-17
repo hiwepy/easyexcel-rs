@@ -6,7 +6,7 @@ use easyexcel_core::{CellExtra, CellExtraType, ExcelError, Result};
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Decoder, Reader as XmlReader, XmlVersion};
-use ssfmt::{DateSystem, FormatOptions, format, format_code_from_id};
+use ssfmt::{DateSystem, FormatOptions, Locale, format, format_code_from_id};
 use zip::ZipArchive;
 
 const MAX_XLSX_ROW_NUMBER: u32 = 1_048_576;
@@ -33,10 +33,16 @@ enum XlsxNumberFormat {
 }
 
 impl XlsxNumberFormat {
-    fn display(&self, value: f64, date_1904: bool, use_scientific_format: bool) -> Option<String> {
+    fn display(
+        &self,
+        value: f64,
+        date_1904: bool,
+        use_scientific_format: bool,
+        locale: &Locale,
+    ) -> Option<String> {
         if self.is_general() && is_scientific_magnitude(value) {
             return Some(if use_scientific_format {
-                java_scientific_format(value)
+                java_scientific_format(value, locale.decimal_separator)
             } else {
                 java_plain_extreme_format(value)
             });
@@ -47,7 +53,7 @@ impl XlsxNumberFormat {
             } else {
                 DateSystem::Date1900
             },
-            ..FormatOptions::default()
+            locale: locale.clone(),
         };
         match self {
             Self::Builtin(id) => {
@@ -77,6 +83,7 @@ pub(crate) struct XlsxDisplayCellReader<'a> {
     cell_formats: &'a [XlsxNumberFormat],
     date_1904: bool,
     use_scientific_format: bool,
+    locale: Locale,
     row_index: u32,
     column_index: usize,
     buffer: Vec<u8>,
@@ -137,6 +144,7 @@ impl XlsxRowMetadata {
         sheet_name: &str,
         use_1904_windowing: bool,
         use_scientific_format: bool,
+        locale: Locale,
     ) -> Result<XlsxDisplayCellReader<'_>> {
         let path = self
             .sheet_paths
@@ -151,6 +159,7 @@ impl XlsxRowMetadata {
             &self.cell_formats,
             use_1904_windowing,
             use_scientific_format,
+            locale,
         )
     }
 
@@ -212,6 +221,7 @@ impl<'a> XlsxDisplayCellReader<'a> {
         cell_formats: &'a [XlsxNumberFormat],
         date_1904: bool,
         use_scientific_format: bool,
+        locale: Locale,
     ) -> Result<Self> {
         let mut buffer = Vec::with_capacity(256);
         loop {
@@ -231,6 +241,7 @@ impl<'a> XlsxDisplayCellReader<'a> {
             cell_formats,
             date_1904,
             use_scientific_format,
+            locale,
             row_index: 0,
             column_index: 0,
             buffer,
@@ -343,7 +354,12 @@ impl<'a> XlsxDisplayCellReader<'a> {
                         .parse::<BigDecimal>()
                         .expect("a finite f64 string is always a valid decimal");
                     let display_value = self.cell_formats.get(style_index).and_then(|format| {
-                        format.display(number, self.date_1904, self.use_scientific_format)
+                        format.display(
+                            number,
+                            self.date_1904,
+                            self.use_scientific_format,
+                            &self.locale,
+                        )
                     });
                     return Ok((display_value, Some(decimal)));
                 }
@@ -379,7 +395,7 @@ fn java_plain_extreme_format(value: f64) -> String {
     }
 }
 
-fn java_scientific_format(value: f64) -> String {
+fn java_scientific_format(value: f64, decimal_separator: char) -> String {
     let formatted = format!("{value:.5e}");
     let (mantissa, exponent) = formatted
         .split_once('e')
@@ -388,6 +404,11 @@ fn java_scientific_format(value: f64) -> String {
     let exponent = exponent
         .parse::<i32>()
         .expect("Rust scientific formatting always emits a numeric exponent");
+    let mantissa = if decimal_separator == '.' {
+        mantissa.to_owned()
+    } else {
+        mantissa.replace('.', &decimal_separator.to_string())
+    };
     format!("{mantissa}E{exponent}")
 }
 
