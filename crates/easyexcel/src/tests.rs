@@ -6,6 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use chrono::NaiveDate;
 use tempfile::tempdir;
+use zip::ZipWriter;
+use zip::write::SimpleFileOptions;
 
 use super::*;
 
@@ -101,6 +103,23 @@ impl ExcelRow for FallibleValue {
             Ok(vec![CellValue::String(self.value.to_owned())])
         }
     }
+}
+
+fn write_minimal_template(path: &Path, shared_strings: &str, worksheet: &str) -> Result<()> {
+    let file = fs::File::create(path)?;
+    let mut archive = ZipWriter::new(file);
+    archive
+        .start_file("xl/sharedStrings.xml", SimpleFileOptions::default())
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    archive.write_all(shared_strings.as_bytes())?;
+    archive
+        .start_file("xl/worksheets/sheet1.xml", SimpleFileOptions::default())
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    archive.write_all(worksheet.as_bytes())?;
+    archive
+        .finish()
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
@@ -820,6 +839,115 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
             .do_read_sync()?,
         vec![Value("one".to_owned()), Value("two".to_owned())]
     );
+
+    let repeated_filled = directory.path().join("list-repeated-filled.xlsx");
+    let mut template_writer =
+        EasyExcel::template_writer(list_template.clone(), repeated_filled.clone())?;
+    template_writer
+        .fill(&TemplateData::new())?
+        .fill_list(
+            &FillWrapper::new([TemplateData::new().with("name", "first")]),
+            FillConfig::new(),
+        )?
+        .fill_list(
+            &FillWrapper::new([TemplateData::new().with("name", "second")]),
+            FillConfig::new(),
+        )?
+        .fill_list(&FillWrapper::default(), FillConfig::new())?;
+    assert!(
+        template_writer
+            .fill_list(
+                &FillWrapper::new([TemplateData::new().with("name", "invalid")]),
+                FillConfig::new().direction(FillDirection::Horizontal),
+            )
+            .is_err()
+    );
+    template_writer.finish()?;
+    template_writer.finish()?;
+    assert!(template_writer.fill(&TemplateData::new()).is_err());
+    assert!(
+        template_writer
+            .fill_list(&FillWrapper::default(), FillConfig::new())
+            .is_err()
+    );
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&repeated_filled)
+            .head_row_number(0)
+            .do_read_sync()?,
+        vec![Value("first".to_owned()), Value("second".to_owned())]
+    );
+    assert!(
+        EasyExcel::template_writer(
+            directory.path().join("missing-template.xlsx"),
+            directory.path().join("missing-output.xlsx"),
+        )
+        .is_err()
+    );
+    assert!(
+        EasyExcel::fill_template(
+            directory.path().join("missing-template.xlsx"),
+            directory.path().join("missing-output.xlsx"),
+            &TemplateData::new(),
+        )
+        .is_err()
+    );
+    assert!(
+        EasyExcel::fill_template_list(
+            directory.path().join("missing-template.xlsx"),
+            directory.path().join("missing-output.xlsx"),
+            &FillWrapper::default(),
+            FillConfig::new(),
+        )
+        .is_err()
+    );
+    assert!(
+        EasyExcel::fill_template_list(
+            &list_template,
+            directory.path().join("missing/template-output.xlsx"),
+            &FillWrapper::default(),
+            FillConfig::new(),
+        )
+        .is_err()
+    );
+
+    let malformed_template = directory.path().join("malformed-template.xlsx");
+    let malformed_output = directory.path().join("malformed-output.xlsx");
+    write_minimal_template(
+        &malformed_template,
+        "<sst><si><t>{.name}</t></si><si><t</si><si><t>missing</si></sst>",
+        concat!(
+            "<worksheet><sheetData><row r=\"1\">",
+            "<c t=\"s\"></c><c t=\"s\"><v>broken</c><c t=\"s\"><v>9</v></c>",
+            "<c t=\"inlineStr\"><is><t</is></c>",
+            "<c t=\"inlineStr\"><is><t>missing</is></c>",
+            "<c r=\"A1\" t=\"s\"><v>0</v></c>",
+            "<c r=\"B1\"><v>{.name}</v></c>",
+            "</row></sheetData></worksheet>"
+        ),
+    )?;
+    EasyExcel::fill_template_list(
+        &malformed_template,
+        &malformed_output,
+        &FillWrapper::new([TemplateData::new().with("name", "covered")]),
+        FillConfig::new(),
+    )?;
+
+    let untyped_template = directory.path().join("untyped-template.xlsx");
+    write_minimal_template(
+        &untyped_template,
+        "<sst></sst>",
+        concat!(
+            "<worksheet><sheetData><row r=\"1\">",
+            "<c r=\"A1\"><v>{.name}</v></c>",
+            "</row></sheetData></worksheet>"
+        ),
+    )?;
+    EasyExcel::fill_template_list(
+        &untyped_template,
+        directory.path().join("untyped-output.xlsx"),
+        &FillWrapper::new([TemplateData::new().with("name", "covered")]),
+        FillConfig::new(),
+    )?;
     Ok(())
 }
 

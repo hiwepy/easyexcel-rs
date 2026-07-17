@@ -1,7 +1,9 @@
 use std::fs;
 use std::io::{self, Cursor, Read, Seek, SeekFrom, Write};
 
+use base64::Engine;
 use calamine::{Data, Reader, Xlsx, open_workbook};
+use flate2::read::GzDecoder;
 use rust_xlsxwriter::{Format, Workbook};
 use tempfile::{TempDir, tempdir};
 
@@ -118,6 +120,17 @@ fn template_fixture() -> Result<(TempDir, std::path::PathBuf)> {
     Ok((directory, path))
 }
 
+fn write_java_composite_fixture(path: &Path) -> Result<()> {
+    let compressed = base64::engine::general_purpose::STANDARD
+        .decode(include_str!("fixtures/java-demo-composite.xlsx.gz.b64").trim())
+        .map_err(test_error)?;
+    let mut decoder = GzDecoder::new(compressed.as_slice());
+    let mut workbook = Vec::new();
+    decoder.read_to_end(&mut workbook)?;
+    fs::write(path, workbook)?;
+    Ok(())
+}
+
 #[test]
 fn template_data_and_xml_escaping_are_deterministic() {
     let mut data = TemplateData::new().with("name", "Alice").with("count", 2);
@@ -135,6 +148,15 @@ fn template_data_and_xml_escaping_are_deterministic() {
         ),
         "&lt;-{missing}-&amp;"
     );
+    assert_eq!(
+        replace_placeholders(
+            r"\{a\}-{a}-\{missing\}",
+            &BTreeMap::from([("a".to_owned(), "<值>".to_owned())])
+        ),
+        "{a}-&lt;值&gt;-{missing}"
+    );
+    assert!(!contains_unescaped(r"\{users.name}", "{users."));
+    assert!(contains_unescaped("{users.name}", "{users."));
     assert_eq!(TemplateData::default(), TemplateData::new());
 }
 
@@ -342,6 +364,200 @@ fn fill_config_and_wrapper_match_java_defaults_and_builders() {
     assert_eq!(configured.get_direction(), FillDirection::Horizontal);
     assert!(configured.get_force_new_row());
     assert!(!configured.get_auto_style());
+}
+
+#[test]
+fn stateful_template_writer_matches_java_repeated_and_composite_fill() -> Result<()> {
+    let directory = tempdir()?;
+    let template = directory.path().join("composite-template.xlsx");
+    let output = directory.path().join("composite-output.xlsx");
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet
+        .write_string(0, 0, "Report {date}")
+        .map_err(test_error)?;
+    worksheet
+        .write_string(0, 1, r"\{date\}")
+        .map_err(test_error)?;
+    worksheet
+        .write_string(1, 0, "{data1.name}")
+        .map_err(test_error)?;
+    worksheet
+        .write_string(3, 0, "{data2.name}")
+        .map_err(test_error)?;
+    worksheet.write_string(6, 0, "Footer").map_err(test_error)?;
+    workbook.save(&template).map_err(test_error)?;
+
+    let horizontal = FillConfig::new().direction(FillDirection::Horizontal);
+    let vertical = FillConfig::new().force_new_row(true);
+    let mut writer = ExcelTemplateWriter::new(&template, &output)?;
+    assert!(!writer.is_finished());
+    writer
+        .fill(&TemplateData::new().with("date", "old"))?
+        .fill_list(
+            &FillWrapper::named(
+                "data1",
+                [
+                    TemplateData::new().with("name", "A"),
+                    TemplateData::new().with("name", "B"),
+                ],
+            ),
+            horizontal,
+        )?
+        .fill_list(
+            &FillWrapper::named("data1", [TemplateData::new().with("name", "C")]),
+            horizontal,
+        )?
+        .fill_list(
+            &FillWrapper::named("data2", [TemplateData::new().with("name", "X")]),
+            vertical,
+        )?
+        .fill_list(
+            &FillWrapper::named(
+                "data2",
+                [
+                    TemplateData::new().with("name", "Y"),
+                    TemplateData::new().with("name", "Z"),
+                ],
+            ),
+            vertical,
+        )?
+        .fill_list(&FillWrapper::default(), FillConfig::new())?
+        .fill(&TemplateData::new().with("date", 2026))?;
+    assert!(
+        writer
+            .fill_list(
+                &FillWrapper::named("data1", [TemplateData::new().with("name", "invalid")]),
+                FillConfig::new(),
+            )
+            .is_err()
+    );
+    writer.finish()?;
+    writer.finish()?;
+    assert!(writer.is_finished());
+    assert!(writer.fill(&TemplateData::new()).is_err());
+    assert!(
+        writer
+            .fill_list(&FillWrapper::default(), FillConfig::new())
+            .is_err()
+    );
+
+    let mut workbook: Xlsx<_> = open_workbook(output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    assert_eq!(
+        range.get_value((0, 0)),
+        Some(&Data::String("Report 2026".to_owned()))
+    );
+    assert_eq!(
+        range.get_value((0, 1)),
+        Some(&Data::String("{date}".to_owned()))
+    );
+    for (column, expected) in [(0_u32, "A"), (1, "B"), (2, "C")] {
+        assert_eq!(
+            range.get_value((1, column)),
+            Some(&Data::String(expected.to_owned()))
+        );
+    }
+    for (row, expected) in [(3_u32, "X"), (4, "Y"), (5, "Z")] {
+        assert_eq!(
+            range.get_value((row, 0)),
+            Some(&Data::String(expected.to_owned()))
+        );
+    }
+    assert_eq!(
+        range.get_value((8, 0)),
+        Some(&Data::String("Footer".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn fills_java_official_composite_template_across_all_analysis_cells() -> Result<()> {
+    let directory = tempdir()?;
+    let template = directory.path().join("java-composite.xlsx");
+    let output = directory.path().join("java-composite-filled.xlsx");
+    write_java_composite_fixture(&template)?;
+
+    let entries = load_entries(&template)?;
+    let shared_strings = entries
+        .iter()
+        .find(|entry| entry.name == "xl/sharedStrings.xml")
+        .and_then(|entry| std::str::from_utf8(&entry.bytes).ok())
+        .map(shared_string_values)
+        .expect("official shared strings");
+    let sheet = entries
+        .iter()
+        .find(|entry| entry.name == "xl/worksheets/sheet1.xml")
+        .and_then(|entry| std::str::from_utf8(&entry.bytes).ok())
+        .expect("official worksheet");
+    let data2 = FillWrapper::named(
+        "data2",
+        [TemplateData::new().with("name", "X").with("number", 10)],
+    );
+    let (_, _, data2_row, _, _, _) =
+        find_collection_row(sheet, &data2, &shared_strings).expect("data2 marker row");
+    let filled_data2_row = fill_row_cells(
+        data2_row,
+        &data2.rows()[0],
+        data2.name(),
+        &shared_strings,
+        true,
+    );
+    assert!(filled_data2_row.contains("r=\"A9\""));
+    assert!(filled_data2_row.contains("r=\"B9\""));
+
+    let horizontal = FillConfig::new().direction(FillDirection::Horizontal);
+    let mut writer = ExcelTemplateWriter::new(&template, &output)?;
+    for row in [
+        TemplateData::new().with("name", "A").with("number", 1),
+        TemplateData::new().with("name", "B").with("number", 2),
+    ] {
+        writer.fill_list(&FillWrapper::named("data1", [row]), horizontal)?;
+    }
+    for row in [
+        TemplateData::new().with("name", "X").with("number", 10),
+        TemplateData::new().with("name", "Y").with("number", 20),
+    ] {
+        writer.fill_list(&FillWrapper::named("data2", [row]), FillConfig::new())?;
+    }
+    for row in [
+        TemplateData::new().with("name", "P").with("number", 100),
+        TemplateData::new().with("name", "Q").with("number", 200),
+    ] {
+        writer.fill_list(&FillWrapper::named("data3", [row]), FillConfig::new())?;
+    }
+    writer
+        .fill(&TemplateData::new().with("date", "2026-07-17"))?
+        .finish()?;
+
+    let mut workbook: Xlsx<_> = open_workbook(output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    for (coordinate, expected) in [
+        ((0, 2), "A"),
+        ((0, 3), "B"),
+        ((1, 2), "1"),
+        ((1, 3), "2"),
+        ((2, 2), "A"),
+        ((2, 3), "B"),
+        ((3, 2), "1"),
+        ((3, 3), "2"),
+        ((4, 0), "时间：2026-07-17"),
+        ((8, 0), "X"),
+        ((8, 1), "10"),
+        ((9, 0), "Y"),
+        ((9, 1), "20"),
+        ((10, 3), "P"),
+        ((10, 4), "100"),
+        ((11, 3), "Q"),
+        ((11, 4), "200"),
+    ] {
+        assert_eq!(
+            range.get_value(coordinate),
+            Some(&Data::String(expected.to_owned())),
+            "coordinate {coordinate:?}"
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -629,6 +845,13 @@ fn collection_coordinate_helpers_and_missing_input_are_deterministic() -> Result
         )
         .is_err()
     );
+    let (_template_directory, template) = template_fixture()?;
+    fill_xlsx_template_list(
+        &template,
+        &directory.path().join("empty-list-output.xlsx"),
+        &FillWrapper::default(),
+        FillConfig::new(),
+    )?;
     Ok(())
 }
 

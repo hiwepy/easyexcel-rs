@@ -12,7 +12,9 @@ easyexcel-core = { path = "../easyexcel-core" }
 zip.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 calamine.workspace = true
+flate2.workspace = true
 rust_xlsxwriter.workspace = true
 tempfile.workspace = true
 

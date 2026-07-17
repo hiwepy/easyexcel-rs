@@ -11,7 +11,7 @@ use easyexcel_reader::{
     ReadOptions, ScientificFormatMode, SheetSelector, read_csv, read_xls, read_xlsx,
 };
 pub use easyexcel_template::{
-    FillConfig, FillDirection, FillWrapper, TemplateData, fill_xlsx_template,
+    ExcelTemplateWriter, FillConfig, FillDirection, FillWrapper, TemplateData, fill_xlsx_template,
     fill_xlsx_template_list,
 };
 pub use easyexcel_writer::{
@@ -124,6 +124,18 @@ impl EasyExcel {
         config: FillConfig,
     ) -> Result<()> {
         fill_xlsx_template_list(template.as_ref(), output.as_ref(), data, config)
+    }
+
+    /// Loads an XLSX template for repeated Java-style `fill` calls.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn template_writer(
+        template: impl AsRef<Path>,
+        output: impl Into<PathBuf>,
+    ) -> Result<ExcelTemplateWriter> {
+        ExcelTemplateWriter::new(template, output)
     }
 }
 

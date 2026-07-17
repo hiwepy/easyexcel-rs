@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use easyexcel_core::{ExcelError, Result};
 use zip::CompressionMethod;
@@ -191,6 +191,125 @@ struct TemplateEntry {
     bytes: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+struct PendingCollectionFill {
+    wrapper: FillWrapper,
+    config: FillConfig,
+}
+
+/// Stateful OOXML template writer matching Java `ExcelWriter.fill` lifecycle.
+///
+/// Scalar values and collection fills are accumulated against one loaded XLSX
+/// package. Repeated collection fills with the same prefix append at the prior
+/// fill position instead of reopening the original template.
+#[derive(Debug)]
+pub struct ExcelTemplateWriter {
+    output: PathBuf,
+    entries: Vec<TemplateEntry>,
+    scalar: TemplateData,
+    collections: Vec<PendingCollectionFill>,
+    finished: bool,
+}
+
+impl ExcelTemplateWriter {
+    /// Loads a template package for stateful filling.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O or OOXML package error when the template cannot be read.
+    pub fn new(template: impl AsRef<Path>, output: impl Into<PathBuf>) -> Result<Self> {
+        Ok(Self {
+            output: output.into(),
+            entries: load_entries(template.as_ref())?,
+            scalar: TemplateData::new(),
+            collections: Vec::new(),
+            finished: false,
+        })
+    }
+
+    /// Accumulates scalar `{key}` values for this workbook.
+    ///
+    /// Later fills replace earlier values for the same key, matching Java map
+    /// filling before the workbook is finalized.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after the writer has finished.
+    pub fn fill(&mut self, data: &TemplateData) -> Result<&mut Self> {
+        self.ensure_open()?;
+        self.scalar.values.extend(data.values.clone());
+        Ok(self)
+    }
+
+    /// Accumulates a named or unnamed collection fill.
+    ///
+    /// Repeated calls with the same prefix append rows. Java maintains one
+    /// cursor per prefix; therefore changing the direction/configuration for an
+    /// already-used prefix is rejected instead of silently restarting it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error after finish or when a prefix changes its fill config.
+    pub fn fill_list(&mut self, data: &FillWrapper, config: FillConfig) -> Result<&mut Self> {
+        self.ensure_open()?;
+        if data.rows().is_empty() {
+            return Ok(self);
+        }
+        if let Some(pending) = self
+            .collections
+            .iter_mut()
+            .find(|pending| pending.wrapper.name == data.name)
+        {
+            if pending.config != config {
+                return Err(ExcelError::Format(format!(
+                    "collection fill prefix {:?} cannot change configuration between fills",
+                    data.name()
+                )));
+            }
+            pending.wrapper.rows.extend(data.rows.iter().cloned());
+            return Ok(self);
+        }
+        self.collections.push(PendingCollectionFill {
+            wrapper: data.clone(),
+            config,
+        });
+        Ok(self)
+    }
+
+    /// Writes the completed XLSX package. Repeated calls are no-ops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an XML, ZIP, or output I/O error.
+    pub fn finish(&mut self) -> Result<()> {
+        if self.finished {
+            return Ok(());
+        }
+        for pending in &self.collections {
+            replace_collection_placeholders(&mut self.entries, &pending.wrapper, pending.config);
+        }
+        replace_xml_placeholders(&mut self.entries, &self.scalar)?;
+        self.finished = true;
+        write_entries(&self.output, &self.entries)
+    }
+
+    /// Returns whether [`Self::finish`] has run.
+    #[must_use]
+    pub const fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if self.finished {
+            Err(ExcelError::Unsupported(
+                "template writer already finished".to_owned(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
 trait ReadSeek: Read + Seek {}
 
 impl<T: Read + Seek> ReadSeek for T {}
@@ -210,9 +329,9 @@ type ArchiveWriter = ZipWriter<Box<dyn WriteSeek>>;
 ///
 /// Returns an I/O or format error for invalid ZIP/OOXML input or output failures.
 pub fn fill_xlsx_template(template: &Path, output: &Path, data: &TemplateData) -> Result<()> {
-    let mut entries = load_entries(template)?;
-    replace_xml_placeholders(&mut entries, data)?;
-    write_entries(output, &entries)
+    let mut writer = ExcelTemplateWriter::new(template, output)?;
+    writer.scalar.values.extend(data.values.clone());
+    writer.finish()
 }
 
 /// Expands Java EasyExcel-style collection placeholders in an XLSX template.
@@ -228,9 +347,14 @@ pub fn fill_xlsx_template_list(
     data: &FillWrapper,
     config: FillConfig,
 ) -> Result<()> {
-    let mut entries = load_entries(template)?;
-    replace_collection_placeholders(&mut entries, data, config);
-    write_entries(output, &entries)
+    let mut writer = ExcelTemplateWriter::new(template, output)?;
+    if !data.rows().is_empty() {
+        writer.collections.push(PendingCollectionFill {
+            wrapper: data.clone(),
+            config,
+        });
+    }
+    writer.finish()
 }
 
 fn replace_collection_placeholders(
@@ -375,23 +499,13 @@ fn collection_cells<'a>(
     wrapper: &FillWrapper,
     shared_strings: &[String],
 ) -> Vec<(usize, usize, &'a str)> {
-    let mut cells = Vec::new();
-    let mut offset = 0;
-    while let Some(relative_start) = row[offset..].find("<c") {
-        let start = offset + relative_start;
-        let Some(relative_end) = row[start..].find("</c>") else {
-            break;
-        };
-        let end = start + relative_end + 4;
-        let cell = &row[start..end];
-        if cell_value(cell, shared_strings)
-            .is_some_and(|value| contains_collection_marker(&value, wrapper))
-        {
-            cells.push((start, end, cell));
-        }
-        offset = end;
-    }
-    cells
+    all_cells(row)
+        .into_iter()
+        .filter(|(_, _, cell)| {
+            cell_value(cell, shared_strings)
+                .is_some_and(|value| contains_collection_marker(&value, wrapper))
+        })
+        .collect()
 }
 
 fn upsert_collection_row(xml: &str, collection_row: &str, target_row: usize) -> String {
@@ -694,20 +808,37 @@ fn expand_horizontal_cells(
     wrapper: &FillWrapper,
     shared_strings: &[String],
 ) -> Option<String> {
-    let (row_start, row_end, row, cell_start, cell_end, cell) =
-        find_collection_row(xml, wrapper, shared_strings)?;
-    let mut cells = String::new();
-    for (offset, data) in wrapper.rows().iter().enumerate() {
-        let filled = fill_cell(cell, data, wrapper.name(), shared_strings, true);
-        cells.push_str(&shift_row(&filled, 0, offset));
+    let mut output = String::with_capacity(xml.len());
+    let mut offset = 0;
+    let mut changed = false;
+    while let Some(relative_start) = xml[offset..].find("<row") {
+        let start = offset + relative_start;
+        let Some(relative_end) = xml[start..].find("</row>") else {
+            break;
+        };
+        let end = start + relative_end + 6;
+        output.push_str(&xml[offset..start]);
+        let row = &xml[start..end];
+        let cells = collection_cells(row, wrapper, shared_strings);
+        if cells.is_empty() {
+            output.push_str(row);
+        } else {
+            changed = true;
+            let mut cell_offset = 0;
+            for (cell_start, cell_end, cell) in cells {
+                output.push_str(&row[cell_offset..cell_start]);
+                for (column_offset, data) in wrapper.rows().iter().enumerate() {
+                    let filled = fill_cell(cell, data, wrapper.name(), shared_strings, true);
+                    output.push_str(&shift_row(&filled, 0, column_offset));
+                }
+                cell_offset = cell_end;
+            }
+            output.push_str(&row[cell_offset..]);
+        }
+        offset = end;
     }
-    let expanded_row = format!("{}{}{}", &row[..cell_start], cells, &row[cell_end..]);
-    Some(format!(
-        "{}{}{}",
-        &xml[..row_start],
-        expanded_row,
-        &xml[row_end..]
-    ))
+    output.push_str(&xml[offset..]);
+    changed.then_some(output)
 }
 
 fn find_collection_row<'a>(
@@ -821,17 +952,11 @@ fn contains_collection_marker(value: &str, wrapper: &FillWrapper) -> bool {
     let prefix = wrapper
         .name()
         .map_or(".".to_owned(), |name| format!("{name}."));
-    value.contains(&format!("{{{prefix}"))
+    contains_unescaped(value, &format!("{{{prefix}"))
 }
 
 fn replace_collection_values(value: &str, data: &TemplateData, prefix: Option<&str>) -> String {
-    data.values()
-        .iter()
-        .fold(value.to_owned(), |result, (key, value)| {
-            let marker =
-                prefix.map_or_else(|| format!("{{.{key}}}"), |name| format!("{{{name}.{key}}}"));
-            result.replace(&marker, value)
-        })
+    replace_template_values(value, data.values(), prefix, false)
 }
 
 fn element_value<'a>(xml: &'a str, element: &str) -> Option<&'a str> {
@@ -994,9 +1119,78 @@ fn replace_xml_placeholders(entries: &mut [TemplateEntry], data: &TemplateData) 
 }
 
 fn replace_placeholders(xml: &str, values: &BTreeMap<String, String>) -> String {
-    values.iter().fold(xml.to_owned(), |content, (key, value)| {
-        content.replace(&format!("{{{key}}}"), &escape_xml(value))
-    })
+    replace_template_values(xml, values, None, true)
+}
+
+fn replace_template_values(
+    input: &str,
+    values: &BTreeMap<String, String>,
+    collection_prefix: Option<&str>,
+    escape_values: bool,
+) -> String {
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && bytes
+                .get(index + 1)
+                .is_some_and(|next| matches!(next, b'{' | b'}'))
+        {
+            output.push(char::from(bytes[index + 1]));
+            index += 2;
+            continue;
+        }
+        if bytes[index] == b'{'
+            && let Some(relative_end) = input[index + 1..].find('}')
+        {
+            let end = index + relative_end + 1;
+            let placeholder = &input[index + 1..end];
+            let key = if escape_values {
+                Some(placeholder)
+            } else {
+                match collection_prefix {
+                    Some(prefix) => placeholder
+                        .strip_prefix(prefix)
+                        .and_then(|value| value.strip_prefix('.')),
+                    None => placeholder.strip_prefix('.'),
+                }
+            };
+            if let Some(value) = key.and_then(|key| values.get(key)) {
+                if escape_values {
+                    output.push_str(&escape_xml(value));
+                } else {
+                    output.push_str(value);
+                }
+                index = end + 1;
+                continue;
+            }
+        }
+        let character = input[index..]
+            .chars()
+            .next()
+            .expect("index always points to a character boundary");
+        output.push(character);
+        index += character.len_utf8();
+    }
+    output
+}
+
+fn contains_unescaped(value: &str, marker: &str) -> bool {
+    let mut offset = 0;
+    while let Some(relative) = value[offset..].find(marker) {
+        let index = offset + relative;
+        let backslashes = value[..index]
+            .bytes()
+            .rev()
+            .take_while(|byte| *byte == b'\\')
+            .count();
+        if backslashes % 2 == 0 {
+            return true;
+        }
+        offset = index + marker.len();
+    }
+    false
 }
 
 fn escape_xml(value: &str) -> String {

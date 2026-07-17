@@ -375,8 +375,10 @@ dependencies = [
 name = "easyexcel-template"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "calamine",
  "easyexcel-core",
+ "flate2",
  "rust_xlsxwriter",
  "tempfile",
  "zip 7.2.0",

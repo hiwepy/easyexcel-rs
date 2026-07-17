@@ -420,6 +420,37 @@ EasyExcel::fill_template_list(
 # }
 ```
 
+Repeated Java-style `fill` calls on the same workbook use a stateful template
+writer. Collection rows continue from the previous call for each prefix, and
+scalar values can be supplied before or after collection data:
+
+```rust,no_run
+use easyexcel::{EasyExcel, FillConfig, FillWrapper, TemplateData};
+
+# fn run() -> easyexcel::Result<()> {
+let mut writer = EasyExcel::template_writer("template.xlsx", "report.xlsx")?;
+writer
+    .fill_list(
+        &FillWrapper::named("users", [TemplateData::new().with("name", "Alice")]),
+        FillConfig::new(),
+    )?
+    .fill_list(
+        &FillWrapper::named("users", [TemplateData::new().with("name", "Bob")]),
+        FillConfig::new(),
+    )?
+    .fill(&TemplateData::new().with("title", "User report"))?
+    .finish()?;
+# Ok(())
+# }
+```
+
+Escaped braces (`\{` and `\}`), repeated named/unnamed vertical collections,
+and repeated horizontal collections are supported. The composite behavior is
+verified against Alibaba EasyExcel's official `fill/composite.xlsx` fixture.
+Typed numeric/date template cells, changing `FillConfig` for an already-used
+prefix, mixing template fill with ordinary table writes, and template stream
+input/output remain compatibility work in progress.
+
 ## Quality gates
 
 ```bash
