@@ -41,3 +41,61 @@ pub enum ExcelError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
+
+impl Clone for ExcelError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Data {
+                sheet,
+                row,
+                column,
+                field,
+                value,
+                message,
+            } => Self::Data {
+                sheet: sheet.clone(),
+                row: *row,
+                column: *column,
+                field,
+                value: value.clone(),
+                message: message.clone(),
+            },
+            Self::SheetNotFound(s) => Self::SheetNotFound(s.clone()),
+            Self::Format(s) => Self::Format(s.clone()),
+            Self::Unsupported(s) => Self::Unsupported(s.clone()),
+            Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), e.to_string())),
+        }
+    }
+}
+
+impl PartialEq for ExcelError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Data {
+                    sheet: s1,
+                    row: r1,
+                    column: c1,
+                    field: f1,
+                    value: v1,
+                    message: m1,
+                },
+                Self::Data {
+                    sheet: s2,
+                    row: r2,
+                    column: c2,
+                    field: f2,
+                    value: v2,
+                    message: m2,
+                },
+            ) => s1 == s2 && r1 == r2 && c1 == c2 && f1 == f2 && v1 == v2 && m1 == m2,
+            (Self::SheetNotFound(a), Self::SheetNotFound(b)) => a == b,
+            (Self::Format(a), Self::Format(b)) => a == b,
+            (Self::Unsupported(a), Self::Unsupported(b)) => a == b,
+            (Self::Io(a), Self::Io(b)) => a.kind() == b.kind() && a.to_string() == b.to_string(),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ExcelError {}

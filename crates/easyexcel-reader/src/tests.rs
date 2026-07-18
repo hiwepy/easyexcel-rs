@@ -239,7 +239,7 @@ impl ReadListener<TestRow> for Probe {
 #[derive(Default)]
 struct ExtraProbe {
     events: Vec<&'static str>,
-    extras: Vec<CellExtra>,
+    extras: Vec<easyexcel_core::CellExtra>,
     context_customs: Vec<Option<String>>,
     fail_extra: bool,
     error_action: Option<ErrorAction>,
@@ -278,7 +278,7 @@ impl ReadListener<TestRow> for ExtraProbe {
         Ok(())
     }
 
-    fn extra(&mut self, extra: &CellExtra, context: &AnalysisContext) -> Result<()> {
+    fn extra(&mut self, extra: &easyexcel_core::CellExtra, context: &AnalysisContext) -> Result<()> {
         self.record_custom(context);
         self.events.push("extra");
         self.extras.push(extra.clone());
@@ -1026,7 +1026,7 @@ fn reads_java_easyexcel_encrypted_xlsx_fixture() -> Result<()> {
         &path,
         &ReadOptions {
             password: Some("123456".to_owned()),
-            extra_read: HashSet::from([CellExtraType::Merge]),
+            extra_read: HashSet::from([easyexcel_core::CellExtraType::Merge]),
             ..options()
         },
         &mut probe,
@@ -1064,9 +1064,9 @@ fn reads_java_easyexcel_encrypted_xlsx_fixture() -> Result<()> {
 fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<()> {
     let (_directory, path) = extra_workbook_fixture()?;
     let all_extras = HashSet::from([
-        CellExtraType::Comment,
-        CellExtraType::Hyperlink,
-        CellExtraType::Merge,
+        easyexcel_core::CellExtraType::Comment,
+        easyexcel_core::CellExtraType::Hyperlink,
+        easyexcel_core::CellExtraType::Merge,
     ]);
     let read_options = ReadOptions {
         sheet: SheetSelector::Name("Meta".to_owned()),
@@ -1103,7 +1103,7 @@ fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<(
     let merge = probe
         .extras
         .iter()
-        .find(|extra| extra.extra_type() == CellExtraType::Merge)
+        .find(|extra| extra.extra_type() == easyexcel_core::CellExtraType::Merge)
         .expect("merge extra");
     assert_eq!(merge.first_row_index(), 3);
     assert_eq!(merge.last_row_index(), 3);
@@ -1112,15 +1112,15 @@ fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<(
     let hyperlinks = probe
         .extras
         .iter()
-        .filter(|extra| extra.extra_type() == CellExtraType::Hyperlink)
-        .filter_map(CellExtra::text)
+        .filter(|extra| extra.extra_type() == easyexcel_core::CellExtraType::Hyperlink)
+        .filter_map(easyexcel_core::CellExtra::text)
         .collect::<Vec<_>>();
     assert!(hyperlinks.contains(&"https://example.com"));
     assert!(hyperlinks.contains(&"Meta!A1"));
     let comment = probe
         .extras
         .iter()
-        .find(|extra| extra.extra_type() == CellExtraType::Comment)
+        .find(|extra| extra.extra_type() == easyexcel_core::CellExtraType::Comment)
         .expect("comment extra");
     assert_eq!(comment.text(), Some("Author:\ncomment & text"));
     assert_eq!(comment.first_row_index(), 1);
@@ -1130,13 +1130,13 @@ fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<(
     read_xlsx::<TestRow, _>(
         &path,
         &ReadOptions {
-            extra_read: HashSet::from([CellExtraType::Comment]),
+            extra_read: HashSet::from([easyexcel_core::CellExtraType::Comment]),
             ..options()
         },
         &mut comments_only,
     )?;
     assert_eq!(comments_only.extras.len(), 1);
-    assert_eq!(comments_only.extras[0].extra_type(), CellExtraType::Comment);
+    assert_eq!(comments_only.extras[0].extra_type(), easyexcel_core::CellExtraType::Comment);
 
     let mut stopped = ExtraProbe {
         stop_after_extra: true,
@@ -1179,7 +1179,7 @@ fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<(
 #[test]
 fn non_xlsx_readers_reject_requested_extra_metadata_before_opening_input() {
     let options = ReadOptions {
-        extra_read: HashSet::from([CellExtraType::Comment]),
+        extra_read: HashSet::from([easyexcel_core::CellExtraType::Comment]),
         ..options()
     };
     let mut probe = Probe::default();

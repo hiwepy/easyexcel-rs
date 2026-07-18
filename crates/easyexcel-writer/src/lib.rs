@@ -23,6 +23,59 @@ use rust_xlsxwriter::{
     Note, ObjectMovement, Workbook, Worksheet,
 };
 
+// ---------------------------------------------------------------------------
+// Mirrored Java sub-packages
+// ---------------------------------------------------------------------------
+pub mod builder;
+pub mod executor;
+pub mod handler;
+pub mod holder;
+pub mod merge;
+pub mod metadata;
+pub mod property;
+pub mod style;
+
+pub use builder::abstract_excel_writer_parameter_builder::AbstractExcelWriterParameterBuilder;
+pub use builder::excel_writer_table_builder::ExcelWriterTableBuilder;
+pub use executor::abstract_excel_write_executor::AbstractExcelWriteExecutor;
+pub use executor::excel_write_add_executor::ExcelWriteAddExecutor;
+pub use executor::excel_write_executor::ExcelWriteExecutor;
+pub use executor::excel_write_fill_executor::ExcelWriteFillExecutor;
+pub use handler::abstract_cell_write_handler::AbstractCellWriteHandler;
+pub use handler::abstract_row_write_handler::AbstractRowWriteHandler;
+pub use handler::abstract_sheet_write_handler::AbstractSheetWriteHandler;
+pub use handler::abstract_workbook_write_handler::AbstractWorkbookWriteHandler;
+pub use handler::cell_write_handler::CellWriteHandler;
+pub use handler::default_write_handler_loader::DefaultWriteHandlerLoader;
+pub use handler::r#impl::impl_default_row_write_handler::{
+    new_default_row_write_handler, DefaultRowWriteHandler,
+};
+pub use handler::r#impl::impl_dimension_workbook_write_handler::DimensionWorkbookWriteHandler;
+pub use handler::r#impl::impl_fill_style_cell_write_handler::FillStyleCellWriteHandler;
+pub use handler::row_write_handler::RowWriteHandler;
+pub use handler::sheet_write_handler::SheetWriteHandler;
+pub use handler::workbook_write_handler::WorkbookWriteHandler;
+pub use holder::abstract_write_holder::AbstractWriteHolder;
+pub use holder::write_holder::WriteHolder;
+pub use holder::write_sheet_holder::WriteSheetHolder as MirroredWriteSheetHolder;
+pub use holder::write_table_holder::WriteTableHolder as MirroredWriteTableHolder;
+pub use holder::write_workbook_holder::WriteWorkbookHolder as MirroredWriteWorkbookHolder;
+pub use merge::abstract_merge_strategy::AbstractMergeStrategy;
+pub use merge::loop_merge_strategy::LoopMergeStrategy as MirroredLoopMergeStrategy;
+pub use merge::once_absolute_merge_strategy::OnceAbsoluteMergeStrategy as MirroredOnceAbsoluteMerge;
+pub use metadata::collection_row_data::CollectionRowData;
+pub use metadata::map_row_data::MapRowData;
+pub use metadata::row_data::RowData as MirroredRowData;
+pub use metadata::write_basic_parameter::WriteBasicParameter as MirroredWriteBasicParameter;
+pub use metadata::write_sheet::WriteSheet as MirroredWriteSheet;
+pub use metadata::write_table::WriteTable as MirroredWriteTable;
+pub use metadata::write_workbook::WriteWorkbook as MirroredWriteWorkbook;
+pub use property::excel_write_head_property::ExcelWriteHeadProperty;
+pub use style::abstract_cell_style_strategy::AbstractCellStyleStrategy;
+pub use style::abstract_vertical_cell_style_strategy::AbstractVerticalCellStyleStrategy;
+pub use style::default_style::DefaultStyle;
+pub use style::horizontal_cell_style_strategy::HorizontalCellStyleStrategy;
+
 /// Cloneable, explicitly closeable output stream used by stateful writers.
 ///
 /// Clones address the same underlying writer. Closing any clone drops the
@@ -357,6 +410,10 @@ pub struct WriteOptions {
     pub exclude_column_field_names: Vec<String>,
     /// Whether included columns follow the order of the include list.
     pub order_by_include_column: bool,
+    /// Relative head row index. (Java `WriteBasicParameter.relativeHeadRowIndex`)
+    pub relative_head_row_index: i32,
+    /// Whether headers are auto-merged. (Java `WriteBasicParameter.automaticMergeHead`)
+    pub automatic_merge_head: bool,
     /// Absolute ranges merged before row data is written.
     pub merge_ranges: Vec<MergeRange>,
     /// Whether used columns are auto-fitted after writing.
@@ -412,6 +469,8 @@ impl Default for WriteOptions {
             auto_close_stream: true,
             write_excel_on_exception: false,
             converters: ConverterRegistry::default(),
+            relative_head_row_index: 0,
+            automatic_merge_head: true,
         }
     }
 }
@@ -3282,3 +3341,5 @@ fn format_error(error: impl std::fmt::Display) -> ExcelError {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod missing_tests;

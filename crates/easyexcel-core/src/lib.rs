@@ -140,7 +140,7 @@ pub use row_data::*;
 //   `com.alibaba.excel.converters.ConverterKeyBuild` +
 //   `com.alibaba.excel.converters.DefaultConverterLoader`)
 // ---------------------------------------------------------------------------
-mod converter;
+pub mod converter;
 mod converter_registry;
 mod from_excel_cell;
 mod from_into_impls;
@@ -148,7 +148,7 @@ mod into_excel_cell;
 mod read_converter_context;
 mod write_converter_context;
 
-pub use converter::*;
+pub use converter::converter_trait::*;
 pub use converter_registry::*;
 pub use from_excel_cell::*;
 pub use into_excel_cell::*;
@@ -197,13 +197,20 @@ pub type Result<T> = std::result::Result<T, ExcelError>;
 // ---------------------------------------------------------------------------
 mod read_listener;
 mod write_cell_context;
+mod write_context;
 mod write_handler;
 mod write_row_context;
+
+// ---------------------------------------------------------------------------
+// Event package (Java `com.alibaba.excel.event.*`)
+// ---------------------------------------------------------------------------
+pub mod event;
 mod write_sheet_context;
 mod write_workbook_context;
 
 pub use read_listener::*;
 pub use write_cell_context::*;
+pub use write_context::*;
 pub use write_handler::*;
 pub use write_row_context::*;
 pub use write_sheet_context::*;
@@ -218,5 +225,45 @@ mod excel_row;
 
 pub use excel_row::*;
 
+// ---------------------------------------------------------------------------
+// POI enum re-exports (Java `com.alibaba.excel.enums.poi.*`)
+// ---------------------------------------------------------------------------
+mod enums;
+
+pub use enums::poi;
+
+// ---------------------------------------------------------------------------
+// Exception type aliases (Java `com.alibaba.excel.exception.*`)
+// ---------------------------------------------------------------------------
+pub mod exception;
+
+// ---------------------------------------------------------------------------
+// Support (Java `com.alibaba.excel.support.*`)
+// ---------------------------------------------------------------------------
+pub mod support;
+
+// ---------------------------------------------------------------------------
+// Constants (Java `com.alibaba.excel.constant.*`)
+// ---------------------------------------------------------------------------
+pub mod constant;
+
+// ---------------------------------------------------------------------------
+// Metadata sub-packages (Java `com.alibaba.excel.metadata.property.*`,
+//   `com.alibaba.excel.metadata.format.*`, `com.alibaba.excel.metadata.csv.*`)
+// ---------------------------------------------------------------------------
+pub mod metadata;
+
+// ---------------------------------------------------------------------------
+// Annotations (Java `com.alibaba.excel.annotation.*`)
+// ---------------------------------------------------------------------------
+pub mod annotation;
+
+// ---------------------------------------------------------------------------
+// Utilities (Java `com.alibaba.excel.util.*`)
+// ---------------------------------------------------------------------------
+pub mod util;
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod missing_tests;

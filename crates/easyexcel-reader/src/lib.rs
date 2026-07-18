@@ -22,6 +22,13 @@ mod locale_generated;
 mod read_cache;
 mod xlsx_rows;
 
+pub mod analysis;
+
+pub mod holder;
+pub mod builder;
+pub mod listener;
+pub mod processor;
+
 pub use locale::ExcelLocale;
 pub use read_cache::ReadCacheMode;
 
@@ -92,7 +99,7 @@ pub struct ReadOptions {
     /// Value mode used by Java-compatible no-model [`easyexcel_core::DynamicRow`] reads.
     pub read_default_return: ReadDefaultReturn,
     /// Extra worksheet metadata dispatched to `ReadListener::extra`.
-    pub extra_read: HashSet<CellExtraType>,
+    pub extra_read: HashSet<easyexcel_core::CellExtraType>,
     /// Password used to decrypt an encrypted OOXML workbook.
     pub password: Option<String>,
     /// Character encoding used when reading CSV input.
@@ -203,8 +210,8 @@ fn xlsx_sheet_metadata(
     metadata: &mut XlsxRowMetadata,
     sheet_name: &str,
     ignore_empty_row: bool,
-    enabled_extras: &HashSet<CellExtraType>,
-) -> Result<(Option<u32>, Vec<CellExtra>)> {
+    enabled_extras: &HashSet<easyexcel_core::CellExtraType>,
+) -> Result<(Option<u32>, Vec<easyexcel_core::CellExtra>)> {
     let last_explicit_row = if ignore_empty_row {
         None
     } else {
@@ -528,7 +535,7 @@ fn read_sheet(
     sheet_no: usize,
     sheet_name: &str,
     last_explicit_row: Option<u32>,
-    extras: &[CellExtra],
+    extras: &[easyexcel_core::CellExtra],
     options: &ReadOptions,
     consumer: &mut dyn RowConsumer,
 ) -> Result<ReadFlow> {
@@ -978,3 +985,5 @@ fn to_column_index(column: u32) -> Result<usize> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod missing_tests;

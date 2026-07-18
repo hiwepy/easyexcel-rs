@@ -335,14 +335,20 @@ fn display_cell_stream_reports_every_xml_and_coordinate_boundary() -> Result<()>
 
 struct RejectingSharedStringCache;
 
-impl SharedStringCache for RejectingSharedStringCache {
+impl SharedStringCacheWriter for RejectingSharedStringCache {
     fn put(&mut self, _value: String) -> Result<()> {
         Err(ExcelError::Format(
             "injected shared-string cache failure".to_owned(),
         ))
     }
 
-    fn get(&mut self, _index: usize) -> Result<String> {
+    fn finish(self: Box<Self>) -> Result<Box<dyn SharedStringCacheReader>> {
+        Err(ExcelError::Format("unused shared-string finish".to_owned()))
+    }
+}
+
+impl SharedStringCacheReader for RejectingSharedStringCache {
+    fn get(&self, _index: usize) -> Result<String> {
         Err(ExcelError::Format("unused shared-string lookup".to_owned()))
     }
 
@@ -350,6 +356,8 @@ impl SharedStringCache for RejectingSharedStringCache {
         0
     }
 }
+
+impl SharedStringCache for RejectingSharedStringCache {}
 
 #[test]
 fn shared_string_stream_propagates_package_xml_utf8_factory_and_cache_failures() {
@@ -743,26 +751,26 @@ fn extras_parse_merge_internal_external_hyperlinks_and_rich_comments() -> Result
     ]);
     let mut metadata = XlsxRowMetadata::new(package(&entries))?;
     let enabled = HashSet::from([
-        CellExtraType::Comment,
-        CellExtraType::Hyperlink,
-        CellExtraType::Merge,
+        easyexcel_core::CellExtraType::Comment,
+        easyexcel_core::CellExtraType::Hyperlink,
+        easyexcel_core::CellExtraType::Merge,
     ]);
     let extras = metadata.extras("A&B", &enabled)?;
     assert_eq!(extras.len(), 4);
-    assert_eq!(extras[0].extra_type(), CellExtraType::Merge);
+    assert_eq!(extras[0].extra_type(), easyexcel_core::CellExtraType::Merge);
     assert_eq!(extras[0].text(), None);
     assert_eq!(extras[0].first_row_index(), 0);
     assert_eq!(extras[0].last_row_index(), 1);
     assert_eq!(extras[0].first_column_index(), 0);
     assert_eq!(extras[0].last_column_index(), 1);
-    assert_eq!(extras[1].extra_type(), CellExtraType::Hyperlink);
+    assert_eq!(extras[1].extra_type(), easyexcel_core::CellExtraType::Hyperlink);
     assert_eq!(extras[1].text(), Some("'Other Sheet'!A1"));
     assert_eq!(extras[2].text(), Some("https://example.com?a=1&b=2"));
     assert_eq!(extras[2].first_row_index(), 3);
     assert_eq!(extras[2].last_row_index(), 4);
     assert_eq!(extras[2].first_column_index(), 3);
     assert_eq!(extras[2].last_column_index(), 4);
-    assert_eq!(extras[3].extra_type(), CellExtraType::Comment);
+    assert_eq!(extras[3].extra_type(), easyexcel_core::CellExtraType::Comment);
     assert_eq!(extras[3].text(), Some("A&B plus C!"));
     assert_eq!(extras[3].first_row_index(), 5);
     assert_eq!(extras[3].last_row_index(), 5);
@@ -803,7 +811,7 @@ fn cell_reference_parser_enforces_xlsx_coordinates_and_range_ordering() -> Resul
 #[test]
 #[allow(clippy::too_many_lines)]
 fn extra_parsers_report_missing_relationships_attributes_parts_and_xml() {
-    let enabled = HashSet::from([CellExtraType::Hyperlink, CellExtraType::Merge]);
+    let enabled = HashSet::from([easyexcel_core::CellExtraType::Hyperlink, easyexcel_core::CellExtraType::Merge]);
     let relationships = RawRelationships::new();
     for xml in [
         "<worksheet><mergeCell/></worksheet>",
@@ -918,13 +926,13 @@ fn extra_parsers_report_missing_relationships_attributes_parts_and_xml() {
     let mut metadata = XlsxRowMetadata::new(package(&entries)).expect("metadata package");
     assert!(
         metadata
-            .extras("A&B", &HashSet::from([CellExtraType::Comment]))
+            .extras("A&B", &HashSet::from([easyexcel_core::CellExtraType::Comment]))
             .is_err()
     );
     let mut metadata = XlsxRowMetadata::new(xlsx_input(&entries)).expect("metadata package");
     assert!(
         metadata
-            .extras("A&B", &HashSet::from([CellExtraType::Comment]))
+            .extras("A&B", &HashSet::from([easyexcel_core::CellExtraType::Comment]))
             .is_err()
     );
 
@@ -941,14 +949,14 @@ fn extra_parsers_report_missing_relationships_attributes_parts_and_xml() {
         XlsxRowMetadata::new(package(&invalid_relationships)).expect("metadata package");
     assert!(
         metadata
-            .extras("A&B", &HashSet::from([CellExtraType::Hyperlink]))
+            .extras("A&B", &HashSet::from([easyexcel_core::CellExtraType::Hyperlink]))
             .is_err()
     );
     let mut metadata =
         XlsxRowMetadata::new(xlsx_input(&invalid_relationships)).expect("metadata package");
     assert!(
         metadata
-            .extras("A&B", &HashSet::from([CellExtraType::Hyperlink]))
+            .extras("A&B", &HashSet::from([easyexcel_core::CellExtraType::Hyperlink]))
             .is_err()
     );
 
@@ -967,14 +975,14 @@ fn extra_parsers_report_missing_relationships_attributes_parts_and_xml() {
     let mut metadata = XlsxRowMetadata::new(package(&escaping_comment)).expect("metadata package");
     assert!(
         metadata
-            .extras("A&B", &HashSet::from([CellExtraType::Comment]))
+            .extras("A&B", &HashSet::from([easyexcel_core::CellExtraType::Comment]))
             .is_err()
     );
     let mut metadata =
         XlsxRowMetadata::new(xlsx_input(&escaping_comment)).expect("metadata package");
     assert!(
         metadata
-            .extras("A&B", &HashSet::from([CellExtraType::Comment]))
+            .extras("A&B", &HashSet::from([easyexcel_core::CellExtraType::Comment]))
             .is_err()
     );
 }

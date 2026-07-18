@@ -10,7 +10,7 @@ use quick_xml::{Decoder, Reader as XmlReader, XmlVersion};
 use ssfmt::{DateSystem, FormatOptions, Locale, NumberFormat, format, format_code_from_id};
 use zip::ZipArchive;
 
-use crate::read_cache::{ReadCacheMode, SharedStringCache, create_cache, memory_cache};
+use crate::read_cache::{ReadCacheMode, SharedStringCache, SharedStringCacheReader, SharedStringCacheWriter, create_cache, memory_cache};
 
 const MAX_XLSX_ROW_NUMBER: u32 = 1_048_576;
 const MAX_XLSX_COLUMN_NUMBER: usize = 16_384;
@@ -28,7 +28,7 @@ pub(crate) struct XlsxRowMetadata {
     sheet_paths: HashMap<String, String>,
     sheet_names: Vec<String>,
     cell_formats: Vec<XlsxNumberFormat>,
-    shared_strings: Box<dyn SharedStringCache>,
+    shared_strings: Box<dyn SharedStringCacheReader>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,7 +111,7 @@ pub(crate) struct XlsxDisplayCellReader<'a> {
     column_index: usize,
     buffer: Vec<u8>,
     cell_buffer: Vec<u8>,
-    shared_strings: &'a mut dyn SharedStringCache,
+    shared_strings: &'a dyn SharedStringCacheReader,
 }
 
 impl XlsxRowMetadata {
@@ -209,7 +209,7 @@ impl XlsxRowMetadata {
             use_1904_windowing,
             use_scientific_format,
             locale,
-            self.shared_strings.as_mut(),
+            self.shared_strings.as_ref(),
         )
     }
 
@@ -226,8 +226,8 @@ impl XlsxRowMetadata {
     pub(crate) fn extras(
         &mut self,
         sheet_name: &str,
-        enabled: &HashSet<CellExtraType>,
-    ) -> Result<Vec<CellExtra>> {
+        enabled: &HashSet<easyexcel_core::CellExtraType>,
+    ) -> Result<Vec<easyexcel_core::CellExtra>> {
         let sheet_path = self
             .sheet_paths
             .get(sheet_name)
@@ -249,7 +249,7 @@ impl XlsxRowMetadata {
             &relationships,
             enabled,
         )?;
-        if enabled.contains(&CellExtraType::Comment)
+        if enabled.contains(&easyexcel_core::CellExtraType::Comment)
             && let Some((target, _, false)) = relationships
                 .values()
                 .find(|(_, relationship_type, _)| relationship_type.ends_with("/comments"))
@@ -272,7 +272,7 @@ impl<'a> XlsxDisplayCellReader<'a> {
         date_1904: bool,
         use_scientific_format: bool,
         locale: Locale,
-        shared_strings: &'a mut dyn SharedStringCache,
+        shared_strings: &'a dyn SharedStringCacheReader,
     ) -> Result<Self> {
         let mut buffer = Vec::with_capacity(256);
         loop {
@@ -665,8 +665,8 @@ fn read_worksheet_extras<R: Read + Seek>(
     cache: &HashMap<String, String>,
     sheet_path: &str,
     relationships: &RawRelationships,
-    enabled: &HashSet<CellExtraType>,
-) -> Result<Vec<CellExtra>> {
+    enabled: &HashSet<easyexcel_core::CellExtraType>,
+) -> Result<Vec<easyexcel_core::CellExtra>> {
     let file = archive
         .by_name(cached_path(cache, sheet_path))
         .map_err(format_error)?;
@@ -678,8 +678,8 @@ fn parse_worksheet_extras(
     input: &mut dyn BufRead,
     sheet_path: &str,
     relationships: &RawRelationships,
-    enabled: &HashSet<CellExtraType>,
-) -> Result<Vec<CellExtra>> {
+    enabled: &HashSet<easyexcel_core::CellExtraType>,
+) -> Result<Vec<easyexcel_core::CellExtra>> {
     let mut reader = XmlReader::from_reader(input);
     let config = reader.config_mut();
     config.check_end_names = false;
@@ -691,14 +691,14 @@ fn parse_worksheet_extras(
         buffer.clear();
         match reader.read_event_into(&mut buffer).map_err(format_error)? {
             Event::Start(element)
-                if enabled.contains(&CellExtraType::Merge)
+                if enabled.contains(&easyexcel_core::CellExtraType::Merge)
                     && element.local_name().as_ref() == b"mergeCell" =>
             {
                 let attributes = attributes(&element, reader.decoder())?;
                 let reference = required_attribute(&attributes, "ref", "merge cell")?;
                 let (first_row, last_row, first_column, last_column) = parse_cell_range(reference)?;
-                extras.push(CellExtra::new(
-                    CellExtraType::Merge,
+                extras.push(easyexcel_core::CellExtra::new(
+                    easyexcel_core::CellExtraType::Merge,
                     None,
                     first_row,
                     last_row,
@@ -707,15 +707,15 @@ fn parse_worksheet_extras(
                 ));
             }
             Event::Start(element)
-                if enabled.contains(&CellExtraType::Hyperlink)
+                if enabled.contains(&easyexcel_core::CellExtraType::Hyperlink)
                     && element.local_name().as_ref() == b"hyperlink" =>
             {
                 let attributes = attributes(&element, reader.decoder())?;
                 let reference = required_attribute(&attributes, "ref", "hyperlink")?;
                 let text = hyperlink_text(&attributes, relationships)?;
                 let (first_row, last_row, first_column, last_column) = parse_cell_range(reference)?;
-                extras.push(CellExtra::new(
-                    CellExtraType::Hyperlink,
+                extras.push(easyexcel_core::CellExtra::new(
+                    easyexcel_core::CellExtraType::Hyperlink,
                     Some(text),
                     first_row,
                     last_row,
@@ -758,7 +758,7 @@ fn read_comments<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     cache: &HashMap<String, String>,
     comments_path: &str,
-) -> Result<Vec<CellExtra>> {
+) -> Result<Vec<easyexcel_core::CellExtra>> {
     let file = archive
         .by_name(cached_path(cache, comments_path))
         .map_err(format_error)?;
@@ -766,7 +766,7 @@ fn read_comments<R: Read + Seek>(
     parse_comments(&mut input, comments_path)
 }
 
-fn parse_comments(input: &mut dyn BufRead, comments_path: &str) -> Result<Vec<CellExtra>> {
+fn parse_comments(input: &mut dyn BufRead, comments_path: &str) -> Result<Vec<easyexcel_core::CellExtra>> {
     let mut reader = XmlReader::from_reader(input);
     let config = reader.config_mut();
     config.check_end_names = false;
@@ -822,8 +822,8 @@ fn parse_comments(input: &mut dyn BufRead, comments_path: &str) -> Result<Vec<Ce
                 let (first_row, last_row, first_column, last_column) = current
                     .take()
                     .ok_or_else(|| ExcelError::Format("comment start is missing".to_owned()))?;
-                extras.push(CellExtra::new(
-                    CellExtraType::Comment,
+                extras.push(easyexcel_core::CellExtra::new(
+                    easyexcel_core::CellExtraType::Comment,
                     Some(text.clone()),
                     first_row,
                     last_row,
@@ -954,7 +954,7 @@ fn read_shared_strings<R: Read + Seek>(
     path_cache: &HashMap<String, String>,
     path: &str,
     mode: ReadCacheMode,
-) -> Result<Box<dyn SharedStringCache>> {
+) -> Result<Box<dyn SharedStringCacheReader>> {
     let mut cache_factory = |xml_size| create_cache(mode, xml_size);
     read_shared_strings_with_factory(archive, path_cache, path, &mut cache_factory)
 }
@@ -964,7 +964,7 @@ fn read_shared_strings_with_factory<R>(
     path_cache: &HashMap<String, String>,
     path: &str,
     cache_factory: &mut dyn FnMut(u64) -> Result<Box<dyn SharedStringCache>>,
-) -> Result<Box<dyn SharedStringCache>>
+) -> Result<Box<dyn SharedStringCacheReader>>
 where
     R: Read + Seek,
 {
@@ -974,10 +974,11 @@ where
     let mut cache = cache_factory(xml_size)?;
     let mut input = BufReader::new(file);
     parse_shared_strings(&mut input, cache.as_mut())?;
-    Ok(cache)
+    // After writing is complete, convert to read-only reader for concurrent access
+    cache.finish()
 }
 
-fn parse_shared_strings(input: &mut dyn BufRead, cache: &mut dyn SharedStringCache) -> Result<()> {
+fn parse_shared_strings(input: &mut dyn BufRead, cache: &mut dyn SharedStringCacheWriter) -> Result<()> {
     let mut reader = XmlReader::from_reader(input);
     reader.config_mut().expand_empty_elements = true;
     let mut buffer = Vec::with_capacity(256);

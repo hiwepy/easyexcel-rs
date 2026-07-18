@@ -1,0 +1,14 @@
+//! Mirrors Java `com.alibaba.excel.analysis.v03.handlers.BoolErrRecordHandler`.
+//!
+//! Java's handler processes one BIFF record type. In Rust, XLS parsing
+//! is delegated to `calamine::Xls` which materializes `Range<Data>`.
+//! The cell-by-cell dispatch happens in `reader/lib.rs::read_range`.
+//! This struct exists for 1:1 Java package parity.
+
+use super::super::xls_record_handler::XlsRecordHandler;
+
+/// Mirrors Java `BoolErrRecordHandler`.
+#[allow(dead_code)]
+pub struct BoolErrRecordHandler;
+
+impl XlsRecordHandler for BoolErrRecordHandler {}

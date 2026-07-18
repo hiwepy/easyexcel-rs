@@ -754,6 +754,8 @@ fn default_options_and_helpers_are_deterministic() {
             exclude_column_indexes: Vec::new(),
             exclude_column_field_names: Vec::new(),
             order_by_include_column: false,
+            relative_head_row_index: 0,
+            automatic_merge_head: true,
             merge_ranges: Vec::new(),
             auto_width: false,
             column_widths: Vec::new(),

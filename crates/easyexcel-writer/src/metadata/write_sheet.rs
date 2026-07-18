@@ -1,0 +1,73 @@
+//! Mirrors Java `com.alibaba.excel.write.metadata.WriteSheet`.
+
+use crate::WriteOptions;
+
+/// Mirrors Java `WriteSheet extends WriteBasicParameter`.
+///
+/// Java stores `sheetNo` and `sheetName`. Rust reuses [`WriteOptions`] and
+/// extends the type with the two fields so 1:1 naming is preserved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteSheet {
+    /// Mirrors `WriteSheet.sheetNo`.
+    pub sheet_no: i32,
+    /// Mirrors `WriteSheet.sheetName`.
+    pub sheet_name: String,
+    /// Mirrors the remaining `WriteBasicParameter` fields.
+    pub options: WriteOptions,
+}
+
+impl WriteSheet {
+    /// Creates a `WriteSheet` matching Java `new WriteSheet()`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            sheet_no: 0,
+            sheet_name: String::new(),
+            options: WriteOptions::default(),
+        }
+    }
+
+    /// Creates a `WriteSheet` with the given sheet no. (Java `WriteSheet(sheetNo)`)
+    #[must_use]
+    pub fn with_sheet_no(sheet_no: i32) -> Self {
+        Self {
+            sheet_no,
+            sheet_name: String::new(),
+            options: WriteOptions::default(),
+        }
+    }
+
+    /// Creates a `WriteSheet` with the given sheet no and name. (Java `WriteSheet(sheetNo, sheetName)`)
+    #[must_use]
+    pub fn with_sheet(sheet_no: i32, sheet_name: impl Into<String>) -> Self {
+        Self {
+            sheet_no,
+            sheet_name: sheet_name.into(),
+            options: WriteOptions::default(),
+        }
+    }
+
+    /// Returns the zero-based sheet index. (Java `getSheetNo()`)
+    #[must_use]
+    pub const fn sheet_no(&self) -> i32 {
+        self.sheet_no
+    }
+
+    /// Returns the sheet name. (Java `getSheetName()`)
+    #[must_use]
+    pub fn sheet_name(&self) -> &str {
+        &self.sheet_name
+    }
+
+    /// Returns the shared write options.
+    #[must_use]
+    pub const fn options(&self) -> &WriteOptions {
+        &self.options
+    }
+}
+
+impl Default for WriteSheet {
+    fn default() -> Self {
+        Self::new()
+    }
+}

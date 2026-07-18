@@ -1,5 +1,8 @@
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
+use std::thread;
 
 use easyexcel_core::{ExcelError, Result};
 use tempfile::NamedTempFile;
@@ -19,15 +22,31 @@ pub enum ReadCacheMode {
 
 pub(crate) const DEFAULT_MAX_MEMORY_SHARED_STRINGS_BYTES: u64 = 5_000_000;
 
-pub(crate) fn memory_cache() -> Box<dyn SharedStringCache> {
-    Box::new(MemorySharedStringCache::default())
+/// Write-phase cache: sequential `put` calls.
+pub(crate) trait SharedStringCacheWriter {
+    fn put(&mut self, value: String) -> Result<()>;
+    fn finish(self: Box<Self>) -> Result<Box<dyn SharedStringCacheReader>>;
 }
 
-pub(crate) trait SharedStringCache {
-    fn put(&mut self, value: String) -> Result<()>;
-    fn get(&mut self, index: usize) -> Result<String>;
+/// Read-phase cache: concurrent `get` calls via `&self` (no `&mut`).
+pub(crate) trait SharedStringCacheReader: Send + Sync {
+    fn get(&self, index: usize) -> Result<String>;
     #[cfg(test)]
     fn len(&self) -> usize;
+}
+
+/// Unified trait for backward compatibility in tests.
+pub(crate) trait SharedStringCache: SharedStringCacheWriter + SharedStringCacheReader {
+    fn put_and_finish(mut self: Box<Self>) -> Result<Box<dyn SharedStringCacheReader>>
+    where
+        Self: Sized,
+    {
+        self.finish()
+    }
+}
+
+pub(crate) fn memory_cache() -> Box<dyn SharedStringCacheReader> {
+    Box::new(MemorySharedStringReader::default())
 }
 
 pub(crate) fn create_cache(
@@ -36,25 +55,37 @@ pub(crate) fn create_cache(
 ) -> Result<Box<dyn SharedStringCache>> {
     match mode {
         ReadCacheMode::Auto if xml_size < DEFAULT_MAX_MEMORY_SHARED_STRINGS_BYTES => {
-            Ok(memory_cache())
+            Ok(Box::new(MemorySharedStringCache::default()))
         }
-        ReadCacheMode::Auto | ReadCacheMode::Disk => box_disk_cache(DiskSharedStringCache::new()),
-        ReadCacheMode::Memory => Ok(memory_cache()),
+        ReadCacheMode::Auto | ReadCacheMode::Disk => {
+            box_disk_cache(ConcurrentDiskCache::new())
+        }
+        ReadCacheMode::Memory => Ok(Box::new(MemorySharedStringCache::default())),
     }
 }
+
+// ---------------------------------------------------------------------------
+// MemorySharedStringCache — all data in RAM, no thread_local needed
+// ---------------------------------------------------------------------------
 
 #[derive(Default)]
 struct MemorySharedStringCache {
     values: Vec<String>,
 }
 
-impl SharedStringCache for MemorySharedStringCache {
+impl SharedStringCacheWriter for MemorySharedStringCache {
     fn put(&mut self, value: String) -> Result<()> {
         self.values.push(value);
         Ok(())
     }
 
-    fn get(&mut self, index: usize) -> Result<String> {
+    fn finish(self: Box<Self>) -> Result<Box<dyn SharedStringCacheReader>> {
+        Ok(Box::new(MemorySharedStringReader { values: self.values }))
+    }
+}
+
+impl SharedStringCacheReader for MemorySharedStringCache {
+    fn get(&self, index: usize) -> Result<String> {
         self.values.get(index).cloned().ok_or_else(|| {
             ExcelError::Format(format!("shared string index is out of bounds: {index}"))
         })
@@ -66,22 +97,53 @@ impl SharedStringCache for MemorySharedStringCache {
     }
 }
 
-trait WriteSeek: Write + Seek {}
+impl SharedStringCache for MemorySharedStringCache {}
 
-impl<T: Write + Seek> WriteSeek for T {}
+/// Read-only view after `put_finished()`.
+#[derive(Default)]
+struct MemorySharedStringReader {
+    values: Vec<String>,
+}
 
-trait ReadSeek: Read + Seek {}
+impl SharedStringCacheReader for MemorySharedStringReader {
+    fn get(&self, index: usize) -> Result<String> {
+        self.values.get(index).cloned().ok_or_else(|| {
+            ExcelError::Format(format!("shared string index is out of bounds: {index}"))
+        })
+    }
 
-impl<T: Read + Seek> ReadSeek for T {}
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.values.len()
+    }
+}
 
-struct DiskSharedStringCache {
+// ---------------------------------------------------------------------------
+// ConcurrentDiskCache — thread_local! per-thread readers
+// ---------------------------------------------------------------------------
+
+/// Disk-backed shared-string cache with concurrent read support.
+///
+/// Write phase: sequential `put` calls write to the temp file.
+/// Read phase: each thread opens its own `File` handle via `thread_local!`,
+/// so `get(&self)` requires no `&mut` and supports full parallelism.
+struct ConcurrentDiskCache {
     _temporary_file: Option<NamedTempFile>,
-    writer: Box<dyn WriteSeek>,
-    reader: Box<dyn ReadSeek>,
+    writer: Option<Box<dyn WriteSeek>>,
+    /// File path for per-thread readers.
+    path: PathBuf,
+    /// Shared, read-only index (offset, length) for each string.
     entries: Vec<(u64, usize)>,
 }
 
-impl DiskSharedStringCache {
+trait WriteSeek: Write + Seek + Send + Sync {}
+impl<T: Write + Seek + Send + Sync> WriteSeek for T {}
+
+thread_local! {
+    static TLS_READER: RefCell<Option<File>> = const { RefCell::new(None) };
+}
+
+impl ConcurrentDiskCache {
     fn new() -> Result<Self> {
         Self::from_temporary_file(NamedTempFile::new())
     }
@@ -89,55 +151,69 @@ impl DiskSharedStringCache {
     fn from_temporary_file(temporary_file: std::io::Result<NamedTempFile>) -> Result<Self> {
         match temporary_file {
             Ok(temporary_file) => {
+                let path = temporary_file.path().to_path_buf();
                 let writer = temporary_file.reopen();
-                let reader = temporary_file.reopen();
-                Self::from_handles(temporary_file, writer, reader)
+                Self::from_parts(temporary_file, path, writer)
             }
             Err(error) => Err(error.into()),
         }
     }
 
-    fn from_handles(
+    fn from_parts(
         temporary_file: NamedTempFile,
+        path: PathBuf,
         writer: std::io::Result<File>,
-        reader: std::io::Result<File>,
     ) -> Result<Self> {
-        match (writer, reader) {
-            (Ok(writer), Ok(reader)) => Ok(Self {
+        match writer {
+            Ok(writer) => Ok(Self {
                 _temporary_file: Some(temporary_file),
-                writer: Box::new(writer),
-                reader: Box::new(reader),
+                writer: Some(Box::new(writer)),
+                path,
                 entries: Vec::new(),
             }),
-            (Err(error), _) | (_, Err(error)) => Err(error.into()),
+            Err(error) => Err(error.into()),
         }
     }
 }
 
-fn box_disk_cache(cache: Result<DiskSharedStringCache>) -> Result<Box<dyn SharedStringCache>> {
-    match cache {
-        Ok(cache) => Ok(Box::new(cache)),
-        Err(error) => Err(error),
-    }
-}
-
-impl SharedStringCache for DiskSharedStringCache {
+impl SharedStringCacheWriter for ConcurrentDiskCache {
     fn put(&mut self, value: String) -> Result<()> {
-        let offset = self.writer.seek(SeekFrom::End(0))?;
+        let writer = self.writer.as_mut().ok_or_else(|| {
+            ExcelError::Format("cache writer already finished".to_owned())
+        })?;
+        let offset = writer.seek(SeekFrom::End(0))?;
         let bytes = value.as_bytes();
-        self.writer.write_all(bytes)?;
+        writer.write_all(bytes)?;
         self.entries.push((offset, bytes.len()));
         Ok(())
     }
 
-    fn get(&mut self, index: usize) -> Result<String> {
+    fn finish(mut self: Box<Self>) -> Result<Box<dyn SharedStringCacheReader>> {
+        let path = self.path.clone();
+        let entries = self.entries.clone();
+        // Take the writer out so the read-only view is Send + Sync
+        let _ = self.writer.take();
+        Ok(Box::new(ConcurrentDiskReader {
+            _temporary_file: self._temporary_file,
+            path,
+            entries,
+        }))
+    }
+}
+
+impl SharedStringCacheReader for ConcurrentDiskCache {
+    fn get(&self, index: usize) -> Result<String> {
         let (offset, length) = self.entries.get(index).copied().ok_or_else(|| {
             ExcelError::Format(format!("shared string index is out of bounds: {index}"))
         })?;
-        self.reader.seek(SeekFrom::Start(offset))?;
-        let mut bytes = vec![0; length];
-        self.reader.read_exact(&mut bytes)?;
-        String::from_utf8(bytes).map_err(|error| ExcelError::Format(error.to_string()))
+        TLS_READER.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let file = guard.get_or_insert_with(|| File::open(&self.path).unwrap());
+            file.seek(SeekFrom::Start(offset))?;
+            let mut bytes = vec![0u8; length];
+            file.read_exact(&mut bytes)?;
+            String::from_utf8(bytes).map_err(|error| ExcelError::Format(error.to_string()))
+        })
     }
 
     #[cfg(test)]
@@ -145,6 +221,51 @@ impl SharedStringCache for DiskSharedStringCache {
         self.entries.len()
     }
 }
+
+impl SharedStringCache for ConcurrentDiskCache {}
+
+/// Read-only view after `put_finished()` — uses thread-local File handles.
+struct ConcurrentDiskReader {
+    _temporary_file: Option<NamedTempFile>,
+    path: PathBuf,
+    entries: Vec<(u64, usize)>,
+}
+
+impl SharedStringCacheReader for ConcurrentDiskReader {
+    fn get(&self, index: usize) -> Result<String> {
+        let (offset, length) = self.entries.get(index).copied().ok_or_else(|| {
+            ExcelError::Format(format!("shared string index is out of bounds: {index}"))
+        })?;
+        TLS_READER.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let file = guard.get_or_insert_with(|| File::open(&self.path).unwrap());
+            file.seek(SeekFrom::Start(offset))?;
+            let mut bytes = vec![0u8; length];
+            file.read_exact(&mut bytes)?;
+            String::from_utf8(bytes).map_err(|error| ExcelError::Format(error.to_string()))
+        })
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn box_disk_cache(cache: Result<ConcurrentDiskCache>) -> Result<Box<dyn SharedStringCache>> {
+    match cache {
+        Ok(cache) => Ok(Box::new(cache)),
+        Err(error) => Err(error),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -195,16 +316,54 @@ mod tests {
     }
 
     #[test]
-    fn memory_and_disk_caches_preserve_indexed_utf8_values() {
-        for mode in [ReadCacheMode::Memory, ReadCacheMode::Disk] {
-            let mut cache = create_cache(mode, 0).expect("cache");
-            assert_eq!(cache.len(), 0);
-            cache.put("alpha".to_owned()).expect("first value");
-            cache.put("中文😀".to_owned()).expect("Unicode value");
-            assert_eq!(cache.len(), 2);
-            assert_eq!(cache.get(0).expect("first value"), "alpha");
-            assert_eq!(cache.get(1).expect("Unicode value"), "中文😀");
-            assert!(cache.get(2).is_err());
+    fn memory_cache_preserves_utf8_values() {
+        let mut cache = MemorySharedStringCache::default();
+        assert_eq!(cache.len(), 0);
+        cache.put("alpha".to_owned()).expect("first value");
+        cache.put("中文😀".to_owned()).expect("Unicode value");
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get(0).expect("first value"), "alpha");
+        assert_eq!(cache.get(1).expect("Unicode value"), "中文😀");
+        assert!(cache.get(2).is_err());
+    }
+
+    #[test]
+    fn disk_cache_preserves_utf8_values() {
+        let mut cache = ConcurrentDiskCache::new().expect("disk cache");
+        assert_eq!(cache.len(), 0);
+        cache.put("alpha".to_owned()).expect("first value");
+        cache.put("中文😀".to_owned()).expect("Unicode value");
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.get(0).expect("first value"), "alpha");
+        assert_eq!(cache.get(1).expect("Unicode value"), "中文😀");
+        assert!(cache.get(2).is_err());
+    }
+
+    #[test]
+    fn disk_cache_concurrent_reads() {
+        let mut cache = ConcurrentDiskCache::new().expect("disk cache");
+        for i in 0..100 {
+            cache.put(format!("value-{i}")).expect("put");
+        }
+
+        // Spawn multiple threads reading concurrently
+        let mut handles = vec![];
+        for thread_id in 0..4 {
+            let reader_clone = ConcurrentDiskReader {
+                _temporary_file: None,
+                path: cache.path.clone(),
+                entries: cache.entries.clone(),
+            };
+            handles.push(thread::spawn(move || {
+                for i in 0..100 {
+                    let value = reader_clone.get(i).expect("get");
+                    assert_eq!(value, format!("value-{i}"));
+                }
+                thread_id
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread joined");
         }
     }
 
@@ -221,67 +380,48 @@ mod tests {
     }
 
     #[test]
-    fn disk_cache_propagates_creation_seek_read_write_and_utf8_failures() {
-        assert!(DiskSharedStringCache::from_temporary_file(Err(io_error())).is_err());
+    fn disk_cache_propagates_creation_failures() {
+        assert!(ConcurrentDiskCache::from_temporary_file(Err(io_error())).is_err());
         let temporary_file = NamedTempFile::new().expect("temporary file");
-        assert!(
-            DiskSharedStringCache::from_handles(temporary_file, Err(io_error()), Err(io_error()),)
-                .is_err()
-        );
-        let temporary_file = NamedTempFile::new().expect("temporary file");
-        let writer = temporary_file.reopen().expect("writer");
-        assert!(
-            DiskSharedStringCache::from_handles(temporary_file, Ok(writer), Err(io_error()),)
-                .is_err()
-        );
+        let path = temporary_file.path().to_path_buf();
+        assert!(ConcurrentDiskCache::from_parts(temporary_file, path, Err(io_error())).is_err());
         assert!(box_disk_cache(Err(ExcelError::Format("injected".to_owned()))).is_err());
+    }
 
-        let fault = |fail_seek, fail_read, fail_write| FaultyIo {
-            fail_seek,
-            fail_read,
-            fail_write,
-        };
-        let mut healthy = fault(false, false, false);
-        let mut byte = [0_u8; 1];
-        assert_eq!(healthy.read(&mut byte).expect("read"), 0);
-        assert_eq!(healthy.write(&byte).expect("write"), 1);
-        healthy.flush().expect("flush");
-        let mut seek_write = DiskSharedStringCache {
-            _temporary_file: None,
-            writer: Box::new(fault(true, false, false)),
-            reader: Box::new(fault(false, false, false)),
+    #[test]
+    fn disk_cache_propagates_write_failures() {
+        let temporary_file = NamedTempFile::new().expect("temporary file");
+        let path = temporary_file.path().to_path_buf();
+        let mut cache = ConcurrentDiskCache {
+            _temporary_file: Some(temporary_file),
+            writer: Some(Box::new(FaultyIo { fail_seek: true, fail_read: false, fail_write: false })),
+            path,
             entries: Vec::new(),
         };
-        assert!(seek_write.put("value".to_owned()).is_err());
-        let mut write = DiskSharedStringCache {
-            _temporary_file: None,
-            writer: Box::new(fault(false, false, true)),
-            reader: Box::new(fault(false, false, false)),
+        assert!(cache.put("value".to_owned()).is_err());
+
+        let temporary_file = NamedTempFile::new().expect("temporary file");
+        let path = temporary_file.path().to_path_buf();
+        let mut cache2 = ConcurrentDiskCache {
+            _temporary_file: Some(temporary_file),
+            writer: Some(Box::new(FaultyIo { fail_seek: false, fail_read: false, fail_write: true })),
+            path,
             entries: Vec::new(),
         };
-        assert!(write.put("value".to_owned()).is_err());
-        let mut seek_read = DiskSharedStringCache {
-            _temporary_file: None,
-            writer: Box::new(fault(false, false, false)),
-            reader: Box::new(fault(true, false, false)),
-            entries: vec![(0, 1)],
-        };
-        assert!(seek_read.get(0).is_err());
-        let mut read = DiskSharedStringCache {
-            _temporary_file: None,
-            writer: Box::new(fault(false, false, false)),
-            reader: Box::new(fault(false, true, false)),
-            entries: vec![(0, 1)],
-        };
-        assert!(read.get(0).is_err());
+        assert!(cache2.put("value".to_owned()).is_err());
+    }
 
-        let mut invalid_utf8 = DiskSharedStringCache::new().expect("disk cache");
-        invalid_utf8.put("x".to_owned()).expect("cache value");
-        invalid_utf8.writer.seek(SeekFrom::Start(0)).expect("seek");
-        invalid_utf8
-            .writer
-            .write_all(&[0xff])
-            .expect("corrupt value");
-        assert!(invalid_utf8.get(0).is_err());
+    #[test]
+    fn disk_cache_propagates_read_failures() {
+        let temporary_file = NamedTempFile::new().expect("temporary file");
+        let path = temporary_file.path().to_path_buf();
+        let mut cache = ConcurrentDiskCache::new().expect("disk cache");
+        cache.put("x".to_owned()).expect("cache value");
+
+        // Corrupt the file to trigger a read error
+        let writer = cache.writer.as_mut().unwrap();
+        writer.seek(SeekFrom::Start(0)).expect("seek");
+        writer.write_all(&[0xff]).expect("corrupt value");
+        assert!(cache.get(0).is_err());
     }
 }
