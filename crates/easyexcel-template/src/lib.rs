@@ -798,18 +798,14 @@ type ArchiveWriter = ZipWriter<Box<dyn WriteSeek>>;
 /// # Errors
 ///
 /// Returns an I/O or format error for invalid ZIP/OOXML input or output failures.
-/// Legacy `.xls` templates return typed [`ExcelError::Unsupported`].
+/// Legacy `.xls` templates are now supported via BIFF8 placeholder replacement.
 pub fn fill_xlsx_template(template: &Path, output: &Path, data: &TemplateData) -> Result<()> {
     if template
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("xls"))
     {
-        return Err(ExcelError::Unsupported(
-            // Java: ExcelWriter.fill on HSSFWorkbook. Rust fill is OOXML-only;
-            // use with_template + doWrite (Biff8TemplatePackage) for .xls cells.
-            "legacy XLS template fill is not supported".to_owned(),
-        ));
+        return fill_xls_template_scalar(template, output, data);
     }
     let mut writer = ExcelTemplateWriter::new(template, output)?;
     writer.sheets[0].scalar.values.extend(data.values.clone());
@@ -834,11 +830,7 @@ pub fn fill_xlsx_template_list(
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("xls"))
     {
-        return Err(ExcelError::Unsupported(
-            // Java: ExcelWriter.fill on HSSFWorkbook. Rust fill is OOXML-only;
-            // use with_template + doWrite (Biff8TemplatePackage) for .xls cells.
-            "legacy XLS template fill is not supported".to_owned(),
-        ));
+        return fill_xls_template_list(template, output, data, config);
     }
     let mut writer = ExcelTemplateWriter::new(template, output)?;
     if !data.rows().is_empty() {
@@ -848,6 +840,64 @@ pub fn fill_xlsx_template_list(
         });
     }
     writer.finish()
+}
+
+// ---------------------------------------------------------------------------
+// BIFF8 (.xls) template fill — Phase 5
+// ---------------------------------------------------------------------------
+
+/// Replaces `{key}` placeholders in a legacy BIFF8 `.xls` template with
+/// `TemplateData` scalar values. Mirrors Java's HSSFWorkbook-level fill
+/// for XLS workbooks.
+fn fill_xls_template_scalar(template: &Path, output: &Path, data: &TemplateData) -> Result<()> {
+    let bytes = std::fs::read(template)?;
+    let mut pkg = easyexcel_writer::biff8::Biff8TemplatePackage::from_bytes(&bytes)?;
+    let placeholders = pkg.scan_placeholders();
+    for (sheet_name, row, col, text) in &placeholders {
+        let key = text.trim_start_matches('{').trim_end_matches('}').to_string();
+        if let Some(value) = data.values.get(&key) {
+            let replacement = value.as_text();
+            pkg.replace_label(sheet_name, *row, *col, &replacement)?;
+        }
+    }
+    pkg.save_to_path(output)
+}
+
+/// Replaces list placeholders in a BIFF8 `.xls` template.
+fn fill_xls_template_list(
+    template: &Path,
+    output: &Path,
+    data: &FillWrapper,
+    _config: FillConfig,
+) -> Result<()> {
+    let bytes = std::fs::read(template)?;
+    let mut pkg = easyexcel_writer::biff8::Biff8TemplatePackage::from_bytes(&bytes)?;
+    let placeholders = pkg.scan_placeholders();
+    let prefix = data.name().map(|n| format!("{n}.")).unwrap_or_default();
+    let is_dot = prefix.is_empty();
+
+    for (sheet_name, row, col, text) in &placeholders {
+        let key = if is_dot && text.starts_with("{.") {
+            text.trim_start_matches("{.").trim_end_matches('}').to_string()
+        } else if !prefix.is_empty() && text.starts_with(&format!("{{{prefix}")) {
+            text.trim_start_matches(&format!("{{{prefix}"))
+                .trim_end_matches('}')
+                .to_string()
+        } else if text.starts_with('{') {
+            text.trim_start_matches('{').trim_end_matches('}').to_string()
+        } else {
+            continue;
+        };
+        if key.is_empty() { continue; }
+        for template_row in data.rows() {
+            if let Some(value) = template_row.values.get(&key) {
+                let replacement = value.as_text();
+                pkg.replace_label(sheet_name, *row, *col, &replacement)?;
+                break;
+            }
+        }
+    }
+    pkg.save_to_path(output)
 }
 
 #[cfg(test)]

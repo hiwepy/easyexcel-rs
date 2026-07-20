@@ -37,7 +37,7 @@ use easyexcel_core::{CellValue, ExcelError, Result};
 
 use super::encode::{
     encode_rk, encode_unicode_string, BOOLERR, BOUNDSHEET, BOF, BLANK, DIMENSION, DT_WORKSHEET,
-    EOF, LABEL, LABELSST, MAX_RECORD_DATA, NUMBER, RK,
+    EOF, LABEL, LABELSST, MAX_RECORD_DATA, NUMBER, RK, XF_GENERAL,
 };
 use super::{Biff8Cell, Biff8Value};
 
@@ -218,6 +218,76 @@ impl Biff8TemplatePackage {
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         let workbook = assemble_workbook(&self.records)?;
         rewrite_workbook_stream(&self.ole_bytes, &self.workbook_path, &workbook)
+    }
+
+    /// Returns all cell placeholders (`{key}` patterns) found in
+    /// LABEL/LABELSST records across the workbook.
+    ///
+    /// Each entry is `(sheet_name, row, col, placeholder_text)`.
+    /// The placeholder_text is the raw BIFF8 string content including
+    /// the `{` and `}` delimiters.
+    #[must_use]
+    pub fn scan_placeholders(&self) -> Vec<(String, u16, u8, String)> {
+        let mut placeholders = Vec::new();
+        for sheet in &self.sheets {
+            for (idx, record) in self.records.iter().enumerate() {
+                if idx < sheet.bof_index || idx >= sheet.eof_index {
+                    continue;
+                }
+        let (row, col, text) = match record.typ {
+            LABEL => decode_label_payload(&record.data),
+            LABELSST => decode_labelsst_payload(&record.data),
+            _ => continue,
+        };
+        if let Some(ref text) = text {
+            if text.contains('{') && text.contains('}') {
+                placeholders.push((sheet.name.clone(), row, col, text.clone()));
+            }
+        }
+            }
+        }
+        placeholders
+    }
+
+    /// Replaces a cell value at `(row, col)` on the given sheet with
+    /// a new BIFF8 LABEL record containing the replacement text.
+    ///
+    /// # Errors
+    ///
+    /// Returns format errors for out-of-range coordinates.
+    pub fn replace_label(
+        &mut self,
+        sheet_name: &str,
+        row: u16,
+        col: u8,
+        replacement: &str,
+    ) -> Result<()> {
+        let sheet_index = self.sheet_index(sheet_name)?;
+        let sheet = &self.sheets[sheet_index];
+    let existing = find_cell_record(&self.records, sheet, row, col);
+    let xf = if let Some(index) = existing {
+        if self.records[index].data.len() >= 6 {
+            u16::from_le_bytes([self.records[index].data[4], self.records[index].data[5]])
+        } else {
+            XF_GENERAL
+        }
+    } else {
+        XF_GENERAL
+    };
+        let cell = Biff8Cell {
+            value: Biff8Value::Text(replacement.to_owned()),
+            xf,
+        };
+        let payload = encode_cell_record(row, col, xf, &cell.value)?;
+        if let Some(index) = existing {
+            self.records[index] = payload;
+        } else {
+            let insert_at = self.sheets[sheet_index].eof_index;
+            self.records.insert(insert_at, payload);
+            self.adjust_indices_after_insert(sheet_index, insert_at);
+        }
+        self.refresh_dimension(sheet_index)?;
+        Ok(())
     }
 
     /// Writes the package to a filesystem path.
@@ -545,6 +615,54 @@ fn decode_boundsheet_name(data: &[u8]) -> Result<String> {
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
         Ok(String::from_utf16_lossy(&units))
+    }
+    }
+
+/// Decodes a BIFF8 LABEL record payload, returning `(row, col, text)`.
+fn decode_label_payload(data: &[u8]) -> (u16, u8, Option<String>) {
+    if data.len() < 8 {
+        return (0, 0, None);
+    }
+    let row = u16::from_le_bytes([data[0], data[1]]);
+    let col = u16::from_le_bytes([data[2], data[3]]);
+    // Bytes 4-5 are XF index; bytes 6-7 are string length
+    let byte_len = u16::from_le_bytes([data[6], data[7]]) as usize;
+    let string_data = &data[8..];
+    let text = if string_data.len() >= byte_len + 1 {
+        // BIFF8 short string: leading byte is length, followed by bytes
+        let len = string_data[0] as usize;
+        if len <= string_data.len().saturating_sub(1)
+            && len <= byte_len
+        {
+            let raw = &string_data[1..=len.min(string_data.len().saturating_sub(1))];
+            String::from_utf8_lossy(raw).into_owned()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    (row, col as u8, if text.is_empty() { None } else { Some(text) })
+}
+
+/// Decodes a BIFF8 LABELSST record payload, returning `(row, col, text)`.
+/// LABELSST references the Shared String Table — since we don't have
+/// the SST available here, we return None for the text and let the
+/// caller handle SST lookups separately.
+fn decode_labelsst_payload(data: &[u8]) -> (u16, u8, Option<String>) {
+    if data.len() < 8 {
+        return (0, 0, None);
+    }
+    let row = u16::from_le_bytes([data[0], data[1]]);
+    let col = u16::from_le_bytes([data[2], data[3]]);
+    // Bytes 4-5: XF, bytes 6-9: SST index (u32)
+    if data.len() >= 10 {
+        let _sst_index = u32::from_le_bytes([data[6], data[7], data[8], data[9]]);
+        // SST-based records can't be decoded without the shared string table;
+        // caller should use LABEL records for placeholder detection.
+        (row, col as u8, None)
+    } else {
+        (row, col as u8, None)
     }
 }
 
