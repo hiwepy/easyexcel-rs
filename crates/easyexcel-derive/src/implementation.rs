@@ -926,11 +926,10 @@ fn parse_conditional(
     let condition = condition.unwrap_or_else(|| default_str(""));
     let font_color = font_color.unwrap_or_else(|| default_str(""));
     let background_color = background_color.unwrap_or_else(|| default_str(""));
-    Ok(quote!(
-        (#condition).to_owned(),
-        (#font_color).to_owned(),
-        (#background_color).to_owned(),
-    ))
+    // Return a tuple matching ExcelColumn::with_conditional_format signature:
+    // (&'static str, &'static str, &'static str). Outer parens + inner comma
+    // produce the tuple when interpolated into the call site.
+    Ok(quote!((#condition, #font_color, #background_color)))
 }
 
 /// Parses `once_absolute_merge(first_row_index = ..., ...)` into

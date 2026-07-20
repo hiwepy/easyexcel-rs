@@ -116,7 +116,9 @@ pub use excel_horizontal_alignment::*;
 pub use excel_underline::*;
 pub use excel_vertical_alignment::*;
 pub use excel_write_metadata::*;
-pub use metadata::property::{LoopMergeProperty, OnceAbsoluteMergeProperty};
+pub use metadata::property::{
+    ExcelDataValidationMeta, LoopMergeProperty, OnceAbsoluteMergeProperty,
+};
 
 // ---------------------------------------------------------------------------
 // Conversion context + dynamic rows (Java
