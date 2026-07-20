@@ -37,7 +37,7 @@ use easyexcel_core::{CellValue, ExcelError, Result};
 
 use super::encode::{
     encode_rk, encode_unicode_string, BOOLERR, BOUNDSHEET, BOF, BLANK, DIMENSION, DT_WORKSHEET,
-    EOF, LABEL, LABELSST, MAX_RECORD_DATA, NUMBER, RK, XF_GENERAL,
+    EOF, LABEL, LABELSST, MAX_RECORD_DATA, NUMBER, RK, SST, XF_GENERAL,
 };
 use super::{Biff8Cell, Biff8Value};
 
@@ -221,29 +221,34 @@ impl Biff8TemplatePackage {
     }
 
     /// Returns all cell placeholders (`{key}` patterns) found in
-    /// LABEL/LABELSST records across the workbook.
+    /// LABEL/LABELSST records across the workbook, resolving SST
+    /// references when an SST record is present.
     ///
     /// Each entry is `(sheet_name, row, col, placeholder_text)`.
-    /// The placeholder_text is the raw BIFF8 string content including
-    /// the `{` and `}` delimiters.
     #[must_use]
     pub fn scan_placeholders(&self) -> Vec<(String, u16, u8, String)> {
+        let sst_strings = parse_sst(&self.records);
         let mut placeholders = Vec::new();
         for sheet in &self.sheets {
             for (idx, record) in self.records.iter().enumerate() {
                 if idx < sheet.bof_index || idx >= sheet.eof_index {
                     continue;
                 }
-        let (row, col, text) = match record.typ {
-            LABEL => decode_label_payload(&record.data),
-            LABELSST => decode_labelsst_payload(&record.data),
-            _ => continue,
-        };
-        if let Some(ref text) = text {
-            if text.contains('{') && text.contains('}') {
-                placeholders.push((sheet.name.clone(), row, col, text.clone()));
-            }
-        }
+                let (row, col, text) = match record.typ {
+                    LABEL => decode_label_payload(&record.data),
+                    LABELSST => {
+                        let (row, col, sst_idx) = decode_labelsst_index(&record.data);
+                        let text = sst_idx
+                            .and_then(|i| sst_strings.get(i as usize).cloned());
+                        (row, col, text)
+                    }
+                    _ => continue,
+                };
+                if let Some(ref text) = text {
+                    if text.contains('{') && text.contains('}') {
+                        placeholders.push((sheet.name.clone(), row, col, text.clone()));
+                    }
+                }
             }
         }
         placeholders
@@ -251,6 +256,8 @@ impl Biff8TemplatePackage {
 
     /// Replaces a cell value at `(row, col)` on the given sheet with
     /// a new BIFF8 LABEL record containing the replacement text.
+    /// If the original record was a LABELSST (SST reference), it is
+    /// replaced with a LABEL record carrying the inline string value.
     ///
     /// # Errors
     ///
@@ -264,21 +271,25 @@ impl Biff8TemplatePackage {
     ) -> Result<()> {
         let sheet_index = self.sheet_index(sheet_name)?;
         let sheet = &self.sheets[sheet_index];
-    let existing = find_cell_record(&self.records, sheet, row, col);
-    let xf = if let Some(index) = existing {
-        if self.records[index].data.len() >= 6 {
-            u16::from_le_bytes([self.records[index].data[4], self.records[index].data[5]])
+        let existing = find_cell_record(&self.records, sheet, row, col);
+        let xf = if let Some(index) = existing {
+            if self.records[index].data.len() >= 6 {
+                u16::from_le_bytes([self.records[index].data[4], self.records[index].data[5]])
+            } else {
+                XF_GENERAL
+            }
         } else {
             XF_GENERAL
-        }
-    } else {
-        XF_GENERAL
-    };
+        };
+        // Always use LABEL (inline string) for replacements, even when
+        // the original was LABELSST — this avoids SST mutation and
+        // ensures the replacement text is self-contained.
         let cell = Biff8Cell {
             value: Biff8Value::Text(replacement.to_owned()),
             xf,
         };
-        let payload = encode_cell_record(row, col, xf, &cell.value)?;
+        // Force LABEL record type for replacement
+        let payload = encode_label_record(row, col, xf, replacement)?;
         if let Some(index) = existing {
             self.records[index] = payload;
         } else {
@@ -462,6 +473,27 @@ fn encode_cell_record(row: u16, col: u8, xf: u16, value: &Biff8Value) -> Result<
     }
 }
 
+/// Encodes a BIFF8 LABEL record (0x0204) directly, without going
+/// through the full Biff8Value dispatch. Used by `replace_label`
+/// to force an inline-string cell even when the original was LABELSST.
+fn encode_label_record(row: u16, col: u8, xf: u16, text: &str) -> Result<RawRecord> {
+    let mut data = Vec::new();
+    data.extend_from_slice(&row.to_le_bytes());
+    data.extend_from_slice(&u16::from(col).to_le_bytes());
+    data.extend_from_slice(&xf.to_le_bytes());
+    let encoded = encode_unicode_string(text);
+    if data.len() + encoded.len() > MAX_RECORD_DATA {
+        return Err(ExcelError::Format(
+            "xls template LABEL cell exceeds BIFF record size".to_owned(),
+        ));
+    }
+    data.extend_from_slice(&encoded);
+    Ok(RawRecord {
+        typ: LABEL,
+        data,
+    })
+}
+
 fn read_workbook_stream(bytes: &[u8]) -> Result<(String, Vec<u8>)> {
     let cursor = Cursor::new(bytes.to_vec());
     let mut cf = CompoundFile::open(cursor).map_err(|error| {
@@ -617,6 +649,67 @@ fn decode_boundsheet_name(data: &[u8]) -> Result<String> {
         Ok(String::from_utf16_lossy(&units))
     }
     }
+
+/// Parses the Shared String Table (SST) BIFF record if present,
+/// returning a Vec of all unique strings indexed by position.
+fn parse_sst(records: &[RawRecord]) -> Vec<String> {
+    for record in records {
+        if record.typ == SST && record.data.len() >= 8 {
+            let _cst_total = u32::from_le_bytes([
+                record.data[0], record.data[1], record.data[2], record.data[3],
+            ]);
+            let cst_unique = u32::from_le_bytes([
+                record.data[4], record.data[5], record.data[6], record.data[7],
+            ]);
+            let body = &record.data[8..];
+            let mut strings = Vec::with_capacity(cst_unique as usize);
+            let mut pos = 0usize;
+            for _ in 0..cst_unique {
+                if pos + 2 > body.len() {
+                    break;
+                }
+                let cch = u16::from_le_bytes([body[pos], body[pos + 1]]) as usize;
+                pos += 2;
+                if pos >= body.len() {
+                    break;
+                }
+                let grbit = body[pos];
+                pos += 1;
+                let is_compressed = (grbit & 0x01) == 0;
+                if is_compressed {
+                    // 8-bit compressed
+                    let end = (pos + cch).min(body.len());
+                    let text = String::from_utf8_lossy(&body[pos..end]).into_owned();
+                    strings.push(text);
+                    pos = end;
+                } else {
+                    // 16-bit Unicode
+                    let end = (pos + cch * 2).min(body.len());
+                    let raw = &body[pos..end];
+                    let mut units = Vec::with_capacity(cch);
+                    for chunk in raw.chunks_exact(2) {
+                        units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+                    }
+                    strings.push(String::from_utf16_lossy(&units));
+                    pos = end;
+                }
+            }
+            return strings;
+        }
+    }
+    Vec::new()
+}
+
+/// Decodes just the SST index from a LABELSST record.
+fn decode_labelsst_index(data: &[u8]) -> (u16, u8, Option<u32>) {
+    if data.len() < 10 {
+        return (0, 0, None);
+    }
+    let row = u16::from_le_bytes([data[0], data[1]]);
+    let col = u16::from_le_bytes([data[2], data[3]]);
+    let sst_idx = u32::from_le_bytes([data[6], data[7], data[8], data[9]]);
+    (row, col as u8, Some(sst_idx))
+}
 
 /// Decodes a BIFF8 LABEL record payload, returning `(row, col, text)`.
 fn decode_label_payload(data: &[u8]) -> (u16, u8, Option<String>) {

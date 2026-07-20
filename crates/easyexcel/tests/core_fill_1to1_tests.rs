@@ -97,26 +97,26 @@ fn style_data_rows() -> Vec<TemplateData> {
 }
 
 
-/// Assert legacy .xls template fill: the BIFF8 LABEL-scanning infrastructure
-/// is in place (Phase 5.2), but SST-based templates need SST string-table
-/// parsing to resolve `{key}` placeholders stored in the shared string table.
-/// Until SST support lands, plain-string (LABEL) templates are fillable;
-/// SST templates will silently pass through without replacement.
-fn assert_xls_fill_unsupported(xls_template: &std::path::Path, output_name: &str) {
+/// Assert legacy .xls template fill works with SST-based templates.
+/// Phase 5.2: SST parsing resolves LABELSST records so {key} placeholders
+/// in the shared string table are correctly found and replaced.
+fn assert_xls_fill_works(xls_template: &std::path::Path, output_name: &str) {
     assert_xls_readable(xls_template);
     let output = temp_path(output_name);
     let data = TemplateData::new().with("name", "张三").with("number", 5.2);
-    // Phase 5.2: fill_xls_template_scalar now handles LABEL-based templates.
-    // SST-based templates silently succeed without replacement (gap documented).
     let result = EasyExcel::fill_template(xls_template, &output, &data);
     match result {
         Ok(()) => {
-            // Fill succeeded — output file exists. SST resolution not yet implemented.
             assert!(output.exists(), "XLS fill output must exist");
+            // Verify the output can be read back
+            let rows = EasyExcel::read_dynamic_sync(&output)
+                .head_row_number(0)
+                .do_read_sync()
+                .unwrap_or_default();
+            assert!(!rows.is_empty(), "Filled XLS must contain readable rows");
         }
         Err(e) => {
-            // Some template types may still reject (encryption, etc.)
-            let _ = e;
+            panic!("XLS template fill failed unexpectedly: {e}");
         }
     }
 }
@@ -352,7 +352,7 @@ mod fill_data_test {
     #[test]
     fn t02_fill03() {
         // Java fills xls/fill/simple.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_unsupported(
+        assert_xls_fill_works(
             &require_fixture("xls/fill/simple.xls"),
             "t02_fill03.xls",
         );
@@ -393,7 +393,7 @@ mod fill_data_test {
     #[test]
     fn t04_complex_fill03() {
         // Java fills xls/fill/complex.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_unsupported(
+        assert_xls_fill_works(
             &require_fixture("xls/fill/complex.xls"),
             "t04_complex_fill03.xls",
         );
@@ -410,7 +410,7 @@ mod fill_data_test {
     #[test]
     fn t06_horizontal_fill03() {
         // Java fills xls/fill/horizontal.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_unsupported(
+        assert_xls_fill_works(
             &require_fixture("xls/fill/horizontal.xls"),
             "t06_horizontal_fill03.xls",
         );
@@ -427,7 +427,7 @@ mod fill_data_test {
     #[test]
     fn t08_by_name_fill03() {
         // Java fills xls/fill/byName.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_unsupported(
+        assert_xls_fill_works(
             &require_fixture("xls/fill/byName.xls"),
             "t08_by_name_fill03.xls",
         );
@@ -444,7 +444,7 @@ mod fill_data_test {
     #[test]
     fn t10_composite_fill03() {
         // Java fills xls/fill/composite.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_unsupported(
+        assert_xls_fill_works(
             &require_fixture("xls/fill/composite.xls"),
             "t10_composite_fill03.xls",
         );
@@ -470,7 +470,7 @@ mod fill_annotation_data_test {
     #[test]
     fn t02_read_and_write03() {
         // Java fills xls/fill/annotation.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_unsupported(
+        assert_xls_fill_works(
             &require_fixture("xls/fill/annotation.xls"),
             "t02_read_and_write03.xls",
         );
@@ -496,7 +496,7 @@ mod fill_style_data_test {
     #[test]
     fn t02_fill03() {
         // Java fills xls/fill/style.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_unsupported(
+        assert_xls_fill_works(
             &require_fixture("xls/fill/style.xls"),
             "t02_fill03.xls",
         );
@@ -515,7 +515,7 @@ mod fill_style_data_test {
     #[test]
     fn t12_fill_style_handler03() {
         // Java fills xls/fill/style.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_unsupported(
+        assert_xls_fill_works(
             &require_fixture("xls/fill/style.xls"),
             "t12_fill_style_handler03.xls",
         );
@@ -543,7 +543,7 @@ mod fill_style_annotated_test {
     #[test]
     fn t02_fill03() {
         // Java fills xls/fill/style.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_unsupported(
+        assert_xls_fill_works(
             &require_fixture("xls/fill/style.xls"),
             "t02_fill03.xls",
         );
