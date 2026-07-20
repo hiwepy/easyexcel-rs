@@ -779,12 +779,7 @@ fn converter_t22_write_image_xls() {
     let err = EasyExcel::write::<ImageRow>(&path)
         .sheet("Sheet1")
         .do_write(vec![row])
-        .expect_err("legacy XLS image writing must fail explicitly");
-    assert!(
-        err.to_string().contains("does not support images")
-            || matches!(err, ExcelError::Unsupported(_)),
-        "unexpected error: {err}"
-    );
+        .expect("XLS image write must succeed (Phase 5.6)");
 }
 
 // ============================================================================
