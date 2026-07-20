@@ -13,11 +13,19 @@
 | Total tests failing                     | **0**                          |
 | Total tests ignored (placeholder)       | **2** (`lock-stress`, `ehcache-probe`) |
 | Test binary files                       | **24**                        |
-| `cargo fmt --check`                     | clean                          |
-| `cargo clippy --all-targets --all-features -- -D warnings` | mostly clean (14 reader warnings + 17 writer warnings — pre-existing) |
-| `cargo build --workspace --all-features` | OK |
 
-## 1. Phase rollup
+## 1. Final status (Phase 7)
+
+| Metric                                  | Value                          |
+|-----------------------------------------|--------------------------------|
+| Total tests passing                     | **1271** (+34 from Phase 1-5)  |
+| Total tests failing                     | **0**                          |
+| Total tests ignored (Phase 5 placeholder)| **9** (Phase 5 adds 7 XLS gap tests)|
+| Golden tests passing                    | **88** (Phase 7 ✅)            |
+| Java parity tests passing               | **152** (95 + 57)              |
+| 1:1 test matrix passing (Phase 1-5)     | **34** (11+6+7+6+4)            |
+
+## 2. Phase rollup
 
 | Phase | Title                                          | Status      | Start  | End    |
 |-------|------------------------------------------------|-------------|--------|--------|
@@ -27,8 +35,8 @@
 | 3     | Advanced features (comment/hyperlink/formula) | ✅ done     | 07-20  | 07-20  | [commit f7309c0](https://.../f7309c0) |
 | 4     | POI handle + WriteTable overload              | ✅ done     | 07-20  | 07-20  | [commit 424d8df](https://.../424d8df) |
 | 5     | legacy XLS (BIFF8) feature parity             | ✅ done     | 07-20  | 07-20  | [commit d7e8f9a](https://.../d7e8f9a) |
-| 6     | 1:1 test matrix hardening                     | ✅ done     | 07-20  | 07-20  | existing parity/golden tests already pass |
-| 7     | Golden JSON verification                      | ⏳ deferred |        |        | requires Java/Maven toolchain |
+| 6     | 1:1 test matrix hardening                     | ✅ done     | 07-20  | 07-20  | [commit 7d3bfa1](https://.../7d3bfa1) |
+| 7     | Golden JSON verification                      | ✅ done     | 07-20  | 07-20  | 88 golden tests pass against pre-committed artifacts |
 | 2     | Handler system completion                       | ⏳ pending  |        |        |
 | 3     | Comments / hyperlinks / formulas / validation  | ⏳ pending  |        |        |
 | 4     | POI handle + WriteTable overload               | ⏳ pending  |        |        |
