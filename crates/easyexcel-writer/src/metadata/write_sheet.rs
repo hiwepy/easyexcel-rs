@@ -53,10 +53,22 @@ impl WriteSheet {
         self.sheet_no
     }
 
+    /// Sets the zero-based sheet index. (Java `setSheetNo(Integer)`)
+    pub fn set_sheet_no(&mut self, sheet_no: i32) -> &mut Self {
+        self.sheet_no = sheet_no;
+        self
+    }
+
     /// Returns the sheet name. (Java `getSheetName()`)
     #[must_use]
     pub fn sheet_name(&self) -> &str {
         &self.sheet_name
+    }
+
+    /// Sets the sheet name. (Java `setSheetName(String)`)
+    pub fn set_sheet_name(&mut self, sheet_name: impl Into<String>) -> &mut Self {
+        self.sheet_name = sheet_name.into();
+        self
     }
 
     /// Returns the shared write options.

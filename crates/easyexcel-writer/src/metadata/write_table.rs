@@ -39,6 +39,12 @@ impl WriteTable {
         self.table_no
     }
 
+    /// Sets the zero-based table index. (Java `setTableNo(Integer)`)
+    pub fn set_table_no(&mut self, table_no: i32) -> &mut Self {
+        self.table_no = table_no;
+        self
+    }
+
     /// Returns the shared write options.
     #[must_use]
     pub const fn options(&self) -> &WriteOptions {
