@@ -1,0 +1,17 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.annotation.AnnotationDataTest#t01ReadAndWrite07",
+	"fixture":"artifacts/annotation_data.xlsx",
+	"sheet_index":0,
+	"head_row_number":1,
+	"row_count":1,
+	"cells":{
+		"0.0":"2020年01月01日01时01分01秒",
+		"0.1":"9999%"
+	},
+	"rows":[
+		[
+			"2020年01月01日01时01分01秒",
+			"9999%"
+		]
+	]
+}

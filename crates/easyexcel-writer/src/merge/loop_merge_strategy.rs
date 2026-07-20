@@ -1,6 +1,6 @@
 //! Mirrors Java `com.alibaba.excel.write.merge.LoopMergeStrategy`.
 
-use easyexcel_core::{CellExtra, WriteCellContext, WriteHandler};
+use easyexcel_core::{CellExtra, ExcelError, Result, WriteCellContext, WriteHandler};
 
 use crate::merge::abstract_merge_strategy::AbstractMergeStrategy;
 
@@ -14,13 +14,37 @@ pub struct LoopMergeStrategy {
 impl LoopMergeStrategy {
     /// Creates a `LoopMergeStrategy` with the given dimensions. (Java
     /// `LoopMergeStrategy(int eachRow, int columnExtend, int columnIndex)`)
-    #[must_use]
-    pub const fn new(each_rows: u32, column_extend: u16, column_index: u16) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `each_rows < 1`, `column_extend < 1`, or when
+    /// Java's combined constraint `eachRow < 2 && columnExtend < 2` holds.
+    pub fn new(each_rows: u32, column_extend: u16, column_index: u16) -> Result<Self> {
+        // Java: eachRow < 1 → IllegalArgumentException("EachRows must be greater than 1")
+        if each_rows < 1 {
+            return Err(ExcelError::Format(
+                "EachRows must be greater than 1".to_owned(),
+            ));
+        }
+        // Java: columnExtend < 1 → IllegalArgumentException("ColumnExtend must be greater than 1")
+        if column_extend < 1 {
+            return Err(ExcelError::Format(
+                "ColumnExtend must be greater than 1".to_owned(),
+            ));
+        }
+        // Java: eachRow < 2 && columnExtend < 2 → IllegalArgumentException(
+        //   "EachRows or ColumnExtend cannot be less than 2, otherwise they will not be merged")
+        if each_rows < 2 && column_extend < 2 {
+            return Err(ExcelError::Format(
+                "EachRows or ColumnExtend cannot be less than 2, otherwise they will not be merged"
+                    .to_owned(),
+            ));
+        }
+        Ok(Self {
             each_rows,
             column_extend,
             column_index,
-        }
+        })
     }
 
     /// Returns the per-group row count. (Java `getEachRow()`)

@@ -4,6 +4,7 @@
 
 use crate::excel_cell_style::ExcelCellStyle;
 use crate::excel_font_style::ExcelFontStyle;
+use crate::metadata::property::LoopMergeProperty;
 
 /// Static metadata for one Rust struct field and Excel column.
 ///
@@ -32,6 +33,8 @@ pub struct ExcelColumn {
     pub head_font_style: Option<ExcelFontStyle>,
     /// Field-level content font style. (Java `@ContentFontStyle`)
     pub content_font_style: Option<ExcelFontStyle>,
+    /// Field-level repeating content merge. (Java `@ContentLoopMerge` → `Head.loopMergeProperty`)
+    pub loop_merge: Option<LoopMergeProperty>,
 }
 
 impl ExcelColumn {
@@ -56,6 +59,7 @@ impl ExcelColumn {
             content_style: None,
             head_font_style: None,
             content_font_style: None,
+            loop_merge: None,
         }
     }
 
@@ -91,6 +95,13 @@ impl ExcelColumn {
     #[must_use]
     pub const fn with_content_font_style(mut self, style: ExcelFontStyle) -> Self {
         self.content_font_style = Some(style);
+        self
+    }
+
+    /// Adds a field-level repeating content merge. (Java `@ContentLoopMerge`)
+    #[must_use]
+    pub const fn with_loop_merge(mut self, property: LoopMergeProperty) -> Self {
+        self.loop_merge = Some(property);
         self
     }
 }

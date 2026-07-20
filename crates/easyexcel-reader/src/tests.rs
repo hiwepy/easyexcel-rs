@@ -337,6 +337,7 @@ fn options() -> ReadOptions {
         charset: CsvCharset::default(),
         converters: easyexcel_core::ConverterRegistry::default(),
         read_cache: ReadCacheMode::default(),
+        read_cache_selector: None,
     }
 }
 
@@ -577,6 +578,7 @@ fn header_aliases_and_inclusive_row_ranges_apply_before_typed_mapping() -> Resul
             0,
             "Aliased",
             &options,
+            &HashMap::new(),
             &mut TypedRowConsumer::<NamedRow> {
                 listener: &mut probe,
             },
@@ -676,6 +678,7 @@ fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<
             head_row_number: 3,
             ..options()
         },
+        &HashMap::new(),
         &mut TypedRowConsumer::<TestRow> {
             listener: &mut probe,
         },
@@ -694,6 +697,7 @@ fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<
                 head_row_number: 3,
                 ..options()
             },
+            &HashMap::new(),
             &mut TypedRowConsumer::<TestRow> {
                 listener: &mut stopped,
             },
@@ -709,7 +713,8 @@ fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<
         3,
         "Empty",
         &options(),
-        &mut TypedRowConsumer::<TestRow> {
+        &std::collections::HashMap::new(),
+            &mut TypedRowConsumer::<TestRow> {
             listener: &mut probe,
         },
     )?;
@@ -726,6 +731,7 @@ fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<
             3,
             "Empty",
             &options(),
+            &std::collections::HashMap::new(),
             &mut TypedRowConsumer::<TestRow> {
                 listener: &mut failing_empty_after,
             },
@@ -747,6 +753,7 @@ fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<
                 head_row_number: 3,
                 ..options()
             },
+            &HashMap::new(),
             &mut TypedRowConsumer::<TestRow> {
                 listener: &mut failing_range_after,
             },
@@ -761,6 +768,7 @@ fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<
             0,
             "Invalid",
             &options(),
+            &std::collections::HashMap::new(),
             &mut TypedRowConsumer::<TestRow> {
                 listener: &mut probe,
             },
@@ -782,6 +790,7 @@ fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<
                 head_row_number: 3,
                 ..options()
             },
+            &HashMap::new(),
             &mut TypedRowConsumer::<TestRow> {
                 listener: &mut failing_head,
             },
@@ -992,6 +1001,19 @@ fn reads_java_official_compatibility_fixtures() -> Result<()> {
     assert_eq!(
         t07_string[0].get(11),
         Some(&DynamicValue::String("24.20".to_owned()))
+    );
+    // Full-table STRING: `_ ` pads dropped; negative `\ ` keeps trailing space (Java POI).
+    assert_eq!(
+        t07_string[0].get(12),
+        Some(&DynamicValue::String("-1.07 ".to_owned()))
+    );
+    assert_eq!(
+        t07_string[0].get(13),
+        Some(&DynamicValue::String("14.11".to_owned()))
+    );
+    assert_eq!(
+        t07_string[0].get(15),
+        Some(&DynamicValue::String("0.00".to_owned()))
     );
 
     let t09 = read_java_compatibility_rows(&directory, "t09.xlsx", 0, ReadDefaultReturn::String)?;
@@ -1360,9 +1382,10 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
 
     let mut java_default = DynamicProbe::default();
     read_xlsx::<DynamicRow, _>(&path, &options(), &mut java_default)?;
+    // BuiltinFormats ALL_LANGUAGES id=14 is `yyyy/m/d` (Java BuiltinFormats).
     assert_eq!(
         java_default.0[0].get(8),
-        Some(&DynamicValue::String("1/1/00".to_owned()))
+        Some(&DynamicValue::String("1900/1/1".to_owned()))
     );
 
     let mut strings = DynamicProbe::default();
@@ -1380,7 +1403,7 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
     );
     assert_eq!(
         strings.0[0].get(8),
-        Some(&DynamicValue::String("1/2/04".to_owned()))
+        Some(&DynamicValue::String("1904/1/2".to_owned()))
     );
 
     let mut actual = DynamicProbe::default();

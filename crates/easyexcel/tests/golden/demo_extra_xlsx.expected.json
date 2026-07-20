@@ -1,0 +1,32 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.extra.ExtraDataTest#t01Read07#content",
+	"fixture":"demo/extra.xlsx",
+	"sheet_index":0,
+	"head_row_number":1,
+	"row_count":5,
+	"cells":{
+		"0.0":"普通超链接"
+	},
+	"rows":[
+		[
+			"普通超链接",
+			""
+		],
+		[
+			"多单元格超链接A",
+			"多单元格超链接B"
+		],
+		[
+			"多单元格超链接C",
+			"多单元格超链接D"
+		],
+		[
+			"批注",
+			""
+		],
+		[
+			"合并单元格",
+			""
+		]
+	]
+}

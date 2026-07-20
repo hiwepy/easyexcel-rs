@@ -1,0 +1,29 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.fill.FillDataTest#t02Fill03",
+	"fixture":"artifacts/fill_simple_xls.xls",
+	"sheet_index":0,
+	"head_row_number":0,
+	"row_count":2,
+	"cells":{
+		"0.0":"姓名",
+		"0.1":"数字",
+		"1.0":"张三",
+		"1.1":"5.2"
+	},
+	"rows":[
+		[
+			"姓名",
+			"数字",
+			"复杂",
+			"忽略",
+			"空"
+		],
+		[
+			"张三",
+			"5.2",
+			"张三今年5.2岁了",
+			"{name}忽略，张三",
+			"空"
+		]
+	]
+}

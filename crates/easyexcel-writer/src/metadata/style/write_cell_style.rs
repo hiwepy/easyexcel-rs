@@ -2,18 +2,20 @@
 
 use easyexcel_core::ExcelCellStyle;
 
+use crate::metadata::style::write_font::merge_excel_font_style;
+
 /// Mirrors Java `WriteCellStyle`.
 ///
-/// The Java side carries 23 POI-typed fields and a static `merge`
-/// helper. Rust reuses [`ExcelCellStyle`] for the data and mirrors the
-/// merge method.
+/// The Java side carries POI-typed fields plus nested `writeFont` and a
+/// static `merge` helper. Rust reuses [`ExcelCellStyle`] for the data
+/// (including [`ExcelCellStyle::font`]) and mirrors the merge method.
 pub type WriteCellStyle = ExcelCellStyle;
 
 /// Mirrors Java `WriteCellStyle.merge(WriteCellStyle source, WriteCellStyle target)`.
 ///
-/// Java merges the source's non-null fields into the target. The Rust
-/// port performs the same union over [`ExcelCellStyle`]'s `Option`
-/// fields.
+/// Java merges the source's non-null fields into the target, including
+/// nested `WriteFont.merge`. The Rust port performs the same union over
+/// [`ExcelCellStyle`]'s `Option` fields and [`ExcelCellStyle::font`].
 pub fn merge_write_cell_style(
     source: &ExcelCellStyle,
     mut target: ExcelCellStyle,
@@ -45,5 +47,13 @@ pub fn merge_write_cell_style(
     or!(fill_background_color);
     or!(fill_foreground_color);
     or!(shrink_to_fit);
+    or!(data_format);
+    // Java `WriteFont.merge(source.getWriteFont(), target.getWriteFont())`
+    if let Some(source_font) = source.font {
+        target.font = Some(match target.font {
+            Some(existing) => merge_excel_font_style(&source_font, existing),
+            None => source_font,
+        });
+    }
     target
 }

@@ -789,6 +789,7 @@ fn write_handler_before_cell_receives_value() {
         column_index: 0,
         field: None,
         is_head: false,
+        relative_row_index: None,
         value: CellValue::String("hello".to_owned()),
         skip: false,
     };
@@ -995,6 +996,7 @@ fn write_cell_context_skip_value() {
         column_index: 0,
         field: Some("name"),
         is_head: false,
+        relative_row_index: None,
         value: CellValue::String("Alice".to_owned()),
         skip: false,
     };
@@ -1069,17 +1071,25 @@ fn excel_data_format_variants() {
 #[test]
 fn read_write_cell_data_round_trip() {
     let ctx = context(None);
+    // Scalar WriteCellData stays unwrapped; Images only wraps when image_data_list is non-empty.
     let ws = WriteCellData::new(CellValue::Int(100));
     let ws_cell = ws.to_excel_cell(&ctx).unwrap();
-    // WriteCellData::to_excel_cell wraps in Images { value, images: [] }
+    assert_eq!(ws_cell, CellValue::Int(100));
     let rd = ReadCellData::new(0, 0, ws_cell.clone(), ws_cell, "100".to_owned(), None);
     assert_eq!(rd.row_index(), 0);
-    // raw_value is the Images-wrapped version
-    match rd.raw_value() {
-        CellValue::Images { value, .. } => assert_eq!(**value, CellValue::Int(100)),
-        other => panic!("expected Images wrapper, got {:?}", other),
-    }
+    assert_eq!(rd.raw_value(), &CellValue::Int(100));
     assert_eq!(rd.display_value(), "100");
+
+    let with_image = WriteCellData::new(CellValue::Int(100))
+        .image(ImageData::new(vec![0x89, 0x50, 0x4e, 0x47]));
+    let imaged = with_image.to_excel_cell(&ctx).unwrap();
+    match imaged {
+        CellValue::Images { value, images } => {
+            assert_eq!(*value, CellValue::Int(100));
+            assert_eq!(images.len(), 1);
+        }
+        other => panic!("expected Images wrapper, got {other:?}"),
+    }
 }
 
 // ============================================================================
@@ -1232,6 +1242,7 @@ fn write_metadata_merge_behavior() {
         content_style: None,
         head_font_style: None,
         content_font_style: None,
+        once_absolute_merge: None,
     };
     assert_eq!(derived.column_width, Some(10));
     assert_eq!(derived.head_row_height, Some(20));
@@ -1367,7 +1378,7 @@ fn write_handler_all_default_methods() {
     let rw_ctx = WriteRowContext { sheet_name: "S".to_owned(), row_index: 0, is_head: true };
     let mut cl_ctx = WriteCellContext {
         sheet_name: "S".to_owned(), row_index: 0, column_index: 0,
-        field: None, is_head: false, value: CellValue::Empty, skip: false,
+        field: None, is_head: false, relative_row_index: None, value: CellValue::Empty, skip: false,
     };
     assert!(h.before_workbook(&wb_ctx).is_ok());
     assert!(h.after_workbook(&wb_ctx).is_ok());
@@ -1622,6 +1633,7 @@ fn cell_style_all_fields() {
         fill_foreground_color: Some(ExcelColor::Rgb(0xFFFFFF)),
         shrink_to_fit: Some(true),
         data_format: Some(ExcelDataFormat::Builtin(0)),
+        font: None,
     };
     assert_eq!(s.hidden, Some(true));
     assert_eq!(s.fill_pattern, Some(ExcelFillPattern::Solid));
@@ -2022,6 +2034,7 @@ fn write_cell_context_skip_and_value() {
         column_index: 0,
         field: Some("f"),
         is_head: false,
+        relative_row_index: None,
         value: CellValue::String("v".to_owned()),
         skip: false,
     };
@@ -2251,6 +2264,22 @@ fn annotation_column_width_type_level() {
     // @ColumnWidth(25) on class
     let meta = ExcelWriteMetadata::new().column_width(25);
     assert_eq!(meta.column_width, Some(25));
+}
+
+#[test]
+fn annotation_once_absolute_merge_type_level() {
+    // @OnceAbsoluteMerge(firstRowIndex=0, lastRowIndex=0, firstColumnIndex=0, lastColumnIndex=1)
+    let merge = OnceAbsoluteMergeProperty::new(0, 0, 0, 1);
+    let meta = ExcelWriteMetadata::new().once_absolute_merge(merge);
+    assert_eq!(meta.once_absolute_merge, Some(merge));
+}
+
+#[test]
+fn annotation_content_loop_merge_field_level() {
+    // @ContentLoopMerge(eachRow = 2, columnExtend = 1)
+    let merge = LoopMergeProperty::new(2, 1);
+    let col = ExcelColumn::new("f", "F", Some(0), 0, None).with_loop_merge(merge);
+    assert_eq!(col.loop_merge, Some(merge));
 }
 
 // --- ExcelIgnore ---
@@ -2562,7 +2591,7 @@ fn write_handler_before_cell_can_skip() {
     let mut h = Skipper;
     let mut cl = WriteCellContext {
         sheet_name: "S".to_owned(), row_index: 0, column_index: 0,
-        field: None, is_head: false, value: CellValue::Empty, skip: false,
+        field: None, is_head: false, relative_row_index: None, value: CellValue::Empty, skip: false,
     };
     h.before_cell(&mut cl).unwrap();
     assert!(cl.skip);
@@ -2580,7 +2609,7 @@ fn write_handler_before_cell_can_transform() {
     let mut h = Transformer;
     let mut cl = WriteCellContext {
         sheet_name: "S".to_owned(), row_index: 0, column_index: 0,
-        field: None, is_head: false, value: CellValue::Int(42), skip: false,
+        field: None, is_head: false, relative_row_index: None, value: CellValue::Int(42), skip: false,
     };
     h.before_cell(&mut cl).unwrap();
     assert_eq!(cl.value, CellValue::String("transformed".to_owned()));

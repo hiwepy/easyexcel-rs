@@ -19,6 +19,10 @@ pub struct WriteCellContext {
     pub field: Option<&'static str>,
     /// Whether this is a header cell.
     pub is_head: bool,
+    /// Relative row index within head or content (Java `relativeRowIndex`).
+    ///
+    /// Used by `HorizontalCellStyleStrategy` to cycle content styles.
+    pub relative_row_index: Option<usize>,
     /// Value that will be written. A handler may replace it.
     pub value: CellValue,
     /// A handler may set this to suppress the physical cell.

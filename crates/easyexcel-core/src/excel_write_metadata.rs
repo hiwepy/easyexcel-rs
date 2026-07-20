@@ -4,11 +4,12 @@
 
 use crate::excel_cell_style::ExcelCellStyle;
 use crate::excel_font_style::ExcelFontStyle;
+use crate::metadata::property::OnceAbsoluteMergeProperty;
 
 /// Type-level dimensions derived from Java-style write annotations.
 ///
-/// Java stores these fields on `AbstractWriteHolder`. Rust emits a single
-/// `Copy` struct from `#[derive(ExcelRow)]`.
+/// Java stores these fields on `AbstractWriteHolder` / `ExcelWriteHeadProperty`.
+/// Rust emits a single `Copy` struct from `#[derive(ExcelRow)]`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ExcelWriteMetadata {
     /// Default width for columns without a field-level override. (Java `@ColumnWidth` on type)
@@ -25,6 +26,8 @@ pub struct ExcelWriteMetadata {
     pub head_font_style: Option<ExcelFontStyle>,
     /// Type-level content font style. (Java `@ContentFontStyle` on type)
     pub content_font_style: Option<ExcelFontStyle>,
+    /// Type-level absolute merge region. (Java `@OnceAbsoluteMerge`)
+    pub once_absolute_merge: Option<OnceAbsoluteMergeProperty>,
 }
 
 impl ExcelWriteMetadata {
@@ -39,6 +42,7 @@ impl ExcelWriteMetadata {
             content_style: None,
             head_font_style: None,
             content_font_style: None,
+            once_absolute_merge: None,
         }
     }
 
@@ -88,6 +92,13 @@ impl ExcelWriteMetadata {
     #[must_use]
     pub const fn content_font_style(mut self, style: ExcelFontStyle) -> Self {
         self.content_font_style = Some(style);
+        self
+    }
+
+    /// Adds a type-level absolute merge region. (Java `@OnceAbsoluteMerge`)
+    #[must_use]
+    pub const fn once_absolute_merge(mut self, property: OnceAbsoluteMergeProperty) -> Self {
+        self.once_absolute_merge = Some(property);
         self
     }
 }

@@ -5,7 +5,8 @@ use crate::excel_cell_style::ExcelCellStyle;
 /// Mirrors Java `StyleProperty`. Rust reuses `ExcelCellStyle` for the
 /// runtime representation; this struct exists for 1:1 Java package
 /// parity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `Eq` is not derived because [`ExcelCellStyle`] embeds `f64` font size.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StyleProperty {
     /// The underlying cell style. (Java delegates all fields)
     pub cell_style: ExcelCellStyle,

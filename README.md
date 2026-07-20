@@ -256,9 +256,11 @@ EasyExcel::write::<T>("users.xlsx")
 ```
 
 Legacy `.xls` files use the same typed read builders and listener lifecycle.
-The binary worksheet is materialized by Calamine before dispatch; writing
-`.xls` returns an explicit unsupported-operation error instead of emitting an
-XLSX package with the wrong extension.
+The binary worksheet is materialized by Calamine before dispatch. Writing
+`.xls` uses a **Minimal BIFF8** engine (strings/numbers/dates, header + rows,
+multi-sheet); password, templates/fill, images, and full HSSF styles remain
+typed `Unsupported` — never an XLSX package with the wrong extension. See
+[docs/compatibility.md](docs/compatibility.md#xls-write-capability-boundary).
 
 XLSX worksheet cells and `sharedStrings.xml` are read incrementally by the
 `quick-xml` OOXML engine rather than materializing the worksheet. Listener

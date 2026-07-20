@@ -8,8 +8,8 @@
 //!
 //! Format strategy:
 //! - `.xlsx`: Full write→read round-trip (Rust supports both read and write)
-//! - `.xls`:  Read-only tests using Java-generated `.xls` fixtures (Rust can
-//!            read .xls via calamine but cannot write .xls format)
+//! - `.xls`:  Prefer real BIFF8 write→read; advanced features Unsupported or
+//!            fixture-backed read (never rewrite as XLSX)
 //! - `.csv`:  Full write→read round-trip with CSV-specific structure assertions
 
 use std::collections::HashSet;
@@ -44,7 +44,7 @@ fn read_dynamic_string(path: &std::path::Path) -> Vec<DynamicRow> {
 // 6 operations × 3 formats (.xlsx/.xls/.csv)
 //
 // .xlsx: full round-trip (write + read)
-// .xls:  read-only from Java-generated fixture (Rust cannot write .xls)
+// .xls:  fixture-backed read for exclude/include in this file; 1:1 suite uses real BIFF8 write
 // .csv:  full round-trip with CSV structure verification
 // ============================================================================
 
@@ -135,12 +135,10 @@ fn t01_exclude_index_xlsx() {
 
 #[test]
 fn t02_exclude_index_xls() {
-    // Rust cannot write .xls; test reading a real .xls file with calamine
+    // Read path: calamine BIFF8; write path: Minimal BIFF8 (scalar subset)
     // This verifies the XLS read path works for exclude/include scenarios
     let path = fixture("xls/converter03.xls");
-    if !path.exists() {
-        return; // skip if fixture not available
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .head_row_number(0)
         .do_read_sync()
@@ -220,9 +218,7 @@ fn t11_exclude_field_name_xlsx() {
 #[test]
 fn t12_exclude_field_name_xls() {
     let path = fixture("xls/converter03.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .head_row_number(0)
         .do_read_sync()
@@ -290,9 +286,7 @@ fn t21_include_index_xlsx() {
 #[test]
 fn t22_include_index_xls() {
     let path = fixture("xls/converter03.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .head_row_number(0)
         .do_read_sync()
@@ -358,9 +352,7 @@ fn t31_include_field_name_xlsx() {
 #[test]
 fn t32_include_field_name_xls() {
     let path = fixture("xls/converter03.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .head_row_number(0)
         .do_read_sync()
@@ -430,9 +422,7 @@ fn t41_include_field_name_order_xlsx() {
 #[test]
 fn t42_include_field_name_order_xls() {
     let path = fixture("xls/converter03.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .head_row_number(0)
         .do_read_sync()
@@ -504,9 +494,7 @@ fn t41_include_field_name_order_index_xlsx() {
 #[test]
 fn t42_include_field_name_order_index_xls() {
     let path = fixture("xls/converter03.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .head_row_number(0)
         .do_read_sync()
@@ -596,9 +584,7 @@ fn t01_complex_head_read_and_write_xlsx() {
 fn t02_complex_head_read_and_write_xls() {
     // Test reading a real .xls file with multi-level headers
     let path = fixture("xls/multiplesheets.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
         .do_read_sync()
@@ -634,9 +620,7 @@ fn t11_complex_head_automatic_merge_head_xlsx() {
 #[test]
 fn t12_complex_head_automatic_merge_head_xls() {
     let path = fixture("xls/multiplesheets.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
         .do_read_sync()
@@ -742,9 +726,7 @@ fn t01_multiple_sheets_read_xlsx() {
 #[test]
 fn t02_multiple_sheets_read_xls() {
     let path = fixture("xls/multiplesheets.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     // Read the first sheet from the real .xls fixture
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
@@ -768,9 +750,7 @@ fn t03_multiple_sheets_read_all_xlsx() {
 #[test]
 fn t04_multiple_sheets_read_all_xls() {
     let path = fixture("xls/multiplesheets.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .all_sheets()
         .do_read_sync()
@@ -847,9 +827,7 @@ fn t01_repetition_read_and_write_xlsx() {
 #[test]
 fn t02_repetition_read_and_write_xls() {
     let path = fixture("xls/multiplesheets.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
         .do_read_sync()
@@ -903,9 +881,7 @@ fn t11_repetition_table_xlsx() {
 #[test]
 fn t12_repetition_table_xls() {
     let path = fixture("xls/multiplesheets.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
         .do_read_sync()
@@ -990,9 +966,7 @@ fn t01_annotation_index_and_name_xlsx() {
 #[test]
 fn t02_annotation_index_and_name_xls() {
     let path = fixture("xls/converter03.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .head_row_number(0)
         .do_read_sync()
@@ -1082,9 +1056,7 @@ fn t01_uncamel_read_and_write_xlsx() {
 #[test]
 fn t02_uncamel_read_and_write_xls() {
     let path = fixture("xls/multiplesheets.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
         .do_read_sync()
@@ -1172,9 +1144,7 @@ fn t01_list_head_read_and_write_xlsx() {
 #[test]
 fn t02_list_head_read_and_write_xls() {
     let path = fixture("xls/multiplesheets.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
         .do_read_sync()
@@ -1247,9 +1217,7 @@ fn t01_no_head_read_and_write_xlsx() {
 #[test]
 fn t02_no_head_read_and_write_xls() {
     let path = fixture("xls/multiplesheets.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
         .do_read_sync()
@@ -1291,9 +1259,7 @@ fn t01_fill_style_xlsx() {
 #[test]
 fn t02_fill_style_xls() {
     let path = fixture("xls/fill/style.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .do_read_sync()
         .unwrap();
@@ -1325,9 +1291,7 @@ fn t11_fill_style_handler_xlsx() {
 #[test]
 fn t12_fill_style_handler_xls() {
     let path = fixture("xls/fill/style.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .do_read_sync()
         .unwrap();
@@ -1371,9 +1335,7 @@ fn t01_fill_annotation_xlsx() {
 #[test]
 fn t02_fill_annotation_xls() {
     let path = fixture("xls/fill/annotation.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .do_read_sync()
         .unwrap();
@@ -1417,9 +1379,7 @@ fn t01_fill_style_annotated_xlsx() {
 #[test]
 fn t02_fill_style_annotated_xls() {
     let path = fixture("xls/fill/annotation.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .do_read_sync()
         .unwrap();

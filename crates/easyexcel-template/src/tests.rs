@@ -1668,6 +1668,29 @@ fn collection_parser_defensive_paths_are_deterministic() {
         replace_scalar_cells_in_xml("<worksheet><sheetData><c", &TemplateData::new(), &[]),
         "<worksheet><sheetData><c"
     );
+    // `<cols>` / `<col>` must not be treated as cells (complex.xlsx regression).
+    let cols_xml = concat!(
+        r#"<worksheet><cols><col min="1" max="1" width="10"/></cols>"#,
+        r#"<sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{date}</t></is></c>"#,
+        r#"<c r="B1" s="1"/></row></sheetData></worksheet>"#
+    );
+    let filled_cols = replace_scalar_cells_in_xml(
+        cols_xml,
+        &TemplateData::new().with("date", "2019年10月9日13:28:28"),
+        &[],
+    );
+    assert!(
+        filled_cols.contains("<cols>") && filled_cols.contains("</cols>"),
+        "cols section must survive scalar fill: {filled_cols}"
+    );
+    assert!(
+        filled_cols.contains("2019年10月9日13:28:28"),
+        "scalar date must be filled: {filled_cols}"
+    );
+    assert!(
+        filled_cols.contains(r#"<c r="B1" s="1"/>"#),
+        "self-closing cells must survive: {filled_cols}"
+    );
     assert_eq!(cell_value("<c t=\"s\"></c>", &[]), None);
     assert_eq!(cell_value("<c t=\"s\"><v>x</v></c>", &[]), None);
     assert_eq!(cell_value("<c t=\"s\"><v>9</v></c>", &[]), None);

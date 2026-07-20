@@ -12,6 +12,7 @@ struct StructOptions {
     content_style: Option<proc_macro2::TokenStream>,
     head_font_style: Option<proc_macro2::TokenStream>,
     content_font_style: Option<proc_macro2::TokenStream>,
+    once_absolute_merge: Option<proc_macro2::TokenStream>,
 }
 
 #[derive(Default)]
@@ -28,6 +29,7 @@ struct FieldOptions {
     content_style: Option<proc_macro2::TokenStream>,
     head_font_style: Option<proc_macro2::TokenStream>,
     content_font_style: Option<proc_macro2::TokenStream>,
+    content_loop_merge: Option<proc_macro2::TokenStream>,
 }
 
 pub(crate) fn expand_excel_row_tokens(
@@ -92,6 +94,7 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
             options.content_style,
             options.head_font_style,
             options.content_font_style,
+            options.content_loop_merge,
         );
         columns.push(column);
         let position = syn::Index::from(schema_position);
@@ -190,6 +193,7 @@ fn decorate_column(
     content_style: Option<proc_macro2::TokenStream>,
     head_font_style: Option<proc_macro2::TokenStream>,
     content_font_style: Option<proc_macro2::TokenStream>,
+    content_loop_merge: Option<proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
     if let Some(width) = width {
         column = quote!(#column.with_column_width(#width));
@@ -205,6 +209,9 @@ fn decorate_column(
     }
     if let Some(style) = content_font_style {
         column = quote!(#column.with_content_font_style(#style));
+    }
+    if let Some(merge) = content_loop_merge {
+        column = quote!(#column.with_loop_merge(#merge));
     }
     column
 }
@@ -397,6 +404,10 @@ fn parse_struct_options(
                 options.content_font_style = Some(parse_font_style(&meta, crate_path)?);
                 return Ok(());
             }
+            if meta.path.is_ident("once_absolute_merge") {
+                options.once_absolute_merge = Some(parse_once_absolute_merge(&meta, crate_path)?);
+                return Ok(());
+            }
             Err(meta.error("unsupported ExcelRow struct option"))
         })?;
     }
@@ -453,6 +464,10 @@ fn parse_field_options(
             }
             if meta.path.is_ident("content_font_style") {
                 options.content_font_style = Some(parse_font_style(&meta, crate_path)?);
+                return Ok(());
+            }
+            if meta.path.is_ident("content_loop_merge") {
+                options.content_loop_merge = Some(parse_content_loop_merge(&meta, crate_path)?);
                 return Ok(());
             }
             Err(meta.error("unsupported ExcelRow field option"))
@@ -740,6 +755,75 @@ fn parse_font_style(
     }))
 }
 
+/// Parses `content_loop_merge(each_row = N, column_extend = M)` into
+/// [`easyexcel_core::LoopMergeProperty`] construction tokens.
+fn parse_content_loop_merge(
+    meta: &ParseNestedMeta<'_>,
+    crate_path: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mut each_row: Option<LitInt> = None;
+    let mut column_extend: Option<LitInt> = None;
+    meta.parse_nested_meta(|property| {
+        if property.path.is_ident("each_row") {
+            each_row = Some(parse_integer::<u32>(&property)?);
+            return Ok(());
+        }
+        if property.path.is_ident("column_extend") {
+            column_extend = Some(parse_integer::<u16>(&property)?);
+            return Ok(());
+        }
+        Err(property.error("unsupported content_loop_merge property"))
+    })?;
+    // Java defaults: eachRow = 1, columnExtend = 1.
+    let each_row = each_row.unwrap_or_else(|| LitInt::new("1", proc_macro2::Span::call_site()));
+    let column_extend =
+        column_extend.unwrap_or_else(|| LitInt::new("1", proc_macro2::Span::call_site()));
+    Ok(quote!(#crate_path::LoopMergeProperty::new(#each_row, #column_extend)))
+}
+
+/// Parses `once_absolute_merge(first_row_index = ..., ...)` into
+/// [`easyexcel_core::OnceAbsoluteMergeProperty`] construction tokens.
+fn parse_once_absolute_merge(
+    meta: &ParseNestedMeta<'_>,
+    crate_path: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mut first_row_index: Option<LitInt> = None;
+    let mut last_row_index: Option<LitInt> = None;
+    let mut first_column_index: Option<LitInt> = None;
+    let mut last_column_index: Option<LitInt> = None;
+    meta.parse_nested_meta(|property| {
+        if property.path.is_ident("first_row_index") {
+            first_row_index = Some(parse_signed_integer(&property)?);
+            return Ok(());
+        }
+        if property.path.is_ident("last_row_index") {
+            last_row_index = Some(parse_signed_integer(&property)?);
+            return Ok(());
+        }
+        if property.path.is_ident("first_column_index") {
+            first_column_index = Some(parse_signed_integer(&property)?);
+            return Ok(());
+        }
+        if property.path.is_ident("last_column_index") {
+            last_column_index = Some(parse_signed_integer(&property)?);
+            return Ok(());
+        }
+        Err(property.error("unsupported once_absolute_merge property"))
+    })?;
+    // Java defaults are -1 (unset).
+    let default = || LitInt::new("-1", proc_macro2::Span::call_site());
+    let first_row_index = first_row_index.unwrap_or_else(default);
+    let last_row_index = last_row_index.unwrap_or_else(default);
+    let first_column_index = first_column_index.unwrap_or_else(default);
+    let last_column_index = last_column_index.unwrap_or_else(default);
+    Ok(quote!(#crate_path::OnceAbsoluteMergeProperty::new(
+        #first_row_index,
+        #last_row_index,
+        #first_column_index,
+        #last_column_index,
+    )))
+}
+
 fn parse_integer<T>(meta: &ParseNestedMeta<'_>) -> syn::Result<LitInt>
 where
     T: std::str::FromStr,
@@ -750,6 +834,48 @@ where
         .base10_parse::<T>()
         .map_err(|error| syn::Error::new_spanned(&value, error))?;
     Ok(value)
+}
+
+/// Parses a signed integer literal, including unary negation (`-1`).
+fn parse_signed_integer(meta: &ParseNestedMeta<'_>) -> syn::Result<LitInt> {
+    let expr: syn::Expr = meta.value()?.parse()?;
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: Lit::Int(value),
+            ..
+        }) => {
+            value
+                .base10_parse::<i32>()
+                .map_err(|error| syn::Error::new_spanned(&value, error))?;
+            Ok(value)
+        }
+        syn::Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => match *expr {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: Lit::Int(value),
+                ..
+            }) => {
+                let magnitude = value
+                    .base10_parse::<i32>()
+                    .map_err(|error| syn::Error::new_spanned(&value, error))?;
+                let negated = magnitude
+                    .checked_neg()
+                    .ok_or_else(|| syn::Error::new_spanned(&value, "integer overflow"))?;
+                Ok(LitInt::new(&negated.to_string(), value.span()))
+            }
+            other => Err(syn::Error::new_spanned(
+                other,
+                "merge index must be an integer",
+            )),
+        },
+        other => Err(syn::Error::new_spanned(
+            other,
+            "merge index must be an integer",
+        )),
+    }
 }
 
 fn parse_named_variant(
@@ -793,6 +919,9 @@ fn write_metadata_tokens(
     }
     if let Some(style) = &options.content_font_style {
         metadata = quote!(#metadata.content_font_style(#style));
+    }
+    if let Some(merge) = &options.once_absolute_merge {
+        metadata = quote!(#metadata.once_absolute_merge(#merge));
     }
     metadata
 }

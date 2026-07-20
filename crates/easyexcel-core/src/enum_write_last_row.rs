@@ -15,3 +15,8 @@ pub enum WriteLastRow {
     /// At least one row has been written.
     HasData,
 }
+
+/// Java-compatible alias for [`WriteLastRow`].
+///
+/// Rust port of Java `WriteLastRowTypeEnum`.
+pub type WriteLastRowTypeEnum = WriteLastRow;

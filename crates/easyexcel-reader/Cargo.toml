@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 bigdecimal.workspace = true
 calamine.workspace = true
+cfb.workspace = true
 csv.workspace = true
 easyexcel-core = { path = "../easyexcel-core" }
 encoding_rs.workspace = true

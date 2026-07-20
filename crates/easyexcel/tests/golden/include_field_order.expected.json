@@ -1,0 +1,19 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.excludeorinclude.ExcludeOrIncludeDataTest#t41IncludeFieldNameOrder07",
+	"fixture":"artifacts/include_field_order.xlsx",
+	"sheet_index":0,
+	"head_row_number":1,
+	"row_count":1,
+	"cells":{
+		"0.0":"column4",
+		"0.1":"column2",
+		"0.2":"column3"
+	},
+	"rows":[
+		[
+			"column4",
+			"column2",
+			"column3"
+		]
+	]
+}

@@ -1,0 +1,19 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.repetition.RepetitionDataTest#t03ReadAndWriteCsv",
+	"fixture":"artifacts/repetition_data.csv",
+	"sheet_index":0,
+	"head_row_number":1,
+	"row_count":2,
+	"cells":{
+		"0.0":"字符串0",
+		"1.0":"字符串0"
+	},
+	"rows":[
+		[
+			"字符串0"
+		],
+		[
+			"字符串0"
+		]
+	]
+}

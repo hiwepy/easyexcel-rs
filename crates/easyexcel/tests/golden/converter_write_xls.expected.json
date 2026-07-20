@@ -1,0 +1,33 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.converter.ConverterDataTest#t02ReadAndWrite03#write",
+	"fixture":"artifacts/converter_write.xls",
+	"sheet_index":0,
+	"head_row_number":1,
+	"row_count":1,
+	"cells":{
+		"0.0":"2020-01-01 01:01:01",
+		"0.1":"2020-01-01",
+		"0.2":"2020-01-01 01:01:01",
+		"0.3":"true",
+		"0.12":"测试",
+		"0.13":"自定义"
+	},
+	"rows":[
+		[
+			"2020-01-01 01:01:01",
+			"2020-01-01",
+			"2020-01-01 01:01:01",
+			"true",
+			"1",
+			"1",
+			"1",
+			"1",
+			"1",
+			"1",
+			"1",
+			"1",
+			"测试",
+			"自定义"
+		]
+	]
+}

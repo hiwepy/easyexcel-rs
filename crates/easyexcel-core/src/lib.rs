@@ -60,8 +60,10 @@ mod anchor_type;
 mod cell_extra;
 mod cell_value;
 mod client_anchor_data;
+mod comment_data;
 mod coordinate_data;
 mod formula_data;
+mod hyperlink_data;
 mod image_data;
 mod image_type;
 mod interval_font;
@@ -74,8 +76,10 @@ pub use anchor_type::*;
 pub use cell_extra::*;
 pub use cell_value::*;
 pub use client_anchor_data::*;
+pub use comment_data::*;
 pub use coordinate_data::*;
 pub use formula_data::*;
+pub use hyperlink_data::*;
 pub use image_data::*;
 pub use image_type::*;
 pub use interval_font::*;
@@ -112,6 +116,7 @@ pub use excel_horizontal_alignment::*;
 pub use excel_underline::*;
 pub use excel_vertical_alignment::*;
 pub use excel_write_metadata::*;
+pub use metadata::property::{LoopMergeProperty, OnceAbsoluteMergeProperty};
 
 // ---------------------------------------------------------------------------
 // Conversion context + dynamic rows (Java
@@ -198,6 +203,7 @@ pub type Result<T> = std::result::Result<T, ExcelError>;
 mod read_listener;
 mod write_cell_context;
 mod write_context;
+mod write_fill_executor;
 mod write_handler;
 mod write_row_context;
 
@@ -211,6 +217,7 @@ mod write_workbook_context;
 pub use read_listener::*;
 pub use write_cell_context::*;
 pub use write_context::*;
+pub use write_fill_executor::*;
 pub use write_handler::*;
 pub use write_row_context::*;
 pub use write_sheet_context::*;

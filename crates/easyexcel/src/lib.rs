@@ -1,12 +1,19 @@
 //! Public facade for typed, event-driven Excel reading and writing.
 
+mod excel_builder;
+
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
-pub use easyexcel_reader::{ExcelLocale, ReadCacheMode};
+pub use easyexcel_core::metadata::GlobalConfiguration;
+pub use easyexcel_reader::{
+    apply_global_configuration_to_read_options, Ehcache, EternalReadCacheSelector, ExcelLocale,
+    ExcelReader, global_configuration_from_read_options, MapCache, ReadCache, ReadCacheMode,
+    ReadCacheSelector, SimpleReadCacheSelector, StoredReadCacheSelector, XlsCache,
+};
 use easyexcel_reader::{
     ReadOptions, ScientificFormatMode, SheetSelector, read_csv, read_xls, read_xlsx,
 };
@@ -15,14 +22,28 @@ pub use easyexcel_template::{
     TemplateSheet, fill_xlsx_template, fill_xlsx_template_list,
 };
 pub use easyexcel_writer::{
-    CellStyle, CsvEncodingWriter, ExcelOutputStream, ExcelWriter, HorizontalAlignment,
-    LoopMergeStrategy, MergeRange, VerticalAlignment, WriteOptions, WriteSheet,
-    write_csv_to_buffer, write_csv_to_writer, write_xlsx_to_writer,
+    CellStyle, CsvEncodingWriter, ExcelBuilder, ExcelBuilderImpl, ExcelOutputStream,
+    ExcelWriter, HorizontalAlignment, HorizontalCellStyleStrategy,
+    LongestMatchColumnWidthStyleStrategy, LoopMergeStrategy, MergeRange,
+    SimpleColumnWidthStyleStrategy, SimpleRowHeightStyleStrategy, VerticalAlignment,
+    VerticalCellStyleStrategy, WriteOptions, WriteSheet, write_csv_to_buffer,
+    write_csv_to_writer, write_xls, write_xls_to_writer, write_xlsx_to_writer,
 };
-use easyexcel_writer::{write_csv_with_handlers, write_xlsx_with_handlers};
+pub use excel_builder::{
+    builder_from_writer, do_fill_template, do_fill_template_with_config,
+    fill_builder_from_writer, wire_template_fill,
+};
+use easyexcel_writer::{
+    write_csv_with_handlers, write_xls_with_handlers, write_xlsx_with_handlers,
+};
 
 /// Static factory matching Java `EasyExcel`'s entry point.
 pub struct EasyExcel;
+
+/// Java-compatible alias for [`EasyExcel`].
+///
+/// Mirrors Java `EasyExcelFactory`; `EasyExcel` extends the same factory in Java.
+pub type EasyExcelFactory = EasyExcel;
 
 impl EasyExcel {
     /// Starts an event-driven XLSX, XLS, or CSV read selected from the path extension.
@@ -101,9 +122,14 @@ impl EasyExcel {
 
     /// Fills scalar `{key}` placeholders in an existing XLSX template.
     ///
+    /// Legacy `.xls` templates return typed [`ExcelError::Unsupported`]
+    /// (`legacy XLS template fill is not supported`). Java maps this to
+    /// `ExcelWriter.fill` on `HSSFWorkbook`; Rust fill remains OOXML-only.
+    /// Use [`Self::write`] / `with_template` for `.xls` cell append instead.
+    ///
     /// # Errors
     ///
-    /// Returns an I/O or OOXML package error.
+    /// Returns an I/O, Unsupported, or package format error.
     pub fn fill_template(
         template: impl AsRef<Path>,
         output: impl AsRef<Path>,
@@ -114,9 +140,12 @@ impl EasyExcel {
 
     /// Expands a collection in an existing XLSX template.
     ///
+    /// XLS (`.xls`) collection fill is not supported — returns
+    /// [`ExcelError::Unsupported`] with `legacy XLS template fill is not supported`.
+    ///
     /// # Errors
     ///
-    /// Returns an I/O or OOXML package error.
+    /// Returns an I/O, Unsupported, or OOXML package error.
     pub fn fill_template_list(
         template: impl AsRef<Path>,
         output: impl AsRef<Path>,
@@ -128,9 +157,13 @@ impl EasyExcel {
 
     /// Loads an XLSX template for repeated Java-style `fill` calls.
     ///
+    /// XLS (`.xls`) stateful template writers are rejected with
+    /// `legacy XLS template fill is not supported` (use [`Self::fill_template`] for
+    /// scalar `.xls` fill).
+    ///
     /// # Errors
     ///
-    /// Returns an I/O or OOXML package error when the template cannot be read.
+    /// Returns an I/O, Unsupported, or OOXML package error when the template cannot be read.
     pub fn template_writer(
         template: impl AsRef<Path>,
         output: impl Into<PathBuf>,
@@ -326,8 +359,16 @@ where
 
     /// Selects the XLSX shared-string cache backend.
     #[must_use]
-    pub const fn read_cache(mut self, mode: ReadCacheMode) -> Self {
+    pub fn read_cache(mut self, mode: ReadCacheMode) -> Self {
         self.options.read_cache = mode;
+        self.options.read_cache_selector = None;
+        self
+    }
+
+    /// Installs a Java-style cache selector. (Java `readCacheSelector(ReadCacheSelector)`)
+    #[must_use]
+    pub fn read_cache_selector(mut self, selector: StoredReadCacheSelector) -> Self {
+        self.options.read_cache_selector = Some(selector);
         self
     }
 
@@ -504,8 +545,16 @@ where
 
     /// Selects the XLSX shared-string cache backend while collecting rows.
     #[must_use]
-    pub const fn read_cache(mut self, mode: ReadCacheMode) -> Self {
+    pub fn read_cache(mut self, mode: ReadCacheMode) -> Self {
         self.options.read_cache = mode;
+        self.options.read_cache_selector = None;
+        self
+    }
+
+    /// Installs a Java-style cache selector while collecting rows.
+    #[must_use]
+    pub fn read_cache_selector(mut self, selector: StoredReadCacheSelector) -> Self {
+        self.options.read_cache_selector = Some(selector);
         self
     }
 
@@ -640,6 +689,17 @@ where
     #[must_use]
     pub const fn need_head(mut self, need_head: bool) -> Self {
         self.options.need_head = need_head;
+        self
+    }
+
+    /// Sets the relative head row index. (Java `ExcelWriterBuilder.relativeHeadRowIndex`)
+    ///
+    /// When `index > 0`, the header (and subsequent data rows) start at that
+    /// zero-based row, leaving the rows above blank — matching Java
+    /// `WriteBasicParameter.relativeHeadRowIndex`.
+    #[must_use]
+    pub const fn relative_head_row_index(mut self, index: i32) -> Self {
+        self.options.relative_head_row_index = index;
         self
     }
 
@@ -802,6 +862,55 @@ where
         self
     }
 
+    /// Sets a template workbook file. (Java `ExcelWriterBuilder.withTemplate(String/File)`)
+    ///
+    /// The template is loaded fully into memory (Java warns this can OOM for large
+    /// files). Typed `do_write` / stateful `write` appends after existing template
+    /// rows on the selected sheet and keeps other template sheets.
+    ///
+    /// # Notes
+    ///
+    /// - CSV templates are rejected (`csv cannot use template.`), matching Java.
+    /// - **XLS templates:** record-preserving BIFF8 overlay via
+    ///   `easyexcel_writer::biff8::Biff8TemplatePackage` (unmodified records kept;
+    ///   new cells appended as LABEL/NUMBER). Creating sheets absent from the
+    ///   template remains unsupported.
+    /// - **Default (XLSX):** styles and merges are preserved via ZIP/OOXML append
+    ///   (`styles.xml` + `mergeCells` kept; new rows appended to `sheetData`).
+    ///   Creating a sheet absent from the template adds an empty worksheet part
+    ///   without rewriting existing sheets (styles/merges stay intact).
+    /// - Images / comments / drawings / column widths from the template remain in
+    ///   the package on the ZIP (XLSX) path.
+    /// - Opt into value-only replay for XLSX (styles/merges discarded) with
+    ///   [`Self::use_legacy_template_seed`].
+    #[must_use]
+    pub fn with_template(mut self, path: impl Into<PathBuf>) -> Self {
+        self.options.template_file = Some(path.into());
+        self.options.template_bytes = None;
+        self
+    }
+
+    /// Sets a template from owned bytes. (Java `ExcelWriterBuilder.withTemplate(InputStream)`)
+    ///
+    /// Same semantics as [`Self::with_template`]; the stream/file is fully buffered.
+    #[must_use]
+    pub fn with_template_bytes(mut self, bytes: impl Into<Vec<u8>>) -> Self {
+        self.options.template_bytes = Some(bytes.into());
+        self.options.template_file = None;
+        self
+    }
+
+    /// Explicitly enables the legacy calamine → `rust_xlsxwriter` template seed.
+    ///
+    /// When enabled, `with_template` replays cell **values** only — styles, merges,
+    /// images, comments, and drawings are not preserved. Default is `false` (ZIP
+    /// preserve). Prefer the default unless you need the legacy seed for debugging.
+    #[must_use]
+    pub const fn use_legacy_template_seed(mut self, enabled: bool) -> Self {
+        self.options.use_legacy_template_seed = enabled;
+        self
+    }
+
     /// Redirects this write from its logical path to a caller-owned XLSX stream.
     ///
     /// The path remains available to handler contexts but no file is created.
@@ -864,16 +973,43 @@ where
         self
     }
 
+    /// Enables SXSSF-style compressed / disk-spill temporary files for bulk writes.
+    ///
+    /// Java mapping: `SXSSFWorkbook.setCompressTempFiles(true)` (commonly set in
+    /// `WorkbookWriteHandler.afterWorkbookCreate`). Forces constant-memory row
+    /// spill so large multi-batch writes do not keep the full sheet in RAM.
+    ///
+    /// See [`WriteOptions::compress_temp_files`] for the POI vs `rust_xlsxwriter`
+    /// gzip difference.
+    #[must_use]
+    pub const fn compress_temp_files(mut self, enabled: bool) -> Self {
+        self.options.compress_temp_files = enabled;
+        if enabled {
+            self.options.constant_memory = true;
+        }
+        self
+    }
+
     /// Writes any owned row iterator.
+    ///
+    /// When [`Self::with_template`] is set, rows are appended onto the template
+    /// workbook (Java `withTemplate(...).sheet().doWrite(data)`).
     ///
     /// # Errors
     ///
-    /// Returns a conversion, worksheet-configuration, XLSX-format, or I/O error.
+    /// Returns a conversion, worksheet-configuration, XLSX-format, template, or I/O error.
     pub fn do_write<I>(mut self, rows: I) -> Result<()>
     where
         I: IntoIterator<Item = T>,
     {
+        let has_template =
+            self.options.template_file.is_some() || self.options.template_bytes.is_some();
         if is_csv_path(&self.path) {
+            if has_template {
+                return Err(ExcelError::Unsupported(
+                    "csv cannot use template.".to_owned(),
+                ));
+            }
             write_csv_with_handlers::<T, I>(
                 Path::new(&self.path),
                 &self.options,
@@ -881,9 +1017,14 @@ where
                 &mut self.handlers,
             )
         } else if is_xls_path(&self.path) {
-            Err(ExcelError::Unsupported(
-                "legacy XLS writing is not supported".to_owned(),
-            ))
+            // Java: EasyExcel.write(...).excelType(ExcelTypeEnum.XLS).sheet().doWrite(...)
+            // Minimal BIFF8; with_template uses value-preserving rewrite (see biff8::template).
+            write_xls_with_handlers::<T, I>(
+                Path::new(&self.path),
+                &self.options,
+                rows,
+                &mut self.handlers,
+            )
         } else {
             write_xlsx_with_handlers::<T, I>(
                 Path::new(&self.path),
@@ -904,6 +1045,18 @@ where
         I: IntoIterator<Item = T>,
     {
         self.do_write(rows)
+    }
+
+    /// Fills scalar `{key}` placeholders through [`ExcelBuilderImpl::fill`].
+    ///
+    /// Mirrors Java `EasyExcel.write(file).withTemplate(template).sheet().doFill(data)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns template, fill, CSV/XLS unsupported, or output errors.
+    pub fn do_fill(self, data: &TemplateData) -> Result<()> {
+        let sheet = WriteSheet::<DynamicRow>::from_options(self.options.clone());
+        do_fill_template(self.build(), data, &sheet)
     }
 }
 
@@ -927,7 +1080,14 @@ where
     where
         I: IntoIterator<Item = T>,
     {
+        let has_template = self.builder.options.template_file.is_some()
+            || self.builder.options.template_bytes.is_some();
         if is_csv_path(&self.builder.path) {
+            if has_template {
+                return Err(ExcelError::Unsupported(
+                    "csv cannot use template.".to_owned(),
+                ));
+            }
             let bytes = write_csv_to_buffer::<T, I>(
                 &self.builder.path,
                 &self.builder.options,
@@ -939,9 +1099,14 @@ where
             return Ok(());
         }
         if is_xls_path(&self.builder.path) {
-            return Err(ExcelError::Unsupported(
-                "legacy XLS writing is not supported".to_owned(),
-            ));
+            // Java stream write with ExcelTypeEnum.XLS — BIFF8 (+ optional template).
+            return write_xls_to_writer::<T, I, _>(
+                &self.builder.path,
+                &mut *self.output,
+                &self.builder.options,
+                rows,
+                &mut self.builder.handlers,
+            );
         }
         write_xlsx_to_writer::<T, I, _>(
             &self.builder.path,

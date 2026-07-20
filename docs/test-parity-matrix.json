@@ -1,0 +1,3071 @@
+[
+  {
+    "class": "WriteTest",
+    "method": "simpleWrite",
+    "snake": "simple_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "excludeOrIncludeWrite",
+    "snake": "exclude_or_include_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "indexWrite",
+    "snake": "index_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "complexHeadWrite",
+    "snake": "complex_head_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "repeatedWrite",
+    "snake": "repeated_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "converterWrite",
+    "snake": "converter_write",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "WriteTest",
+    "method": "imageWrite",
+    "snake": "image_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "writeCellDataWrite",
+    "snake": "write_cell_data_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "templateWrite",
+    "snake": "template_write",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "WriteTest",
+    "method": "widthAndHeightWrite",
+    "snake": "width_and_height_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "annotationStyleWrite",
+    "snake": "annotation_style_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "handlerStyleWrite",
+    "snake": "handler_style_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "mergeWrite",
+    "snake": "merge_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "tableWrite",
+    "snake": "table_write",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "WriteTest",
+    "method": "dynamicHeadWrite",
+    "snake": "dynamic_head_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "longestMatchColumnWidthWrite",
+    "snake": "longest_match_column_width_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "customHandlerWrite",
+    "snake": "custom_handler_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "commentWrite",
+    "snake": "comment_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "variableTitleWrite",
+    "snake": "variable_title_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "noModelWrite",
+    "snake": "no_model_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillTest",
+    "method": "simpleFill",
+    "snake": "simple_fill",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillTest",
+    "method": "listFill",
+    "snake": "list_fill",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillTest",
+    "method": "complexFill",
+    "snake": "complex_fill",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "FillTest",
+    "method": "complexFillWithTable",
+    "snake": "complex_fill_with_table",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillTest",
+    "method": "horizontalFill",
+    "snake": "horizontal_fill",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "FillTest",
+    "method": "compositeFill",
+    "snake": "composite_fill",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ReadTest",
+    "method": "simpleRead",
+    "snake": "simple_read",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ReadTest",
+    "method": "indexOrNameRead",
+    "snake": "index_or_name_read",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ReadTest",
+    "method": "repeatedRead",
+    "snake": "repeated_read",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ReadTest",
+    "method": "converterRead",
+    "snake": "converter_read",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ReadTest",
+    "method": "complexHeaderRead",
+    "snake": "complex_header_read",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ReadTest",
+    "method": "headerRead",
+    "snake": "header_read",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ReadTest",
+    "method": "extraRead",
+    "snake": "extra_read",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ReadTest",
+    "method": "cellDataRead",
+    "snake": "cell_data_read",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ReadTest",
+    "method": "exceptionRead",
+    "snake": "exception_read",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ReadTest",
+    "method": "synchronousRead",
+    "snake": "synchronous_read",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ReadTest",
+    "method": "noModelRead",
+    "snake": "no_model_read",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ReadTest",
+    "method": "csvFormat",
+    "snake": "csv_format",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteTest",
+    "method": "compressedTemporaryFile",
+    "snake": "compressed_temporary_file",
+    "package": "demo",
+    "present_heuristic": true,
+    "reasons": [
+      "rare_test_compressed_temporary_file + ExcelWriterBuilder::compress_temp_files"
+    ]
+  },
+  {
+    "class": "WriteTest",
+    "method": "specifiedCellWrite",
+    "snake": "specified_cell_write",
+    "package": "demo",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteV33Test",
+    "method": "handlerStyleWrite",
+    "snake": "handler_style_write",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteV33Test",
+    "method": "test4",
+    "snake": "test4",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "StyleTest",
+    "method": "test",
+    "snake": "test",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "StyleTest",
+    "method": "poi",
+    "snake": "poi",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "StyleTest",
+    "method": "poi07",
+    "snake": "poi07",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "StyleTest",
+    "method": "poi0701",
+    "snake": "poi0701",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "StyleTest",
+    "method": "poi0702",
+    "snake": "poi0702",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "StyleTest",
+    "method": "poi0703",
+    "snake": "poi0703",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "StyleTest",
+    "method": "testFormatter",
+    "snake": "test_formatter",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "StyleTest",
+    "method": "testFormatter2",
+    "snake": "test_formatter2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "StyleTest",
+    "method": "testFormatter3",
+    "snake": "test_formatter3",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "StyleTest",
+    "method": "testBuiltinFormats",
+    "snake": "test_builtin_formats",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteLargeTest",
+    "method": "test",
+    "snake": "test",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "WriteLargeTest",
+    "method": "read",
+    "snake": "read",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "WriteLargeTest",
+    "method": "read2",
+    "snake": "read2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteLargeTest",
+    "method": "read3",
+    "snake": "read3",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteLargeTest",
+    "method": "test2",
+    "snake": "test2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "LockTest",
+    "method": "test",
+    "snake": "test",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "LockTest",
+    "method": "test2",
+    "snake": "test2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Xls03Test",
+    "method": "test",
+    "snake": "test",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Xls03Test",
+    "method": "test2",
+    "snake": "test2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillTempTest",
+    "method": "complexFill",
+    "snake": "complex_fill",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "FillTempTest",
+    "method": "complexFillWithTable",
+    "snake": "complex_fill_with_table",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteV34Test",
+    "method": "test",
+    "snake": "test",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Lock2Test",
+    "method": "test",
+    "snake": "test",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Lock2Test",
+    "method": "test33",
+    "snake": "test33",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "write",
+    "snake": "write",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Lock2Test",
+    "method": "simpleWrite",
+    "snake": "simple_write",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "testc",
+    "snake": "testc",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "simpleRead",
+    "snake": "simple_read",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Lock2Test",
+    "method": "test2",
+    "snake": "test2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "test335",
+    "snake": "test335",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "numberforamt",
+    "snake": "numberforamt",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "testDate",
+    "snake": "test_date",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Lock2Test",
+    "method": "testDateAll",
+    "snake": "test_date_all",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "numberforamt3",
+    "snake": "numberforamt3",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "numberforamt4",
+    "snake": "numberforamt4",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "numberforamt77",
+    "snake": "numberforamt77",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "numberforamt99",
+    "snake": "numberforamt99",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "numberforamt5",
+    "snake": "numberforamt5",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "numberforamt6",
+    "snake": "numberforamt6",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Lock2Test",
+    "method": "numberforamt7",
+    "snake": "numberforamt7",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "TempWriteTest",
+    "method": "write",
+    "snake": "write",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "TempWriteTest",
+    "method": "cglib",
+    "snake": "cglib",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "TempWriteTest",
+    "method": "imageWrite",
+    "snake": "image_write",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "TempWriteTest",
+    "method": "imageWritePoi",
+    "snake": "image_write_poi",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "TempWriteTest",
+    "method": "tep",
+    "snake": "tep",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "TempWriteTest",
+    "method": "large",
+    "snake": "large",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Issue1662Test",
+    "method": "test1662",
+    "snake": "test1662",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillTest",
+    "method": "TestFillNullPoint",
+    "snake": "test_fill_null_point",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "TempLargeDataTest",
+    "method": "read",
+    "snake": "read",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "TempLargeDataTest",
+    "method": "noModelRead",
+    "snake": "no_model_read",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "TempLargeDataTest",
+    "method": "noModelRead2",
+    "snake": "no_model_read2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "TempLargeDataTest",
+    "method": "t04Write",
+    "snake": "t04_write",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "TempLargeDataTest",
+    "method": "t04WriteExcel",
+    "snake": "t04_write_excel",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "TempLargeDataTest",
+    "method": "t04WriteExcelNo",
+    "snake": "t04_write_excel_no",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "TempLargeDataTest",
+    "method": "t04WriteExcelPoi",
+    "snake": "t04_write_excel_poi",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "CacheTest",
+    "method": "cache",
+    "snake": "cache",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "FillTempTest",
+    "method": "simpleFill",
+    "snake": "simple_fill",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillTempTest",
+    "method": "listFill",
+    "snake": "list_fill",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillTempTest",
+    "method": "complexFill",
+    "snake": "complex_fill",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "FillTempTest",
+    "method": "complexFillWithTable",
+    "snake": "complex_fill_with_table",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillTempTest",
+    "method": "horizontalFill",
+    "snake": "horizontal_fill",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "FillTempTest",
+    "method": "compositeFill",
+    "snake": "composite_fill",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "CommentTest",
+    "method": "comment",
+    "snake": "comment",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "HeadReadTest",
+    "method": "test",
+    "snake": "test",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "HeadReadTest",
+    "method": "testCache",
+    "snake": "test_cache",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "RepeatTest",
+    "method": "hh",
+    "snake": "hh",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "RepeatTest",
+    "method": "hh2",
+    "snake": "hh2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "RepeatTest",
+    "method": "hh1",
+    "snake": "hh1",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "HgTest",
+    "method": "hh",
+    "snake": "hh",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "HgTest",
+    "method": "hh5",
+    "snake": "hh5",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "HgTest",
+    "method": "hh2",
+    "snake": "hh2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Write",
+    "method": "simpleWrite",
+    "snake": "simple_write",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Write",
+    "method": "simpleWrite1",
+    "snake": "simple_write1",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Write",
+    "method": "simpleWrite2",
+    "snake": "simple_write2",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Write",
+    "method": "simpleWrite3",
+    "snake": "simple_write3",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Write",
+    "method": "json",
+    "snake": "json",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Write",
+    "method": "json3",
+    "snake": "json3",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Write",
+    "method": "tableWrite",
+    "snake": "table_write",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Poi2Test",
+    "method": "test",
+    "snake": "test",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Poi2Test",
+    "method": "lastRowNumXSSF",
+    "snake": "last_row_num_xssf",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Poi3Test",
+    "method": "Encryption",
+    "snake": "encryption",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "Poi3Test",
+    "method": "Encryption2",
+    "snake": "encryption2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiWriteTest",
+    "method": "write0",
+    "snake": "write0",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiWriteTest",
+    "method": "write01",
+    "snake": "write01",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiWriteTest",
+    "method": "write",
+    "snake": "write",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "PoiWriteTest",
+    "method": "write1",
+    "snake": "write1",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiWriteTest",
+    "method": "part",
+    "snake": "part",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "PoiWriteTest",
+    "method": "part2",
+    "snake": "part2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiWriteTest",
+    "method": "part4",
+    "snake": "part4",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNum",
+    "snake": "last_row_num",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNumXSSF",
+    "snake": "last_row_num_xssf",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNumXSSFv22",
+    "snake": "last_row_num_xssfv22",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNum233",
+    "snake": "last_row_num233",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNum255",
+    "snake": "last_row_num255",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "cp",
+    "snake": "cp",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNum233443",
+    "snake": "last_row_num233443",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNum2333",
+    "snake": "last_row_num2333",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "testread",
+    "snake": "testread",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "testreadRead",
+    "snake": "testread_read",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNum2332222",
+    "snake": "last_row_num2332222",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNum23443",
+    "snake": "last_row_num23443",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNum2",
+    "snake": "last_row_num2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiTest",
+    "method": "lastRowNumXSSF2",
+    "snake": "last_row_num_xssf2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiDateFormatTest",
+    "method": "read",
+    "snake": "read",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "PoiFormatTest",
+    "method": "lastRowNum",
+    "snake": "last_row_num",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiFormatTest",
+    "method": "lastRowNumXSSF",
+    "snake": "last_row_num_xssf",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "PoiEncryptTest",
+    "method": "encrypt",
+    "snake": "encrypt",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "PoiEncryptTest",
+    "method": "encryptExcel",
+    "snake": "encrypt_excel",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Issue2443Test",
+    "method": "IssueTest1",
+    "snake": "issue_test1",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Issue2443Test",
+    "method": "IssueTest2",
+    "snake": "issue_test2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Issue2443Test",
+    "method": "parseIntegerTest1",
+    "snake": "parse_integer_test1",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "Issue2443Test",
+    "method": "parseIntegerTest2",
+    "snake": "parse_integer_test2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "CsvReadTest",
+    "method": "write",
+    "snake": "write",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "CsvReadTest",
+    "method": "read1",
+    "snake": "read1",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "CsvReadTest",
+    "method": "csvWrite",
+    "snake": "csv_write",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "CsvReadTest",
+    "method": "writev2",
+    "snake": "writev2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "CsvReadTest",
+    "method": "writeFile",
+    "snake": "write_file",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "CsvReadTest",
+    "method": "read",
+    "snake": "read",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "test",
+    "snake": "test",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "testxls",
+    "snake": "testxls",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "test3",
+    "snake": "test3",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "test31",
+    "snake": "test31",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "test43",
+    "snake": "test43",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "test463",
+    "snake": "test463",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "test1",
+    "snake": "test1",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "test2",
+    "snake": "test2",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "test355",
+    "snake": "test355",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "test3556",
+    "snake": "test3556",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "tests",
+    "snake": "tests",
+    "package": "temp",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "tests1",
+    "snake": "tests1",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "tests3",
+    "snake": "tests3",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "DataFormatTest",
+    "method": "tests34",
+    "snake": "tests34",
+    "package": "temp",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "CompatibilityTest",
+    "method": "t01",
+    "snake": "t01",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CompatibilityTest",
+    "method": "t02",
+    "snake": "t02",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CompatibilityTest",
+    "method": "t03",
+    "snake": "t03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CompatibilityTest",
+    "method": "t04",
+    "snake": "t04",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CompatibilityTest",
+    "method": "t05",
+    "snake": "t05",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CompatibilityTest",
+    "method": "t06",
+    "snake": "t06",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CompatibilityTest",
+    "method": "t07",
+    "snake": "t07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CompatibilityTest",
+    "method": "t08",
+    "snake": "t08",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CompatibilityTest",
+    "method": "t09",
+    "snake": "t09",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CellDataDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "CellDataDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "CellDataDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "WriteHandlerTest",
+    "method": "t01WorkbookWrite07",
+    "snake": "t01_workbook_write07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteHandlerTest",
+    "method": "t02WorkbookWrite03",
+    "snake": "t02_workbook_write03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteHandlerTest",
+    "method": "t03WorkbookWriteCsv",
+    "snake": "t03_workbook_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "WriteHandlerTest",
+    "method": "t11SheetWrite07",
+    "snake": "t11_sheet_write07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteHandlerTest",
+    "method": "t12SheetWrite03",
+    "snake": "t12_sheet_write03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteHandlerTest",
+    "method": "t13SheetWriteCsv",
+    "snake": "t13_sheet_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "WriteHandlerTest",
+    "method": "t21TableWrite07",
+    "snake": "t21_table_write07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteHandlerTest",
+    "method": "t22TableWrite03",
+    "snake": "t22_table_write03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "WriteHandlerTest",
+    "method": "t23TableWriteCsv",
+    "snake": "t23_table_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "RepetitionDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "RepetitionDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "RepetitionDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "RepetitionDataTest",
+    "method": "t11ReadAndWriteTable07",
+    "snake": "t11_read_and_write_table07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "RepetitionDataTest",
+    "method": "t12ReadAndWriteTable03",
+    "snake": "t12_read_and_write_table03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "RepetitionDataTest",
+    "method": "t13ReadAndWriteTableCsv",
+    "snake": "t13_read_and_write_table_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "LargeDataTest",
+    "method": "t01Read",
+    "snake": "t01_read",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "LargeDataTest",
+    "method": "t02Fill",
+    "snake": "t02_fill",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "LargeDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "LargeDataTest",
+    "method": "t04Write",
+    "snake": "t04_write",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "BomDataTest",
+    "method": "t01ReadCsv",
+    "snake": "t01_read_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "BomDataTest",
+    "method": "t02ReadAndWriteCsv",
+    "snake": "t02_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CacheDataTest",
+    "method": "t01ReadAndWrite",
+    "snake": "t01_read_and_write",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CacheDataTest",
+    "method": "t02ReadAndWriteInvoke",
+    "snake": "t02_read_and_write_invoke",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CacheDataTest",
+    "method": "t03ReadAndWriteInvokeMemory",
+    "snake": "t03_read_and_write_invoke_memory",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "ConverterTest",
+    "method": "t01FloatNumberConverter",
+    "snake": "t01_float_number_converter",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ConverterDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ConverterDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ConverterDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "ConverterDataTest",
+    "method": "t11ReadAllConverter07",
+    "snake": "t11_read_all_converter07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ConverterDataTest",
+    "method": "t12ReadAllConverter03",
+    "snake": "t12_read_all_converter03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ConverterDataTest",
+    "method": "t13ReadAllConverterCsv",
+    "snake": "t13_read_all_converter_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "ConverterDataTest",
+    "method": "t21WriteImage07",
+    "snake": "t21_write_image07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ConverterDataTest",
+    "method": "t22WriteImage03",
+    "snake": "t22_write_image03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SortDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SortDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SortDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "SortDataTest",
+    "method": "t11ReadAndWriteNoHead07",
+    "snake": "t11_read_and_write_no_head07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SortDataTest",
+    "method": "t12ReadAndWriteNoHead03",
+    "snake": "t12_read_and_write_no_head03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SortDataTest",
+    "method": "t13ReadAndWriteNoHeadCsv",
+    "snake": "t13_read_and_write_no_head_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t01Fill07",
+    "snake": "t01_fill07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t02Fill03",
+    "snake": "t02_fill03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t03FillCsv",
+    "snake": "t03_fill_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t03ComplexFill07",
+    "snake": "t03_complex_fill07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t04ComplexFill03",
+    "snake": "t04_complex_fill03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t05HorizontalFill07",
+    "snake": "t05_horizontal_fill07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t06HorizontalFill03",
+    "snake": "t06_horizontal_fill03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t07ByNameFill07",
+    "snake": "t07_by_name_fill07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t08ByNameFill03",
+    "snake": "t08_by_name_fill03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t09CompositeFill07",
+    "snake": "t09_composite_fill07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillDataTest",
+    "method": "t10CompositeFill03",
+    "snake": "t10_composite_fill03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "FillAnnotationDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillAnnotationDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillStyleDataTest",
+    "method": "t01Fill07",
+    "snake": "t01_fill07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillStyleDataTest",
+    "method": "t02Fill03",
+    "snake": "t02_fill03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillStyleDataTest",
+    "method": "t11FillStyleHandler07",
+    "snake": "t11_fill_style_handler07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillStyleDataTest",
+    "method": "t12FillStyleHandler03",
+    "snake": "t12_fill_style_handler03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillStyleAnnotatedTest",
+    "method": "t01Fill07",
+    "snake": "t01_fill07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "FillStyleAnnotatedTest",
+    "method": "t02Fill03",
+    "snake": "t02_fill03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "MultipleSheetsDataTest",
+    "method": "t01Read07",
+    "snake": "t01_read07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "MultipleSheetsDataTest",
+    "method": "t02Read03",
+    "snake": "t02_read03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "MultipleSheetsDataTest",
+    "method": "t03Read07All",
+    "snake": "t03_read07_all",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "MultipleSheetsDataTest",
+    "method": "t04Read03All",
+    "snake": "t04_read03_all",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t01ExcludeIndex07",
+    "snake": "t01_exclude_index07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t02ExcludeIndex03",
+    "snake": "t02_exclude_index03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t03ExcludeIndexCsv",
+    "snake": "t03_exclude_index_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t11ExcludeFieldName07",
+    "snake": "t11_exclude_field_name07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t12ExcludeFieldName03",
+    "snake": "t12_exclude_field_name03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t13ExcludeFieldNameCsv",
+    "snake": "t13_exclude_field_name_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t21IncludeIndex07",
+    "snake": "t21_include_index07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t22IncludeIndex03",
+    "snake": "t22_include_index03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t23IncludeIndexCsv",
+    "snake": "t23_include_index_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t31IncludeFieldName07",
+    "snake": "t31_include_field_name07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t32IncludeFieldName03",
+    "snake": "t32_include_field_name03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t33IncludeFieldNameCsv",
+    "snake": "t33_include_field_name_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t41IncludeFieldNameOrder07",
+    "snake": "t41_include_field_name_order07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t42IncludeFieldNameOrder03",
+    "snake": "t42_include_field_name_order03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t43IncludeFieldNameOrderCsv",
+    "snake": "t43_include_field_name_order_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t41IncludeFieldNameOrderIndex07",
+    "snake": "t41_include_field_name_order_index07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t42IncludeFieldNameOrderIndex03",
+    "snake": "t42_include_field_name_order_index03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ExcludeOrIncludeDataTest",
+    "method": "t43IncludeFieldNameOrderIndexCsv",
+    "snake": "t43_include_field_name_order_index_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "TemplateDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "TemplateDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "AnnotationDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "AnnotationDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "AnnotationDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "AnnotationDataTest",
+    "method": "t11WriteStyle07",
+    "snake": "t11_write_style07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "AnnotationDataTest",
+    "method": "t12Write03",
+    "snake": "t12_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "AnnotationIndexAndNameDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "AnnotationIndexAndNameDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "AnnotationIndexAndNameDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "StyleDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "StyleDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "StyleDataTest",
+    "method": "t03AbstractVerticalCellStyleStrategy",
+    "snake": "t03_abstract_vertical_cell_style_strategy",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "StyleDataTest",
+    "method": "t04AbstractVerticalCellStyleStrategy02",
+    "snake": "t04_abstract_vertical_cell_style_strategy02",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "StyleDataTest",
+    "method": "t05LoopMergeStrategy",
+    "snake": "t05_loop_merge_strategy",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t04ReadAndWrite07",
+    "snake": "t04_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t05ReadAndWrite03",
+    "snake": "t05_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t06ReadAndWriteCsv",
+    "snake": "t06_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t11SynchronousRead07",
+    "snake": "t11_synchronous_read07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t12SynchronousRead03",
+    "snake": "t12_synchronous_read03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t13SynchronousReadCsv",
+    "snake": "t13_synchronous_read_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t21SheetNameRead07",
+    "snake": "t21_sheet_name_read07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SimpleDataTest",
+    "method": "t22PageReadListener07",
+    "snake": "t22_page_read_listener07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "UnCamelDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "UnCamelDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "UnCamelDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "NoHeadDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "NoHeadDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "NoHeadDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ComplexHeadDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ComplexHeadDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ComplexHeadDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "ComplexHeadDataTest",
+    "method": "t11ReadAndWriteAutomaticMergeHead07",
+    "snake": "t11_read_and_write_automatic_merge_head07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ComplexHeadDataTest",
+    "method": "t12ReadAndWriteAutomaticMergeHead03",
+    "snake": "t12_read_and_write_automatic_merge_head03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ComplexHeadDataTest",
+    "method": "t13ReadAndWriteAutomaticMergeHeadCsv",
+    "snake": "t13_read_and_write_automatic_merge_head_csv",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ListHeadDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ListHeadDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "ListHeadDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name"
+    ]
+  },
+  {
+    "class": "SkipDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SkipDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "SkipDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "NoModelDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "NoModelDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "NoModelDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "ExtraDataTest",
+    "method": "t01Read07",
+    "snake": "t01_read07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ExtraDataTest",
+    "method": "t02Read03",
+    "snake": "t02_read03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ExtraDataTest",
+    "method": "t03Read",
+    "snake": "t03_read",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "ParameterDataTest",
+    "method": "t01ReadAndWrite",
+    "snake": "t01_read_and_write",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "ParameterDataTest",
+    "method": "t02ReadAndWrite",
+    "snake": "t02_read_and_write",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "EncryptDataTest",
+    "method": "testformat",
+    "snake": "testformat",
+    "package": "core",
+    "present_heuristic": false,
+    "reasons": []
+  },
+  {
+    "class": "EncryptDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "EncryptDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "EncryptDataTest",
+    "method": "t03ReadAndWriteStream07",
+    "snake": "t03_read_and_write_stream07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "EncryptDataTest",
+    "method": "t04ReadAndWriteStream03",
+    "snake": "t04_read_and_write_stream03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ExceptionDataTest",
+    "method": "t01ReadAndWrite07",
+    "snake": "t01_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ExceptionDataTest",
+    "method": "t02ReadAndWrite03",
+    "snake": "t02_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ExceptionDataTest",
+    "method": "t03ReadAndWriteCsv",
+    "snake": "t03_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "ExceptionDataTest",
+    "method": "t11ReadAndWrite07",
+    "snake": "t11_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ExceptionDataTest",
+    "method": "t12ReadAndWrite03",
+    "snake": "t12_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ExceptionDataTest",
+    "method": "t21ReadAndWrite07",
+    "snake": "t21_read_and_write07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "ExceptionDataTest",
+    "method": "t22ReadAndWrite03",
+    "snake": "t22_read_and_write03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "DateFormatTest",
+    "method": "t01Read07",
+    "snake": "t01_read07",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "DateFormatTest",
+    "method": "t02Read03",
+    "snake": "t02_read03",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  },
+  {
+    "class": "DateFormatTest",
+    "method": "t03Read",
+    "snake": "t03_read",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CharsetDataTest",
+    "method": "t01ReadAndWriteCsv",
+    "snake": "t01_read_and_write_csv",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "name",
+      "class_t"
+    ]
+  },
+  {
+    "class": "CharsetDataTest",
+    "method": "t02ReadAndWriteCsvError",
+    "snake": "t02_read_and_write_csv_error",
+    "package": "core",
+    "present_heuristic": true,
+    "reasons": [
+      "class_t"
+    ]
+  }
+]

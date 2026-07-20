@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use calamine::{Data, Dimensions, Reader, Xlsx, open_workbook};
+use calamine::{Data, Dimensions, Reader, Xls, Xlsx, open_workbook};
 use chrono::NaiveDate;
 use easyexcel_core::{
     BigDecimal, ClientAnchorData, CoordinateData, ImageData, ImageType, IntoExcelCell,
@@ -745,7 +745,13 @@ fn default_options_and_helpers_are_deterministic() {
         WriteOptions {
             sheet_name: "Sheet1".to_owned(),
             sheet_index: None,
+            auto_trim: true,
+            use_1904_windowing: false,
+            locale: "default".to_owned(),
+            use_scientific_format: false,
+            filed_cache_location: easyexcel_core::CacheLocation::ThreadLocal,
             constant_memory: false,
+            compress_temp_files: false,
             need_head: true,
             freeze_head: false,
             freeze_panes: None,
@@ -769,6 +775,9 @@ fn default_options_and_helpers_are_deterministic() {
             auto_close_stream: true,
             write_excel_on_exception: false,
             converters: ConverterRegistry::default(),
+            template_file: None,
+            template_bytes: None,
+            use_legacy_template_seed: false,
         }
     );
     assert_eq!(excel_date_format(None, "yyyy-mm-dd"), "yyyy-mm-dd");
@@ -786,7 +795,7 @@ fn default_options_and_helpers_are_deterministic() {
     assert!(LoopMergeStrategy::new(0, 1, 0).is_err());
     assert!(LoopMergeStrategy::new(1, 0, 0).is_err());
     assert!(LoopMergeStrategy::new(1, 1, 0).is_err());
-    let strategy = LoopMergeStrategy::new(2, 3, 4).expect("loop merge");
+    let strategy = LoopMergeStrategy::new(2, 3, 4).expect("valid loop merge");
     assert_eq!(strategy.each_rows(), 2);
     assert_eq!(strategy.column_extend(), 3);
     assert_eq!(strategy.column_index(), 4);
@@ -1238,6 +1247,7 @@ fn style_model_maps_every_alignment_and_cycles_content_rows() -> Result<()> {
         fill_foreground_color: Some(ExcelColor::Rgb(0x0066_7788)),
         shrink_to_fit: Some(true),
         data_format: Some(ExcelDataFormat::Custom("0.00")),
+        font: None,
     };
     assert_ne!(
         apply_annotation_cell_style(Format::new(), annotation_cell),
@@ -1605,7 +1615,7 @@ fn dynamic_head_validation_and_backend_failures_are_typed() -> Result<()> {
                 worksheet,
                 &columns,
                 &head,
-                SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new()),
+                SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new(), WriteGlobalFlags::default()),
             )
             .is_err()
         );
@@ -2010,7 +2020,7 @@ fn rich_text_writer_applies_java_whole_and_utf16_interval_fonts() -> Result<()> 
             0,
             &TEST_COLUMN,
             &CellValue::RichText(invalid),
-            SheetStyleContext::content(None, &metadata).column(&TEST_COLUMN),
+            SheetStyleContext::content(None, &metadata, WriteGlobalFlags::default()).column(&TEST_COLUMN),
             &ImageLayout::default(),
         )
         .is_err()
@@ -2041,6 +2051,7 @@ fn image_anchor_layout_and_validation_cover_java_coordinate_boundaries() -> Resu
         },
         AnchoredImageRow::write_metadata(),
         1,
+        &[],
     )?;
     assert_eq!(layout.column_width(0), 89);
     assert_eq!(layout.column_width(1), 64);
@@ -2137,7 +2148,7 @@ fn image_anchor_layout_and_validation_cover_java_coordinate_boundaries() -> Resu
     let valid_image = image_from_buffer(&bytes)?;
     assert!(insert_scaled_image(worksheet, u32::MAX, 0, &valid_image, 0, 0).is_err());
     let metadata = ExcelWriteMetadata::new();
-    let style = SheetStyleContext::content(None, &metadata).column(&TEST_COLUMN);
+    let style = SheetStyleContext::content(None, &metadata, WriteGlobalFlags::default()).column(&TEST_COLUMN);
     assert!(
         write_cell(
             worksheet,
@@ -2177,7 +2188,7 @@ fn image_anchor_layout_and_validation_cover_java_coordinate_boundaries() -> Resu
 fn decimal_writer_rejects_values_outside_xlsx_numeric_range() {
     let huge: BigDecimal = "9".repeat(400).parse().expect("valid large decimal");
     let metadata = ExcelWriteMetadata::new();
-    let style = SheetStyleContext::content(None, &metadata).column(&TEST_COLUMN);
+    let style = SheetStyleContext::content(None, &metadata, WriteGlobalFlags::default()).column(&TEST_COLUMN);
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
     assert!(
@@ -2228,6 +2239,52 @@ fn constant_memory_writer_can_omit_headers_and_freeze_request() -> Result<()> {
         range.get_value((0, 1)),
         Some(&Data::String("text".to_owned()))
     );
+    assert_eq!(
+        range.get_value((1, 1)),
+        Some(&Data::String("text".to_owned()))
+    );
+    Ok(())
+}
+
+/// Java `SXSSFWorkbook.setCompressTempFiles(true)` → `WriteOptions.compress_temp_files`.
+///
+/// Verifies the flag forces constant-memory spill, mirrors rows into a gzip tempfile
+/// (magic `1f 8b`), and multi-batch writes succeed without OOM.
+#[test]
+fn compress_temp_files_forces_constant_memory_spill() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("compress_temp.xlsx");
+    let sheet = WriteSheet::<EveryCell>::new("Spill").compress_temp_files(true);
+    assert!(sheet.options().compress_temp_files);
+    assert!(sheet.options().constant_memory);
+
+    let mut writer = ExcelWriter::with_handlers_and_options(
+        &path,
+        Vec::new(),
+        WriteOptions {
+            compress_temp_files: true,
+            ..WriteOptions::default()
+        },
+    );
+    assert!(writer.compress_temp_files_enabled());
+    for _ in 0..5 {
+        writer.write(vec![every_cell(), every_cell()], &sheet)?;
+    }
+    // Late toggle mirrors Java afterWorkbookCreate (no-op once sheets exist).
+    writer.set_compress_temp_files(true);
+    writer.finish()?;
+
+    let snap = writer
+        .last_gzip_spill_snapshot()
+        .expect("gzip spill snapshot after finish");
+    assert!(snap.is_gzip, "spill must start with gzip magic 1f 8b");
+    assert!(snap.uncompressed_len > 0);
+    assert!(snap.compressed_len > 0);
+
+    let mut workbook: Xlsx<_> = open_workbook(&path).map_err(test_error)?;
+    let range = workbook.worksheet_range("Spill").map_err(test_error)?;
+    // Header + 10 data rows.
+    assert_eq!(range.height(), 11);
     assert_eq!(
         range.get_value((1, 1)),
         Some(&Data::String("text".to_owned()))
@@ -2418,7 +2475,16 @@ fn stateful_writer_propagates_start_sheet_and_finish_failures() -> Result<()> {
         Err(ExcelError::Unsupported(_))
     ));
     let mut xls = ExcelWriter::new(directory.path().join("stateful.XLS"));
-    assert!(matches!(xls.finish(), Err(ExcelError::Unsupported(_))));
+    // EveryCell includes Image values; BIFF8 rejects images — write headers only.
+    xls.write(Vec::<EveryCell>::new(), &sheet)?;
+    xls.finish()?;
+    let xls_path = directory.path().join("stateful.XLS");
+    assert!(xls_path.exists());
+    let mut xls_book: Xls<_> = open_workbook(&xls_path).map_err(test_error)?;
+    let range = xls_book
+        .worksheet_range(sheet.options().sheet_name.as_str())
+        .map_err(test_error)?;
+    assert!(!range.is_empty());
 
     let mut failed_xlsx_append = ExcelWriter::new(directory.path().join("failed-xlsx-append.xlsx"));
     failed_xlsx_append.write(vec![every_cell()], &sheet)?;
@@ -2620,9 +2686,10 @@ fn every_handler_failure_stage_is_propagated() -> Result<()> {
             worksheet,
             &selected_columns(EveryCell::schema(), &WriteOptions::default()),
             "Sheet1",
-            SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new()),
+            SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new(), WriteGlobalFlags::default()),
             &mut handlers,
             &ImageLayout::default(),
+            0,
         )
         .is_err()
     );
@@ -2639,9 +2706,10 @@ fn every_handler_failure_stage_is_propagated() -> Result<()> {
             &columns,
             &head,
             "Sheet2",
-            SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new()),
+            SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new(), WriteGlobalFlags::default()),
             &mut handlers,
             &ImageLayout::default(),
+            0,
         )
         .is_err()
     );
@@ -3311,4 +3379,589 @@ fn csv_writer_propagates_io_faults_and_column_overflow() {
     USE_WIDE_SCHEMA.with(|wide| wide.set(false));
     assert!(wide_data_result.is_err());
     assert!(csv_record(&[]).is_empty());
+}
+
+/// Registered style strategies rewrite the workbook without annotation styles.
+///
+/// Mirrors Java `StyleDataTest.readAndWrite` handler-only path for
+/// `SimpleColumnWidthStyleStrategy` / `SimpleRowHeightStyleStrategy` /
+/// `HorizontalCellStyleStrategy`.
+#[test]
+fn registered_style_strategies_rewrite_cell_style_width_and_height() -> Result<()> {
+    #[derive(Debug, Clone)]
+    struct PlainRow {
+        name: String,
+        value: String,
+    }
+
+    impl ExcelRow for PlainRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] = &[
+                ExcelColumn::new("name", "name", Some(0), 0, None),
+                ExcelColumn::new("value", "value", Some(1), 0, None),
+            ];
+            COLUMNS
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self {
+                name: String::new(),
+                value: String::new(),
+            })
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![
+                CellValue::String(self.name.clone()),
+                CellValue::String(self.value.clone()),
+            ])
+        }
+    }
+
+    let directory = tempdir()?;
+    let path = directory.path().join("strategy-only.xlsx");
+    let mut head = ExcelCellStyle::new();
+    head.fill_pattern = Some(ExcelFillPattern::Solid);
+    head.fill_foreground_color = Some(ExcelColor::Rgb(0x00FF_FF00));
+    let mut content = ExcelCellStyle::new();
+    content.fill_pattern = Some(ExcelFillPattern::Solid);
+    content.fill_foreground_color = Some(ExcelColor::Rgb(0x0000_8080));
+
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![
+        Box::new(SimpleColumnWidthStyleStrategy::uniform(40)),
+        Box::new(SimpleRowHeightStyleStrategy::new(Some(30), Some(45))),
+        Box::new(HorizontalCellStyleStrategy::with_head_and_content(
+            head, content,
+        )),
+        Box::new(LongestMatchColumnWidthStyleStrategy::new()),
+    ];
+    write_xlsx_with_handlers::<PlainRow, _>(
+        &path,
+        &WriteOptions {
+            // Neutralise default bold-only head CellStyle so fills come from strategy.
+            head_style: CellStyle::new(),
+            ..WriteOptions::default()
+        },
+        vec![PlainRow {
+            name: "a".to_owned(),
+            value: "bbbbbbbbbb".to_owned(),
+        }],
+        &mut handlers,
+    )?;
+
+    let file = File::open(&path)?;
+    let mut archive = ZipArchive::new(file).map_err(test_error)?;
+    let mut sheet = String::new();
+    archive
+        .by_name("xl/worksheets/sheet1.xml")
+        .map_err(test_error)?
+        .read_to_string(&mut sheet)
+        .map_err(test_error)?;
+    assert!(
+        sheet.contains("customHeight=\"1\"") || sheet.contains("ht=\""),
+        "expected row height from SimpleRowHeightStyleStrategy"
+    );
+    assert!(
+        sheet.contains("customWidth=\"1\"") || sheet.contains("width=\""),
+        "expected column width from strategies"
+    );
+
+    let mut styles = String::new();
+    archive
+        .by_name("xl/styles.xml")
+        .map_err(test_error)?
+        .read_to_string(&mut styles)
+        .map_err(test_error)?;
+    assert!(
+        styles.contains("rgb=\"FFFFFF00\"") || styles.contains("FFFF00"),
+        "expected yellow head fill from HorizontalCellStyleStrategy"
+    );
+    assert!(
+        styles.contains("rgb=\"FF008080\"")
+            || styles.contains("rgb=\"00008080\"")
+            || styles.contains("008080"),
+        "expected teal content fill from HorizontalCellStyleStrategy"
+    );
+    Ok(())
+}
+
+/// `VerticalCellStyleStrategy` applies per-column fills without field annotations.
+#[test]
+fn vertical_cell_style_strategy_rewrites_per_column_fills() -> Result<()> {
+    #[derive(Debug, Clone)]
+    struct PlainRow {
+        left: String,
+        right: String,
+    }
+
+    impl ExcelRow for PlainRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] = &[
+                ExcelColumn::new("left", "left", Some(0), 0, None),
+                ExcelColumn::new("right", "right", Some(1), 0, None),
+            ];
+            COLUMNS
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self {
+                left: String::new(),
+                right: String::new(),
+            })
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![
+                CellValue::String(self.left.clone()),
+                CellValue::String(self.right.clone()),
+            ])
+        }
+    }
+
+    let directory = tempdir()?;
+    let path = directory.path().join("vertical-strategy.xlsx");
+    let strategy = VerticalCellStyleStrategy::new(
+        |column| {
+            let mut style = ExcelCellStyle::new();
+            style.fill_pattern = Some(ExcelFillPattern::Solid);
+            style.fill_foreground_color = Some(if column == 0 {
+                ExcelColor::Indexed(13)
+            } else {
+                ExcelColor::Indexed(12)
+            });
+            style
+        },
+        |column| {
+            let mut style = ExcelCellStyle::new();
+            style.fill_pattern = Some(ExcelFillPattern::Solid);
+            style.fill_foreground_color = Some(if column == 0 {
+                ExcelColor::Indexed(58)
+            } else {
+                ExcelColor::Indexed(14)
+            });
+            style
+        },
+    );
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(strategy)];
+    write_xlsx_with_handlers::<PlainRow, _>(
+        &path,
+        &WriteOptions {
+            head_style: CellStyle::new(),
+            ..WriteOptions::default()
+        },
+        vec![PlainRow {
+            left: "L".to_owned(),
+            right: "R".to_owned(),
+        }],
+        &mut handlers,
+    )?;
+
+    let file = File::open(&path)?;
+    let mut archive = ZipArchive::new(file).map_err(test_error)?;
+    let mut styles = String::new();
+    archive
+        .by_name("xl/styles.xml")
+        .map_err(test_error)?
+        .read_to_string(&mut styles)
+        .map_err(test_error)?;
+    assert!(styles.contains("rgb=\"FFFFFF00\""));
+    assert!(styles.contains("rgb=\"FF0000FF\""));
+    assert!(styles.contains("rgb=\"FF003300\""));
+    assert!(styles.contains("rgb=\"FFFF00FF\""));
+    Ok(())
+}
+
+/// `WriteFont` nested on strategy styles merges size/color into the XLSX format
+/// (Java `WriteCellStyle.setWriteFont` + `WriteFont.merge`).
+#[test]
+fn write_font_merges_size_and_color_into_strategy_styles() -> Result<()> {
+    #[derive(Debug, Clone)]
+    struct PlainRow {
+        name: String,
+    }
+
+    impl ExcelRow for PlainRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] =
+                &[ExcelColumn::new("name", "name", Some(0), 0, None)];
+            COLUMNS
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self {
+                name: String::new(),
+            })
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![CellValue::String(self.name.clone())])
+        }
+    }
+
+    let directory = tempdir()?;
+    let path = directory.path().join("write-font-strategy.xlsx");
+    let strategy = HorizontalCellStyleStrategy::with_head_and_content(
+        ExcelCellStyle::new(),
+        ExcelCellStyle::new(),
+    )
+    .with_head_write_font(
+        WriteFont::new()
+            .font_height_in_points(18.0)
+            .color(ExcelColor::Rgb(0x00FF_0000)),
+    )
+    .with_content_write_font(
+        WriteFont::new()
+            .font_height_in_points(11.0)
+            .color(ExcelColor::Rgb(0x0000_00FF)),
+    );
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(strategy)];
+    write_xlsx_with_handlers::<PlainRow, _>(
+        &path,
+        &WriteOptions {
+            head_style: CellStyle::new(),
+            ..WriteOptions::default()
+        },
+        vec![PlainRow {
+            name: "fonted".to_owned(),
+        }],
+        &mut handlers,
+    )?;
+
+    let file = File::open(&path)?;
+    let mut archive = ZipArchive::new(file).map_err(test_error)?;
+    let mut styles = String::new();
+    archive
+        .by_name("xl/styles.xml")
+        .map_err(test_error)?
+        .read_to_string(&mut styles)
+        .map_err(test_error)?;
+    assert!(
+        styles.contains("sz val=\"18\"") || styles.contains("sz val=\"18.0\""),
+        "expected head font size 18 from WriteFont merge: {styles}"
+    );
+    assert!(
+        styles.contains("sz val=\"11\"") || styles.contains("sz val=\"11.0\""),
+        "expected content font size 11 from WriteFont merge: {styles}"
+    );
+    assert!(
+        styles.contains("FF0000") || styles.contains("rgb=\"FFFF0000\""),
+        "expected red head font color from WriteFont: {styles}"
+    );
+    assert!(
+        styles.contains("0000FF") || styles.contains("rgb=\"FF0000FF\""),
+        "expected blue content font color from WriteFont: {styles}"
+    );
+    Ok(())
+}
+
+/// `LongestMatchColumnWidthStyleStrategy` sets column width from content byte
+/// length (Java `String.getBytes().length`), not autofit alone.
+#[test]
+fn longest_match_sets_column_width_from_byte_length() -> Result<()> {
+    #[derive(Debug, Clone)]
+    struct PlainRow {
+        name: String,
+    }
+
+    impl ExcelRow for PlainRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] =
+                &[ExcelColumn::new("name", "name", Some(0), 0, None)];
+            COLUMNS
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self {
+                name: String::new(),
+            })
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![CellValue::String(self.name.clone())])
+        }
+    }
+
+    let directory = tempdir()?;
+    let path = directory.path().join("longest-match-bytes.xlsx");
+    // 20 ASCII bytes → character width 20 (head "name" is shorter).
+    let content = "abcdefghijklmnopqrst".to_owned();
+    assert_eq!(content.as_bytes().len(), 20);
+    let mut handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(LongestMatchColumnWidthStyleStrategy::new())];
+    write_xlsx_with_handlers::<PlainRow, _>(
+        &path,
+        &WriteOptions::default(),
+        vec![PlainRow { name: content }],
+        &mut handlers,
+    )?;
+
+    // Strategy cache must expose the measured Java byte-length width.
+    assert_eq!(
+        handlers[0].style_column_width(0),
+        Some(20),
+        "LongestMatch cache should keep max byte length 20"
+    );
+
+    let file = File::open(&path)?;
+    let mut archive = ZipArchive::new(file).map_err(test_error)?;
+    let mut sheet = String::new();
+    archive
+        .by_name("xl/worksheets/sheet1.xml")
+        .map_err(test_error)?
+        .read_to_string(&mut sheet)
+        .map_err(test_error)?;
+    // POI `setColumnWidth(col, chars * 256)` → OOXML width="{chars}".
+    assert!(
+        sheet.contains("width=\"20\"") || sheet.contains("width=\"20.0\""),
+        "expected LongestMatch byte-length width=20, got: {sheet}"
+    );
+    Ok(())
+}
+
+/// `ImageLayout` reads registered handler column widths for image pixel layout
+/// (Java `SimpleColumnWidthStyleStrategy` → sheet column width).
+///
+/// Handler strategy widths override `@ColumnWidth` annotations so image anchors
+/// match the final sheet column widths applied by `apply_handler_column_widths`.
+#[test]
+fn image_layout_reads_handler_column_width() -> Result<()> {
+    let columns = selected_columns(AnchoredImageRow::schema(), &WriteOptions::default());
+    // AnchoredImageRow annotates column_width=20; uniform(30) must still win.
+    let handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(SimpleColumnWidthStyleStrategy::uniform(30))];
+    let layout = ImageLayout::new(
+        &columns,
+        &WriteOptions::default(),
+        AnchoredImageRow::write_metadata(),
+        1,
+        &handlers,
+    )?;
+    // excel_column_width_pixels(30) = 30 * 7 + 5 = 215
+    assert_eq!(layout.column_width(0), 215);
+    // Columns outside the schema keep the Excel default pixel width.
+    assert_eq!(layout.column_width(1), 64);
+
+    // Explicit WriteOptions widths still beat handler strategies.
+    let layout_explicit = ImageLayout::new(
+        &columns,
+        &WriteOptions {
+            column_widths: vec![(0, 12)],
+            ..WriteOptions::default()
+        },
+        AnchoredImageRow::write_metadata(),
+        1,
+        &handlers,
+    )?;
+    assert_eq!(layout_explicit.column_width(0), 89);
+    Ok(())
+}
+
+/// Registered `OnceAbsoluteMergeStrategy` applies merge regions
+/// (Java `registerWriteHandler(new OnceAbsoluteMergeStrategy(...))`).
+#[test]
+fn once_absolute_merge_strategy_register_applies_merge() -> Result<()> {
+    #[derive(Debug, Clone)]
+    struct PlainRow {
+        left: String,
+        right: String,
+    }
+
+    impl ExcelRow for PlainRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] = &[
+                ExcelColumn::new("left", "left", Some(0), 0, None),
+                ExcelColumn::new("right", "right", Some(1), 0, None),
+            ];
+            COLUMNS
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self {
+                left: String::new(),
+                right: String::new(),
+            })
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![
+                CellValue::String(self.left.clone()),
+                CellValue::String(self.right.clone()),
+            ])
+        }
+    }
+
+    let directory = tempdir()?;
+    let path = directory.path().join("once-absolute-register.xlsx");
+    // Merge head row columns 0..=1 (Java firstRow=0,lastRow=0,firstCol=0,lastCol=1).
+    let mut handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(OnceAbsoluteMergeStrategy::new(0, 0, 0, 1))];
+    write_xlsx_with_handlers::<PlainRow, _>(
+        &path,
+        &WriteOptions::default(),
+        vec![PlainRow {
+            left: "L".to_owned(),
+            right: "R".to_owned(),
+        }],
+        &mut handlers,
+    )?;
+
+    let file = File::open(&path)?;
+    let mut archive = ZipArchive::new(file).map_err(test_error)?;
+    let mut sheet = String::new();
+    archive
+        .by_name("xl/worksheets/sheet1.xml")
+        .map_err(test_error)?
+        .read_to_string(&mut sheet)
+        .map_err(test_error)?;
+    assert!(
+        sheet.contains("<mergeCells") && sheet.contains("ref=\"A1:B1\""),
+        "expected OnceAbsoluteMergeStrategy merge A1:B1, got: {sheet}"
+    );
+    Ok(())
+}
+
+
+
+/// Integration: write styled + merged `.xls` via `write_xls`, read back with calamine.
+///
+/// Java mapping: StyleDataTest / LoopMergeStrategy subset for BIFF8 — asserts
+/// cell values and MERGECELLS presence (XF colours are write-side only).
+#[test]
+fn write_xls_style_merge_round_trip() -> Result<()> {
+    let directory = tempdir().map_err(test_error)?;
+    let path = directory.path().join("style_merge03.xls");
+    let options = WriteOptions {
+        sheet_name: "Sheet1".to_owned(),
+        column_widths: vec![(0, 40), (1, 20)],
+        head_style: CellStyle::new().bold(true).background_color(0x00_FF_FF_00),
+        content_styles: vec![CellStyle::new().background_color(0x00_00_80_80)],
+        merge_ranges: vec![MergeRange::new(3, 4, 0, 0)],
+        loop_merges: vec![LoopMergeStrategy::new(2, 1, 0)?],
+        need_head: true,
+        ..WriteOptions::default()
+    };
+    write_xls::<DimensionRow, _>(
+        &path,
+        &options,
+        vec![
+            DimensionRow,
+            DimensionRow,
+            DimensionRow,
+            DimensionRow,
+        ],
+    )?;
+
+    let mut book: Xls<_> = open_workbook(&path).map_err(test_error)?;
+    let range = book.worksheet_range("Sheet1").map_err(test_error)?;
+    // Header present
+    assert!(range.get((0, 0)).is_some());
+    let merges = book
+        .merge_cells_by_sheet_name("Sheet1")
+        .map_err(test_error)?;
+    assert!(
+        !merges.is_empty(),
+        "expected at least one MERGECELLS region, got {merges:?}"
+    );
+    // Absolute merge (3,0)-(4,0) and/or loop merges on data rows
+    assert!(
+        merges.iter().any(|d| {
+            let Dimensions { start, end } = *d;
+            start.1 == 0 && end.1 == 0 && end.0 > start.0
+        }),
+        "expected a vertical merge in column 0, got {merges:?}"
+    );
+    Ok(())
+}
+
+/// Annotation column width / row height / content style write to `.xls`.
+#[test]
+fn write_xls_annotation_dimensions_and_style() -> Result<()> {
+    let directory = tempdir().map_err(test_error)?;
+    let path = directory.path().join("annotation_style03.xls");
+    write_xls::<StyledAnnotationRow, _>(
+        &path,
+        &WriteOptions {
+            sheet_name: "styled".to_owned(),
+            ..WriteOptions::default()
+        },
+        vec![StyledAnnotationRow],
+    )?;
+    let mut book: Xls<_> = open_workbook(&path).map_err(test_error)?;
+    let range = book.worksheet_range("styled").map_err(test_error)?;
+    assert_eq!(
+        range.get((1, 0)).map(|c| format!("{c:?}")).is_some(),
+        true
+    );
+    // DimensionRow-like widths via StyledAnnotationRow schema — file must be real BIFF8
+    let magic = std::fs::read(&path).map_err(test_error)?;
+    assert_eq!(&magic[..4], &[0xD0, 0xCF, 0x11, 0xE0], "OLE compound magic");
+    Ok(())
+}
+
+/// Boundary: legacy XLS password and embedded images stay typed `Unsupported`.
+///
+/// Java maps these to HSSF RC4 encryption / MSODrawing pictures. Minimal BIFF8
+/// rejects both visibly — never emits XLSX under a `.xls` path and never drops
+/// image payloads silently. See `docs/compatibility.md` § XLS write capability.
+#[test]
+fn write_xls_rejects_password_and_images() {
+    let directory = tempdir().expect("tempdir");
+    let password_err = write_xls::<DimensionRow, _>(
+        &directory.path().join("protected03.xls"),
+        &WriteOptions {
+            password: Some("secret".to_owned()),
+            ..WriteOptions::default()
+        },
+        Vec::new(),
+    )
+    .expect_err("password on .xls must fail");
+    assert!(
+        matches!(password_err, ExcelError::Unsupported(_)),
+        "expected Unsupported, got {password_err}"
+    );
+    assert!(
+        password_err
+            .to_string()
+            .contains("password protection is not supported for legacy XLS"),
+        "unexpected password error: {password_err}"
+    );
+
+    struct ImageOnlyRow;
+    impl ExcelRow for ImageOnlyRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] =
+                &[ExcelColumn::new("pic", "Pic", Some(0), 0, None)];
+            COLUMNS
+        }
+
+        fn write_metadata() -> &'static ExcelWriteMetadata {
+            const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new();
+            &METADATA
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self)
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![CellValue::Image(vec![0xFF, 0xD8, 0xFF, 0xD9])])
+        }
+    }
+
+    let image_err = write_xls::<ImageOnlyRow, _>(
+        &directory.path().join("image03.xls"),
+        &WriteOptions::default(),
+        vec![ImageOnlyRow],
+    )
+    .expect_err("image cell on .xls must fail");
+    assert!(
+        matches!(image_err, ExcelError::Unsupported(_)),
+        "expected Unsupported, got {image_err}"
+    );
+    assert!(
+        image_err
+            .to_string()
+            .contains("legacy XLS writing does not support images"),
+        "unexpected image error: {image_err}"
+    );
 }

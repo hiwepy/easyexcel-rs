@@ -3,6 +3,7 @@
 use crate::holder::read_sheet_holder::ReadSheetHolder;
 
 /// Mirrors Java `CsvReadSheetHolder extends ReadSheetHolder`.
+#[derive(Debug, Clone)]
 pub struct CsvReadSheetHolder {
     inner: ReadSheetHolder,
 }

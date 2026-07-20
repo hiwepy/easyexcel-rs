@@ -1,0 +1,23 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.style.StyleDataTest#t02ReadAndWrite03",
+	"fixture":"artifacts/style_data.xls",
+	"sheet_index":0,
+	"head_row_number":1,
+	"row_count":2,
+	"cells":{
+		"0.0":"字符串0",
+		"0.1":"字符串01",
+		"1.0":"字符串1",
+		"1.1":"字符串11"
+	},
+	"rows":[
+		[
+			"字符串0",
+			"字符串01"
+		],
+		[
+			"字符串1",
+			"字符串11"
+		]
+	]
+}

@@ -4,6 +4,8 @@
 
 use crate::analysis_context::Result;
 use crate::cell_value::CellValue;
+use crate::excel_cell_style::ExcelCellStyle;
+use crate::metadata::property::OnceAbsoluteMergeProperty;
 use crate::write_cell_context::WriteCellContext;
 use crate::write_row_context::WriteRowContext;
 use crate::write_sheet_context::WriteSheetContext;
@@ -16,6 +18,12 @@ use crate::write_workbook_context::WriteWorkbookContext;
 /// `Abstract*WriteHandler` skeletons. Rust collapses the eight lifecycle
 /// hooks into a single trait; default implementations are no-ops so a
 /// minimal handler only overrides the events it cares about.
+///
+/// Style / dimension strategies (Java `AbstractCellStyleStrategy`,
+/// `AbstractColumnWidthStyleStrategy`, `AbstractRowHeightStyleStrategy`,
+/// `LongestMatchColumnWidthStyleStrategy`) also override the optional
+/// `style_*` accessors so `Box<dyn WriteHandler>` can apply them without
+/// downcasting.
 ///
 /// Any callback may return an error to stop the write immediately.
 #[allow(clippy::missing_errors_doc)]
@@ -65,6 +73,58 @@ pub trait WriteHandler {
     /// Called after a cell has been processed. (Java `CellWriteHandler.afterCellDispose`)
     fn after_cell(&mut self, _context: &WriteCellContext) -> Result<()> {
         Ok(())
+    }
+
+    /// Optional cell style from a registered style strategy.
+    ///
+    /// Mirrors Java `AbstractCellStyleStrategy` / `HorizontalCellStyleStrategy`
+    /// / `AbstractVerticalCellStyleStrategy` applying `WriteCellStyle` during
+    /// `afterCellDispose`. The XLSX write path merges non-`None` results into
+    /// the cell format.
+    fn style_cell_style(&self, _context: &WriteCellContext) -> Option<ExcelCellStyle> {
+        None
+    }
+
+    /// Optional fixed column width from a registered width strategy.
+    ///
+    /// Mirrors Java `AbstractColumnWidthStyleStrategy.columnWidth` /
+    /// `SimpleColumnWidthStyleStrategy`.
+    fn style_column_width(&self, _column_index: usize) -> Option<u16> {
+        None
+    }
+
+    /// Optional head row height from a registered row-height strategy.
+    ///
+    /// Mirrors Java `AbstractRowHeightStyleStrategy.setHeadColumnHeight` /
+    /// `SimpleRowHeightStyleStrategy`.
+    fn style_head_row_height(&self) -> Option<u16> {
+        None
+    }
+
+    /// Optional content row height from a registered row-height strategy.
+    ///
+    /// Mirrors Java `AbstractRowHeightStyleStrategy.setContentColumnHeight` /
+    /// `SimpleRowHeightStyleStrategy`.
+    fn style_content_row_height(&self) -> Option<u16> {
+        None
+    }
+
+    /// Whether the handler requests worksheet autofit as a column-width fallback.
+    ///
+    /// Mirrors an optional Rust extension around Java
+    /// `LongestMatchColumnWidthStyleStrategy` (default path uses content
+    /// byte-length + `setColumnWidth`; autofit remains opt-in).
+    fn style_auto_column_width(&self) -> bool {
+        false
+    }
+
+    /// Optional absolute merge region from a registered merge strategy.
+    ///
+    /// Mirrors Java `OnceAbsoluteMergeStrategy.afterSheetCreate` when the
+    /// strategy is registered via `register_write_handler` (annotation
+    /// `@OnceAbsoluteMerge` remains a separate metadata path).
+    fn style_once_absolute_merge(&self) -> Option<OnceAbsoluteMergeProperty> {
+        None
     }
 }
 

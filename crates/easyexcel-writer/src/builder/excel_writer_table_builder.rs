@@ -2,8 +2,10 @@
 
 use crate::CellStyle;
 use crate::WriteHandler;
+use crate::WriteOptions;
 
 use crate::builder::abstract_excel_writer_parameter_builder::AbstractExcelWriterParameterBuilder;
+use crate::holder::write_table_holder::WriteTableHolder;
 use crate::metadata::{WriteBasicParameter, WriteTable};
 
 /// Mirrors Java `ExcelWriterTableBuilder extends AbstractExcelWriterParameterBuilder`.
@@ -29,8 +31,51 @@ impl ExcelWriterTableBuilder {
     }
 
     /// Sets the zero-based table index. (Java `tableNo(Integer)`)
+    #[must_use]
     pub fn table_no(mut self, table_no: i32) -> Self {
         self.table.table_no = table_no;
+        self
+    }
+
+    /// Sets whether a header row is written. (Java `needHead(Boolean)`)
+    #[must_use]
+    pub fn need_head(mut self, need_head: bool) -> Self {
+        self.parameter.need_head = need_head;
+        self
+    }
+
+    /// Sets the relative head row index. (Java `relativeHeadRowIndex(Integer)`)
+    #[must_use]
+    pub fn relative_head_row_index(mut self, index: i32) -> Self {
+        self.parameter.relative_head_row_index = index;
+        self
+    }
+
+    /// Sets automatic header merging. (Java `automaticMergeHead(Boolean)`)
+    #[must_use]
+    pub fn automatic_merge_head(mut self, automatic_merge_head: bool) -> Self {
+        self.parameter.automatic_merge_head = automatic_merge_head;
+        self
+    }
+
+    /// Sets the include-order flag. (Java `orderByIncludeColumn(Boolean)`)
+    #[must_use]
+    pub fn order_by_include_column(mut self, enabled: bool) -> Self {
+        self.parameter.order_by_include_column = enabled;
+        self
+    }
+
+    /// Registers a write handler. (Java `registerWriteHandler(WriteHandler)`)
+    #[must_use]
+    pub fn register_write_handler(mut self, handler: Box<dyn WriteHandler>) -> Self {
+        self.handlers.push(handler);
+        self
+    }
+
+    /// Applies a head style to the built table options.
+    #[must_use]
+    pub fn head_style(mut self, style: CellStyle) -> Self {
+        self.table.options.head_style = style;
         self
     }
 
@@ -41,7 +86,17 @@ impl ExcelWriterTableBuilder {
         table.options.relative_head_row_index = self.parameter.relative_head_row_index;
         table.options.need_head = self.parameter.need_head;
         table.options.automatic_merge_head = self.parameter.automatic_merge_head;
+        table.options.order_by_include_column = self.parameter.order_by_include_column;
+        table.options.converters = self.parameter.converters.clone();
         table
+    }
+
+    /// Builds a table holder for handler contexts. (Java `WriteTableHolder`)
+    #[must_use]
+    pub fn build_table_holder<'a>(&self, parent_sheet: &'a str) -> WriteTableHolder<'a> {
+        let mut holder = WriteTableHolder::new(self.table.table_no);
+        holder.set_parent_sheet(parent_sheet);
+        holder
     }
 
     /// Returns a reference to the inner `WriteTable` for inspection.
@@ -60,12 +115,6 @@ impl ExcelWriterTableBuilder {
     #[must_use]
     pub fn handlers(&self) -> &[Box<dyn WriteHandler>] {
         &self.handlers
-    }
-
-    /// Appends a write handler. (Java `registerWriteHandler(WriteHandler)`)
-    pub fn register_write_handler(&mut self, handler: Box<dyn WriteHandler>) -> &mut Self {
-        self.handlers.push(handler);
-        self
     }
 
     /// Convenience setter that records a head style without emitting a
@@ -87,6 +136,62 @@ impl AbstractExcelWriterParameterBuilder for ExcelWriterTableBuilder {
     }
 
     fn register_write_handler(&mut self, handler: Box<dyn WriteHandler>) -> &mut Self {
-        self.register_write_handler(handler)
+        self.handlers.push(handler);
+        self
+    }
+}
+
+/// Merges [`WriteTable`] overrides into worksheet [`WriteOptions`].
+///
+/// Table-level head settings override the parent sheet options, matching Java
+/// `WriteTableHolder` inheritance from `WriteSheetHolder`.
+#[must_use]
+pub fn merge_table_options(sheet_options: &WriteOptions, table: &WriteTable) -> WriteOptions {
+    let mut merged = sheet_options.clone();
+    merged.relative_head_row_index = table.options.relative_head_row_index;
+    merged.need_head = table.options.need_head;
+    merged.automatic_merge_head = table.options.automatic_merge_head;
+    merged.order_by_include_column = table.options.order_by_include_column;
+    if !table.options.converters.is_empty() {
+        merged.converters = table.options.converters.clone();
+    }
+    if table.options.head_style != WriteOptions::default().head_style {
+        merged.head_style = table.options.head_style.clone();
+    }
+    merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_builder_builds_write_table_and_holder() {
+        let table = ExcelWriterTableBuilder::new()
+            .table_no(3)
+            .need_head(false)
+            .relative_head_row_index(2)
+            .build();
+        assert_eq!(table.table_no(), 3);
+        assert!(!table.options().need_head);
+        assert_eq!(table.options().relative_head_row_index, 2);
+
+        let holder = ExcelWriterTableBuilder::new()
+            .table_no(3)
+            .build_table_holder("Sheet1");
+        assert_eq!(holder.table_no(), 3);
+        assert_eq!(holder.parent_sheet(), Some("Sheet1"));
+    }
+
+    #[test]
+    fn merge_table_options_overrides_head_settings() {
+        let sheet = WriteOptions::default();
+        let mut table = WriteTable::new();
+        table.options.need_head = false;
+        table.options.relative_head_row_index = 4;
+        let merged = merge_table_options(&sheet, &table);
+        assert!(!merged.need_head);
+        assert_eq!(merged.relative_head_row_index, 4);
+        assert_eq!(merged.sheet_name, sheet.sheet_name);
     }
 }
