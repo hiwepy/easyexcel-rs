@@ -1800,11 +1800,7 @@ fn validate_stateful_backend(path: &Path, password: Option<&str>) -> Result<()> 
         Some(extension) if extension.eq_ignore_ascii_case("csv") && password.is_some() => Err(
             ExcelError::Unsupported("password protection is not supported for CSV".to_owned()),
         ),
-        Some(extension) if extension.eq_ignore_ascii_case("xls") && password.is_some() => Err(
-            ExcelError::Unsupported(
-                "password protection is not supported for legacy XLS".to_owned(),
-            ),
-        ),
+        // XLS password is now supported via BIFF8 RC4 (Phase 5.3)
         _ => Ok(()),
     }
 }
@@ -1887,7 +1883,15 @@ where
 
     let mut book = Biff8Book::default();
     write_sheet_to_biff8_book::<T, I>(&mut book, options, rows, handlers)?;
-    save_xls_book(&book, path)?;
+    // Phase 5.3: BIFF8 RC4 encryption
+    if let Some(password) = &options.password {
+        let raw_bytes = book.to_cfb_bytes()?;
+        let (encrypted, _salt, _vh) =
+            crate::biff8::encrypt::encrypt_biff8_stream(&raw_bytes, password);
+        std::fs::write(path, &encrypted).map_err(ExcelError::from)?;
+    } else {
+        save_xls_book(&book, path)?;
+    }
     after_workbook(handlers, &workbook_context)?;
     Ok(())
 }
@@ -1937,12 +1941,8 @@ where
     Ok(())
 }
 
-fn validate_xls_options(options: &WriteOptions) -> Result<()> {
-    if options.password.is_some() {
-        return Err(ExcelError::Unsupported(
-            "password protection is not supported for legacy XLS".to_owned(),
-        ));
-    }
+fn validate_xls_options(_options: &WriteOptions) -> Result<()> {
+    // XLS password is now supported via BIFF8 RC4 (Phase 5.3)
     Ok(())
 }
 

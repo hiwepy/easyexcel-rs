@@ -799,12 +799,7 @@ mod encrypt_data_test {
             .password("123456")
             .sheet("Sheet1")
             .do_write(encrypt_data())
-            .expect_err("legacy XLS password protection must fail explicitly");
-        assert!(
-            err.to_string().contains("password protection is not supported for legacy XLS")
-                || matches!(err, easyexcel::ExcelError::Unsupported(_)),
-            "unexpected error: {err}"
-        );
+            .expect("XLS encrypt must succeed (Phase 5.3)");
     }
 
     /// Java `EncryptDataTest#t03ReadAndWriteStream07`.
@@ -821,12 +816,7 @@ mod encrypt_data_test {
             .password("123456")
             .sheet("Sheet1")
             .do_write(encrypt_data())
-            .expect_err("legacy XLS password protection must fail explicitly");
-        assert!(
-            err.to_string().contains("password protection is not supported for legacy XLS")
-                || matches!(err, easyexcel::ExcelError::Unsupported(_)),
-            "unexpected error: {err}"
-        );
+            .expect("XLS encrypt must succeed (Phase 5.3)");
     }
 }
 

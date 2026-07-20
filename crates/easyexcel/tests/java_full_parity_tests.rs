@@ -582,18 +582,14 @@ fn encrypt_t01_read_and_write_xlsx() {
 
 #[test]
 fn encrypt_t02_read_and_write_xls() {
-    // Java encrypts .xls. Password protection for legacy XLS is Unsupported (visible).
+    // Phase 5.3: BIFF8 RC4 encryption implemented.
     let path = temp_path("encrypt03.xls");
-    let err = EasyExcel::write::<EncryptData>(&path)
+    EasyExcel::write::<EncryptData>(&path)
         .password("123456")
         .sheet("Sheet1")
         .do_write(encrypt_data())
-        .expect_err("legacy XLS password protection must fail explicitly");
-    assert!(
-        err.to_string().contains("password protection is not supported for legacy XLS")
-            || matches!(err, ExcelError::Unsupported(_)),
-        "unexpected error: {err}"
-    );
+        .expect("XLS encrypt write must succeed (Phase 5.3)");
+    assert!(path.exists(), "Encrypted XLS file must exist");
 }
 
 #[test]
@@ -603,18 +599,14 @@ fn encrypt_t03_stream_xlsx() {
 
 #[test]
 fn encrypt_t04_stream_xls() {
-    // Java stream-encrypts .xls. Password protection for legacy XLS is Unsupported.
+    // Phase 5.3: BIFF8 RC4 encryption implemented.
     let path = temp_path("encrypt03_stream.xls");
-    let err = EasyExcel::write::<EncryptData>(&path)
+    EasyExcel::write::<EncryptData>(&path)
         .password("123456")
         .sheet("Sheet1")
         .do_write(encrypt_data())
-        .expect_err("legacy XLS password protection must fail explicitly");
-    assert!(
-        err.to_string().contains("password protection is not supported for legacy XLS")
-            || matches!(err, ExcelError::Unsupported(_)),
-        "unexpected error: {err}"
-    );
+        .expect("XLS encrypt write must succeed (Phase 5.3)");
+    assert!(path.exists(), "Encrypted XLS file must exist");
 }
 
 // ============================================================================

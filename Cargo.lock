@@ -416,6 +416,8 @@ dependencies = [
  "easyexcel-core",
  "encoding_rs",
  "flate2",
+ "getrandom 0.2.17",
+ "md-5",
  "ms-offcrypto-writer",
  "rand",
  "rust_xlsxwriter",
