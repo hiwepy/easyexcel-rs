@@ -14,29 +14,34 @@
 | Total tests ignored (placeholder)       | **2** (`lock-stress`, `ehcache-probe`) |
 | Test binary files                       | **24**                        |
 
-## 1. Final status (Phase 7)
+## 1. Final status (Phase E complete)
 
 | Metric                                  | Value                          |
 |-----------------------------------------|--------------------------------|
-| Total tests passing                     | **1271** (+34 from Phase 1-5)  |
+| Total tests passing                     | **1315** (+78 from Phase 1-E)  |
 | Total tests failing                     | **0**                          |
-| Total tests ignored (Phase 5 placeholder)| **9** (Phase 5 adds 7 XLS gap tests)|
-| Golden tests passing                    | **88** (Phase 7 ✅)            |
+| Total tests ignored                     | **9** (Phase 5 placeholder + 2 baseline) |
+| Golden tests passing                    | **88**                         |
 | Java parity tests passing               | **152** (95 + 57)              |
-| 1:1 test matrix passing (Phase 1-5)     | **34** (11+6+7+6+4)            |
+| 1:1 method tests (Phase 1-E)            | **78** (11+6+7+6+4+44)          |
 
 ## 2. Phase rollup
 
-| Phase | Title                                          | Status      | Start  | End    |
-|-------|------------------------------------------------|-------------|--------|--------|
-| 0     | Gap analysis + baseline                        | ✅ done     | 07-20  | 07-20  | [commit 0c72df0](https://.../0c72df0) |
-| 1     | Annotation + data model completion             | ✅ done     | 07-20  | 07-20  | [commit 1de5627](https://.../1de5627) |
-| 2     | Handler sub-traits + default loader           | ✅ done     | 07-20  | 07-20  | [commit a1b2c3d](https://.../a1b2c3d) |
-| 3     | Advanced features (comment/hyperlink/formula) | ✅ done     | 07-20  | 07-20  | [commit f7309c0](https://.../f7309c0) |
-| 4     | POI handle + WriteTable overload              | ✅ done     | 07-20  | 07-20  | [commit 424d8df](https://.../424d8df) |
-| 5     | legacy XLS (BIFF8) feature parity             | ✅ done     | 07-20  | 07-20  | [commit d7e8f9a](https://.../d7e8f9a) |
-| 6     | 1:1 test matrix hardening                     | ✅ done     | 07-20  | 07-20  | [commit 7d3bfa1](https://.../7d3bfa1) |
-| 7     | Golden JSON verification                      | ✅ done     | 07-20  | 07-20  | 88 golden tests pass against pre-committed artifacts |
+| Phase | Title                                          | Status      | Commit | Tests |
+|-------|------------------------------------------------|-------------|--------|-------|
+| 0     | Gap analysis + baseline                        | ✅ done     | `0c72df0` | — |
+| 1     | Annotation + data model completion             | ✅ done     | `1de5627` | +11 |
+| 2     | Handler sub-traits + default loader           | ✅ done     | `5844409` | +6 |
+| 3     | Advanced features (comment/hyperlink/formula) | ✅ done     | `f7309c0` | +7 |
+| 4     | POI handle + WriteTable overload              | ✅ done     | `424d8df` | +6 |
+| 5     | legacy XLS (BIFF8) feature parity             | ✅ done     | `f5cf926` | +4 |
+| 6     | 1:1 test matrix hardening                     | ✅ done     | `7d3bfa1` | 0 |
+| 7     | Golden JSON verification                      | ✅ done     | `82a96f6` | 0 |
+| E.1   | ExcelReaderSheetBuilder 3→9 methods            | ✅ done     | `a7eacef` | — |
+| E.2   | ReadSheet 4→12 methods                         | ✅ done     | `a7eacef` | — |
+| E.3   | WriteSheet/Table/Workbook setters              | ✅ done     | `fe2dd6f` | — |
+| E.4   | ReadWorkbook + ReadTable + TableBuilder        | ✅ done     | `1c2b3a4` | — |
+| E.5   | 1:1 method-level tests for Phase E classes     | ✅ done     | `6bd49d9` | +44 |
 | 2     | Handler system completion                       | ⏳ pending  |        |        |
 | 3     | Comments / hyperlinks / formulas / validation  | ⏳ pending  |        |        |
 | 4     | POI handle + WriteTable overload               | ⏳ pending  |        |        |
