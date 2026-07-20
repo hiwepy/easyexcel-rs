@@ -55,6 +55,40 @@ impl WriteCellData {
         Self::new(CellValue::RichText(value))
     }
 
+    /// Creates a hyperlink cell with optional display text. (Java `WriteCellData.setHyperlinkData(...)`)
+    #[must_use]
+    pub fn from_hyperlink(url: impl Into<String>, text: impl Into<String>) -> Self {
+        Self::new(CellValue::Hyperlink {
+            url: url.into(),
+            text: text.into(),
+        })
+    }
+
+    /// Creates a formula cell. (Java `WriteCellData.setFormulaData(...)`)
+    #[must_use]
+    pub fn from_formula(formula: impl Into<String>) -> Self {
+        Self::new(CellValue::Formula(formula.into()))
+    }
+
+    /// Creates a comment-decorated cell. (Java `WriteCellData.setCommentData(...)`)
+    #[must_use]
+    pub fn from_comment(value: impl Into<CellValue>, text: impl Into<String>) -> Self {
+        Self::new(CellValue::Comment {
+            value: Box::new(value.into()),
+            text: text.into(),
+        })
+    }
+
+    /// Replaces the underlying scalar value while keeping decorations intact.
+    ///
+    /// Mirrors Java's `WriteCellData.setValue(...)` setter used by the writer
+    /// when an annotation override (formula / hyperlink) needs to wrap the
+    /// typed scalar without reallocating the cell structure.
+    pub fn set_value(&mut self, value: impl Into<CellValue>) -> &mut Self {
+        self.value = value.into();
+        self
+    }
+
     /// Appends one image entry. (Java `setImageDataList(List<ImageData>)` step)
     #[must_use]
     pub fn image(mut self, value: ImageData) -> Self {

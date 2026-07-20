@@ -2,10 +2,14 @@
 //! `Head.columnIndex` / `field` / `fieldName` / `headNameList` /
 //! `columnWidthProperty` / `headStyleProperty` / etc.
 
+use crate::cell_value::CellValue;
+use crate::comment_data::CommentData;
 use crate::excel_cell_style::ExcelCellStyle;
 use crate::excel_font_style::ExcelFontStyle;
+use crate::hyperlink_data::HyperlinkData;
 use crate::metadata::property::data_validation_property::ExcelDataValidationMeta;
 use crate::metadata::property::LoopMergeProperty;
+use crate::write_cell_data::WriteCellData;
 
 /// Static metadata for one Rust struct field and Excel column.
 ///
@@ -184,5 +188,38 @@ impl ExcelColumn {
     pub const fn with_auto_filter(mut self) -> Self {
         self.auto_filter = true;
         self
+    }
+
+    // -------- Phase 1.4: decoration helpers applied to WriteCellData --------
+
+    /// Applies this column's annotation-driven decorations (hyperlink / formula /
+    /// comment) onto a `WriteCellData`. (Java `Head.fillHeadAndWriteData` decorations)
+    ///
+    /// Order matches Java `ExcelBuilderImpl` write path:
+    /// 1. formula override wraps the scalar (`CellValue::Formula`)
+    /// 2. hyperlink wraps the display text (`CellValue::Hyperlink`)
+    /// 3. comment wraps the underlying value (`CellValue::Comment`)
+    pub fn apply_decorations(&self, mut data: WriteCellData) -> WriteCellData {
+        if let Some(formula) = self.formula {
+            data.set_value(CellValue::Formula(formula.to_owned()));
+        }
+        if let Some(url) = self.hyperlink {
+            let text = match data.value() {
+                CellValue::String(s) => s.clone(),
+                other => other.as_text(),
+            };
+            data.set_value(CellValue::Hyperlink {
+                url: url.to_owned(),
+                text,
+            });
+            // Also reflect via HyperlinkData so writer layers can access
+            // both the wrapped CellValue and the structured side-channel.
+            data = data.hyperlink_data(HyperlinkData::new().address(url.to_owned()));
+        }
+        if let Some(comment_text) = self.comment {
+            let comment = CommentData::new().text(comment_text.to_owned());
+            data = data.comment_data(comment);
+        }
+        data
     }
 }
