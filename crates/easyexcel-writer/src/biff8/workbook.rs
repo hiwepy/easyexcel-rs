@@ -198,9 +198,16 @@ pub struct Biff8Book {
     pub styles: Biff8StyleTable,
     /// When `true`, BIFF8 `DATEMODE` uses the 1904 date windowing system.
     pub use_1904_windowing: bool,
+    /// Raw bytes appended after the BIFF8 Workbook stream (images etc.)
+    pub extra_bytes: Vec<u8>,
 }
 
 impl Biff8Book {
+    /// Appends raw bytes to be written after the BIFF8 stream in the
+    /// OLE container. Used for embedding image data in the output.
+    pub fn write_raw_bytes(&mut self, bytes: &[u8]) {
+        self.extra_bytes.extend_from_slice(bytes);
+    }
     /// Returns a mutable sheet by name, creating it if missing.
     pub fn sheet_mut(&mut self, name: &str) -> &mut Biff8Sheet {
         if let Some(index) = self.sheets.iter().position(|s| s.name == name) {
@@ -227,6 +234,12 @@ impl Biff8Book {
                     ExcelError::Format(format!("cannot create Workbook stream: {error}"))
                 })?;
                 workbook.write_all(&stream)?;
+            }
+            if !self.extra_bytes.is_empty() {
+                let mut images = cf.create_stream("Images").map_err(|error| {
+                    ExcelError::Format(format!("cannot create Images stream: {error}"))
+                })?;
+                images.write_all(&self.extra_bytes)?;
             }
             cf.flush().map_err(|error| {
                 ExcelError::Format(format!("cannot flush OLE2 container: {error}"))

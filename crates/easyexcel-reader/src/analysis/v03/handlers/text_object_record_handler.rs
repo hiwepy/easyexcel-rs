@@ -36,8 +36,18 @@ impl TextObjectRecordHandler {
 pub const TEXT_OBJECT_SID: u16 = 0x01B6;
 
 impl XlsRecordHandler for TextObjectRecordHandler {
-    /// Java `TextObjectRecordHandler.processRecord` — sid gate; use [`Self::process_text`].
-    fn process_record(&mut self, record_sid: u16, _data: &[u8]) {
-        let _ = record_sid == TEXT_OBJECT_SID;
+    /// Java `TextObjectRecordHandler.processRecord` — parses TxO (0x01B6)
+    /// to extract shapeId. The actual text is in a linked Continue record
+    /// (POI TextObjectRecord + ContinueRecord).
+    fn process_record(&mut self, record_sid: u16, data: &[u8]) {
+        if record_sid != TEXT_OBJECT_SID || data.len() < 4 {
+            return;
+        }
+        // Bytes 2-3: shapeId (object_id)
+        let object_id = u16::from_le_bytes([data[2], data[3]]) as u32;
+        // Store a placeholder; actual text requires Continue record parsing
+        self.object_cache
+            .entry(object_id)
+            .or_insert_with(|| format!("TxO_{object_id}"));
     }
 }

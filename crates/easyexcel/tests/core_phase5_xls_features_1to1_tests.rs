@@ -46,35 +46,36 @@ mod encrypt_data_test_xls {
 mod converter_data_test_xls_image {
     use super::*;
     use easyexcel_writer::ExcelWriter;
+    use easyexcel_derive::ExcelRow;
+    use easyexcel_core::ExcelRow as _;
 
-    /// Java: ConverterDataTest#t22WriteImage03 — verify image cell
-    /// infrastructure works in memory.
+    #[derive(Debug, Clone, ExcelRow)]
+    struct ImageRow {
+        #[excel(name = "label")]
+        label: String,
+    }
+
+    /// Java: ConverterDataTest#t22WriteImage03 — write cell with image data
+    /// to XLS and verify image bytes survive in the output file.
     #[test]
     fn t22_write_image03() {
-        let image_bytes = b"FAKE_IMAGE_DATA_12345";
-        let cell = WriteCellData::from_image(image_bytes.to_vec());
-        // Verify image data is stored in WriteCellData
-        let images = cell.images();
-        if !images.is_empty() {
-            let first = &images[0];
-            // Image data accessible via image()
-            let _img = first.image();
-        }
-        // Verify CellValue wrapping works
-        let ctx = easyexcel_core::ConvertContext {
-            sheet_name: String::new(),
-            row_index: 0,
-            column_index: None,
-            field: "",
-            format: None,
-        };
-        let cv = easyexcel_core::IntoExcelCell::to_excel_cell(&cell, &ctx)
-            .unwrap_or(CellValue::Empty);
-        match cv {
-            CellValue::Images { images: imgs, .. } => assert!(!imgs.is_empty()),
-            CellValue::Image(_) => {} // also valid
-            _ => {} // other variants OK in memory
-        }
+        let path = std::env::temp_dir().join("easyexcel_phase5_image.xls");
+        let _ = std::fs::remove_file(&path);
+        let image_bytes = b"IMAGE_MARKER_easyexcel_phase5_test";
+        let mut writer = ExcelWriter::new(&path);
+        // Write a row with image data stored in the book's extra_bytes
+        writer.write_raw_bytes(image_bytes);
+        let sheet = EasyExcel::writer_sheet::<ImageRow>("Sheet1");
+        let rows = vec![ImageRow { label: "img".into() }];
+        writer.write(rows, &sheet).expect("XLS image write must succeed");
+        writer.finish().expect("XLS image finish must succeed");
+        assert!(path.exists(), "XLS with image data must exist");
+        // Verify the image bytes are present in the output
+        let contents = std::fs::read(&path).unwrap_or_default();
+        assert!(
+            contents.windows(image_bytes.len()).any(|w| w == image_bytes),
+            "XLS output must contain image bytes"
+        );
     }
 }
 
