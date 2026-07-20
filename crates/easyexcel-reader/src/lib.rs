@@ -26,6 +26,7 @@ mod xlsx_rows;
 pub mod analysis;
 pub mod cache;
 pub mod context;
+pub mod metadata;
 
 pub mod holder;
 pub mod builder;
