@@ -4,6 +4,7 @@
 
 use crate::excel_cell_style::ExcelCellStyle;
 use crate::excel_font_style::ExcelFontStyle;
+use crate::metadata::property::data_validation_property::ExcelDataValidationMeta;
 use crate::metadata::property::LoopMergeProperty;
 
 /// Static metadata for one Rust struct field and Excel column.
@@ -35,6 +36,25 @@ pub struct ExcelColumn {
     pub content_font_style: Option<ExcelFontStyle>,
     /// Field-level repeating content merge. (Java `@ContentLoopMerge` → `Head.loopMergeProperty`)
     pub loop_merge: Option<LoopMergeProperty>,
+
+    // Phase 1: new annotation-derived fields (Phase 1 markers in
+    // com.alibaba.excel.annotation.write.*ExcelImage / Comment / Hyperlink /
+    // Formula / DataValidation / Conditional / Filter).
+    /// Optional image path or URL for this column. (Java `@ExcelImage.image()`)
+    pub image_path: Option<&'static str>,
+    /// Optional cell comment / note. (Java `@ExcelComment.value()`)
+    pub comment: Option<&'static str>,
+    /// Optional hyperlink target. (Java `@ExcelHyperlink.value()`)
+    pub hyperlink: Option<&'static str>,
+    /// Optional formula override. (Java `@ExcelFormula.value()`)
+    pub formula: Option<&'static str>,
+    /// Optional data-validation metadata. (Java `@ExcelDataValidation`)
+    pub data_validation: Option<ExcelDataValidationMeta>,
+    /// Optional conditional-formatting tuple `(condition, font_color, bg_color)`.
+    /// (Java `@ExcelConditional`)
+    pub conditional_format: Option<(&'static str, &'static str, &'static str)>,
+    /// Whether this column participates in auto-filtering. (Java `@ExcelFilter`)
+    pub auto_filter: bool,
 }
 
 impl ExcelColumn {
@@ -60,6 +80,13 @@ impl ExcelColumn {
             head_font_style: None,
             content_font_style: None,
             loop_merge: None,
+            image_path: None,
+            comment: None,
+            hyperlink: None,
+            formula: None,
+            data_validation: None,
+            conditional_format: None,
+            auto_filter: false,
         }
     }
 
@@ -102,6 +129,60 @@ impl ExcelColumn {
     #[must_use]
     pub const fn with_loop_merge(mut self, property: LoopMergeProperty) -> Self {
         self.loop_merge = Some(property);
+        self
+    }
+
+    // Phase 1: new annotation-derived column builders
+
+    /// Adds a per-column image source. (Java `@ExcelImage`)
+    #[must_use]
+    pub const fn with_image_path(mut self, path: &'static str) -> Self {
+        self.image_path = Some(path);
+        self
+    }
+
+    /// Adds a per-column cell comment. (Java `@ExcelComment`)
+    #[must_use]
+    pub const fn with_comment(mut self, comment: &'static str) -> Self {
+        self.comment = Some(comment);
+        self
+    }
+
+    /// Adds a per-column hyperlink target. (Java `@ExcelHyperlink`)
+    #[must_use]
+    pub const fn with_hyperlink(mut self, link: &'static str) -> Self {
+        self.hyperlink = Some(link);
+        self
+    }
+
+    /// Adds a per-column formula override. (Java `@ExcelFormula`)
+    #[must_use]
+    pub const fn with_formula(mut self, formula: &'static str) -> Self {
+        self.formula = Some(formula);
+        self
+    }
+
+    /// Adds per-column data-validation metadata. (Java `@ExcelDataValidation`)
+    #[must_use]
+    pub const fn with_data_validation(mut self, meta: ExcelDataValidationMeta) -> Self {
+        self.data_validation = Some(meta);
+        self
+    }
+
+    /// Adds per-column conditional-formatting metadata. (Java `@ExcelConditional`)
+    #[must_use]
+    pub const fn with_conditional_format(
+        mut self,
+        cf: (&'static str, &'static str, &'static str),
+    ) -> Self {
+        self.conditional_format = Some(cf);
+        self
+    }
+
+    /// Marks the column as participating in auto-filter. (Java `@ExcelFilter`)
+    #[must_use]
+    pub const fn with_auto_filter(mut self) -> Self {
+        self.auto_filter = true;
         self
     }
 }

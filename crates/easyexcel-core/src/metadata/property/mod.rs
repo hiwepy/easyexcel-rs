@@ -1,6 +1,7 @@
 //! Mirrors Java `com.alibaba.excel.metadata.property.*`.
 
 pub mod column_width_property;
+pub mod data_validation_property;
 pub mod date_time_format_property;
 pub mod excel_content_property;
 pub mod excel_head_property;
@@ -13,6 +14,7 @@ pub mod row_height_property;
 pub mod style_property;
 
 pub use column_width_property::*;
+pub use data_validation_property::*;
 pub use date_time_format_property::*;
 pub use excel_content_property::*;
 pub use excel_head_property::*;
