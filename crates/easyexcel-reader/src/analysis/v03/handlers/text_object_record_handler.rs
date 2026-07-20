@@ -37,17 +37,48 @@ pub const TEXT_OBJECT_SID: u16 = 0x01B6;
 
 impl XlsRecordHandler for TextObjectRecordHandler {
     /// Java `TextObjectRecordHandler.processRecord` — parses TxO (0x01B6)
-    /// to extract shapeId. The actual text is in a linked Continue record
-    /// (POI TextObjectRecord + ContinueRecord).
+    /// to extract shapeId + linked Continue record text.
     fn process_record(&mut self, record_sid: u16, data: &[u8]) {
-        if record_sid != TEXT_OBJECT_SID || data.len() < 4 {
+        if record_sid != TEXT_OBJECT_SID && record_sid != CONTINUE_SID {
             return;
         }
-        // Bytes 2-3: shapeId (object_id)
-        let object_id = u16::from_le_bytes([data[2], data[3]]) as u32;
-        // Store a placeholder; actual text requires Continue record parsing
-        self.object_cache
-            .entry(object_id)
-            .or_insert_with(|| format!("TxO_{object_id}"));
+        if record_sid == TEXT_OBJECT_SID && data.len() >= 4 {
+            let object_id = u16::from_le_bytes([data[2], data[3]]) as u32;
+            // Extract text from TxO record data starting at byte 10
+            // (after grbit[2] + shapeId[2] + reserved[8] = 12 bytes min)
+            if data.len() > 12 {
+                let text_bytes = &data[12..];
+                // Simple byte to string (ISO-8859-1 / ASCII for BIFF8 TxO)
+                let text: String = text_bytes
+                    .iter()
+                    .take_while(|&&b| b != 0)
+                    .map(|&b| b as char)
+                    .collect();
+                if !text.is_empty() {
+                    self.object_cache.insert(object_id, text);
+                    return;
+                }
+            }
+            self.object_cache
+                .entry(object_id)
+                .or_insert_with(|| format!("TxO_{object_id}"));
+        }
+        // Handle CONTINUE record (0x003C) — text continuation
+        if record_sid == CONTINUE_SID && data.len() >= 2 {
+            let text: String = data
+                .iter()
+                .take_while(|&&b| b != 0)
+                .map(|&b| b as char)
+                .collect();
+            if !text.is_empty() && !self.object_cache.is_empty() {
+                // Attach to the most recent TxO entry
+                if let Some((_, val)) = self.object_cache.iter_mut().last() {
+                    val.push_str(&text);
+                }
+            }
+        }
     }
 }
+
+/// BIFF `Continue` record sid.
+const CONTINUE_SID: u16 = 0x003C;

@@ -1041,6 +1041,13 @@ impl ExcelWriter {
         self
     }
 
+    /// Encodes image bytes as BIFF8 Obj + MSODrawing + Escher BSE
+    /// records (POI HSSF compatible) and embeds them in the output.
+    pub fn write_image(&mut self, image_data: &[u8], col: u8, row: u32) -> &mut Self {
+        self.xls_book.write_image(image_data, col, row);
+        self
+    }
+
     /// Returns whether [`WriteOptions::template_file`] / `template_bytes` is set.
     ///
     /// Mirrors Java `WriteWorkbookHolder.getTempTemplateInputStream() != null`.

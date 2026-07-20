@@ -18,8 +18,6 @@ pub const BOUNDSHEET: u16 = 0x0085;
 pub const SST: u16 = 0x00FC;
 pub const EXTSST: u16 = 0x00FF;
 pub const LABELSST: u16 = 0x00FD;
-/// Inline Unicode string cell (BIFF8 `LABEL` 0x0204) — used by template writes
-/// that must not mutate the shared SST.
 pub const LABEL: u16 = 0x0204;
 pub const NUMBER: u16 = 0x0203;
 pub const RK: u16 = 0x027E;
@@ -28,6 +26,10 @@ pub const BLANK: u16 = 0x0201;
 pub const XF: u16 = 0x00E0;
 pub const FORMAT: u16 = 0x041E;
 pub const FONT: u16 = 0x0031;
+/// Drawing object (Java ObjRecord, POI HSSF)
+pub const OBJ: u16 = 0x005D;
+/// Microsoft Office Drawing record (Escher container)
+pub const MSODRAWING: u16 = 0x00EC;
 pub const DIMENSION: u16 = 0x0200;
 pub const DATEMODE: u16 = 0x0022;
 pub const CODEPAGE: u16 = 0x0042;

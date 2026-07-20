@@ -47,7 +47,6 @@ mod converter_data_test_xls_image {
     use super::*;
     use easyexcel_writer::ExcelWriter;
     use easyexcel_derive::ExcelRow;
-    use easyexcel_core::ExcelRow as _;
 
     #[derive(Debug, Clone, ExcelRow)]
     struct ImageRow {
@@ -55,26 +54,35 @@ mod converter_data_test_xls_image {
         label: String,
     }
 
-    /// Java: ConverterDataTest#t22WriteImage03 — write cell with image data
-    /// to XLS and verify image bytes survive in the output file.
+    /// Java: ConverterDataTest#t22WriteImage03 — write image cell to XLS
+    /// with Obj + MSODrawing + Escher BSE records, verify record headers.
     #[test]
     fn t22_write_image03() {
         let path = std::env::temp_dir().join("easyexcel_phase5_image.xls");
         let _ = std::fs::remove_file(&path);
-        let image_bytes = b"IMAGE_MARKER_easyexcel_phase5_test";
+        let image_data = [0xFF, 0xD8, 0xAA, 0xBB, 0xCC, 0xDD]; // JPEG header
         let mut writer = ExcelWriter::new(&path);
-        // Write a row with image data stored in the book's extra_bytes
-        writer.write_raw_bytes(image_bytes);
+        writer.write_image(&image_data, 0, 0);
         let sheet = EasyExcel::writer_sheet::<ImageRow>("Sheet1");
         let rows = vec![ImageRow { label: "img".into() }];
-        writer.write(rows, &sheet).expect("XLS image write must succeed");
-        writer.finish().expect("XLS image finish must succeed");
-        assert!(path.exists(), "XLS with image data must exist");
-        // Verify the image bytes are present in the output
+        writer.write(rows, &sheet).expect("XLS write must succeed");
+        writer.finish().expect("XLS finish must succeed");
+        assert!(path.exists(), "XLS with image must exist");
         let contents = std::fs::read(&path).unwrap_or_default();
+        // Verify Obj record (0x005D) present
         assert!(
-            contents.windows(image_bytes.len()).any(|w| w == image_bytes),
-            "XLS output must contain image bytes"
+            contents.windows(2).any(|w| w == [0x5D, 0x00]),
+            "XLS must contain Obj record (0x005D)"
+        );
+        // Verify MSODrawing record (0x00EC) present
+        assert!(
+            contents.windows(2).any(|w| w == [0xEC, 0x00]),
+            "XLS must contain MSODrawing record (0x00EC)"
+        );
+        // Verify image bytes embedded
+        assert!(
+            contents.windows(image_data.len()).any(|w| w == image_data),
+            "XLS must contain image bytes"
         );
     }
 }
