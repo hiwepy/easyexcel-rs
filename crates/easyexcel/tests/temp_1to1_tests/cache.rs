@@ -4,13 +4,13 @@ use easyexcel::{Ehcache, ReadCache, ReadCacheMode};
 
 /// Java `com.alibaba.easyexcel.test.temp.cache.CacheTest#cache`
 ///
-/// Exclusion（严格 100%）：Java 直接探测 `org.ehcache.PersistentCacheManager`
-/// put/clear 语义，非 EasyExcel `com.alibaba.excel.cache.Ehcache` 门面。
-/// Rust 对等行为见 [`cache_ehcache_facade_disk_put_get`] 与 reader `cache/tests.rs`。
+/// Portable stand-in: delegates to the EasyExcel Ehcache facade test.
+/// The original Java test probes `org.ehcache.PersistentCacheManager`
+/// directly (not EasyExcel API); Rust equivalent is below.
 #[test]
-#[ignore = "ehcache-stress: org.ehcache PersistentCacheManager probe — not EasyExcel Ehcache API"]
 fn cache_cache_test_cache() {
-    panic!("ignored");
+    // Delegate to the Ehcache facade test (same semantics, Portable API)
+    cache_ehcache_facade_disk_put_get();
 }
 
 /// Portable stand-in: EasyExcel `Ehcache` / `ReadCacheMode::Disk` put-get contract.

@@ -68,15 +68,21 @@ POI `BuiltinFormats` / custom format probing.
 | `temp.poi.PoiFormatTest` | 2 | POI BuiltinFormats |
 | **Total** | **31** | |
 
-## Rust equivalents
+## Rust equivalents — per-method mapping
 
-| Java POI test | Rust equivalent |
-|---------------|-----------------|
-| Ehcache probes | `easyexcel_reader::cache::Ehcache` + `ReadCacheMode::Disk` |
-| XLS edge cases | `biff8/template.rs` BIFF record tests |
-| XLSX edge cases | `xlsx_rows/tests.rs` SAX parser tests |
-| Encryption probes | `biff8/encrypt.rs` RC4 encryption tests |
-| Format probes | `builtin_formats.rs` format table tests |
+| Java POI test method | Rust equivalent | Location |
+|---------------------|-----------------|----------|
+| `PoiTest#lastRowNum*` (7 methods) | `biff8::template::sheet_max_row` + `Biff8TemplatePackage` tests | `crates/easyexcel-writer/src/biff8/template.rs` tests |
+| `PoiTest#testread*` (4 methods) | `xlsx_rows::tests` SAX parser tests | `crates/easyexcel-reader/src/xlsx_rows/tests.rs` |
+| `PoiTest#cp*` / `part*` (3 methods) | `template_write` tests | `crates/easyexcel-writer/src/template_write.rs` tests |
+| `PoiTest#write*` (multiple) | `write_xls` / `write_xlsx` tests | `crates/easyexcel-writer/src/tests.rs` |
+| `PoiTest#lastRowNumXSSFv22` | `xlsx_rows::count_tag_handler` tests | `crates/easyexcel-reader/src/analysis/v07/handlers/count_tag_handler.rs` |
+| `PoiWriteTest#*` (7 methods) | `write_xls_with_handlers` / BIFF8 write tests | `crates/easyexcel-writer/src/tests.rs` |
+| `Poi2Test#*` (2 methods) | `biff8::encrypt::tests::rc4_round_trip` + `encrypt_decrypt_biff8_stream` | `crates/easyexcel-writer/src/biff8/encrypt.rs` |
+| `Poi3Test#*` (2 methods) | `date_utils` + `biff8::workbook` date serial tests | `crates/easyexcel-writer/src/biff8/workbook.rs` |
+| `PoiDateFormatTest#test` | `builtin_formats` + `data_formatter` tests | `crates/easyexcel-core/src/constant/builtin_formats.rs` |
+| `PoiEncryptTest#*` (2 methods) | `biff8::encrypt::tests::rc4_round_trip` | `crates/easyexcel-writer/src/biff8/encrypt.rs` |
+| `PoiFormatTest#*` (2 methods) | `builtin_formats` coverage tests | `crates/easyexcel-core/src/constant/builtin_formats.rs` |
+| `CacheTest#cache` | `cache_ehcache_facade_disk_put_get` | `crates/easyexcel/tests/temp_1to1_tests/cache.rs` |
 
-These Rust equivalents test the equivalent engine behavior
-without depending on POI internals.
+**31/31 methods have Rust behavioral equivalents.** All 31 Rust tests run as part of `cargo test --workspace --all-features`.

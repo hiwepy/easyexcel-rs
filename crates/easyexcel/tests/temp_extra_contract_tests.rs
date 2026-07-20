@@ -179,9 +179,19 @@ fn temp_issue2443_date_fixtures() {
 /// Java `temp.LockTest` / `Lock2Test` — machine-local / stress paths intentionally ignored.
 ///
 /// Reason: hard-coded `/Users/zhuangjiaju/...` and `D:\\test\\...` plus ad-hoc POI
-/// format probes; no portable fixture. Prefer assertable contracts above.
+/// Replaces the original lock-stress probe with a portable contract:
+/// verify that writing and reading an XLSX file in sequence works correctly.
 #[test]
-#[ignore = "Lock* uses machine-local paths and stress/POI probes; not a portable contract"]
 fn temp_lock_stress_intentionally_skipped() {
-    panic!("should remain ignored");
+    use easyexcel_derive::ExcelRow;
+    #[derive(Debug, Clone, ExcelRow)]
+    struct LockRow { #[excel(name = "v")] v: String }
+    let path = std::env::temp_dir().join("easyexcel_lock_probe.xlsx");
+    let _ = std::fs::remove_file(&path);
+    let rows: Vec<LockRow> = (0..3).map(|i| LockRow { v: format!("r{i}") }).collect();
+    easyexcel::EasyExcel::write(&path).sheet("S").do_write(rows).unwrap();
+    assert!(path.exists());
+    let read: Vec<easyexcel_core::DynamicRow> = easyexcel::EasyExcel::read_dynamic_sync(&path)
+        .do_read_sync().unwrap_or_default();
+    assert!(!read.is_empty());
 }
