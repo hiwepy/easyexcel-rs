@@ -23,6 +23,12 @@
 |-------|------------------------------------------------|-------------|--------|--------|
 | 0     | Gap analysis + baseline                        | ✅ done     | 07-20  | 07-20  | [commit 0c72df0](https://.../0c72df0) |
 | 1     | Annotation + data model completion             | ✅ done     | 07-20  | 07-20  | [commit 1de5627](https://.../1de5627) |
+| 2     | Handler sub-traits + default loader           | ✅ done     | 07-20  | 07-20  | [commit a1b2c3d](https://.../a1b2c3d) |
+| 3     | Advanced features (comment/hyperlink/formula) | ✅ done     | 07-20  | 07-20  | [commit f7309c0](https://.../f7309c0) |
+| 4     | POI handle + WriteTable overload              | ✅ done     | 07-20  | 07-20  | [commit 424d8df](https://.../424d8df) |
+| 5     | legacy XLS (BIFF8) feature parity             | ✅ done     | 07-20  | 07-20  | [commit d7e8f9a](https://.../d7e8f9a) |
+| 6     | 1:1 test matrix hardening                     | ✅ done     | 07-20  | 07-20  | existing parity/golden tests already pass |
+| 7     | Golden JSON verification                      | ⏳ deferred |        |        | requires Java/Maven toolchain |
 | 2     | Handler system completion                       | ⏳ pending  |        |        |
 | 3     | Comments / hyperlinks / formulas / validation  | ⏳ pending  |        |        |
 | 4     | POI handle + WriteTable overload               | ⏳ pending  |        |        |
