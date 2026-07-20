@@ -36,6 +36,7 @@
 //! unsupported at higher layers.
 
 mod encode;
+pub mod encrypt;
 mod style;
 mod template;
 mod workbook;
@@ -45,6 +46,8 @@ pub use workbook::{
     datetime_to_excel_serial_with_windowing, Biff8Book, Biff8Cell, Biff8Merge, Biff8Sheet,
     Biff8Value,
 };
+
+pub use encrypt::{Biff8EncryptionInfoPlaceholder, PHASE_5_GAP};
 
 pub use encode::{XF_DATE, XF_DATETIME, XF_GENERAL};
 pub use style::{Biff8StyleRequest, Biff8StyleTable};
