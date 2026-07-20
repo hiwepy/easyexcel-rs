@@ -21,8 +21,8 @@
 
 | Phase | Title                                          | Status      | Start  | End    |
 |-------|------------------------------------------------|-------------|--------|--------|
-| 0     | Gap analysis + baseline                        | ✅ done     | 07-20  | 07-20  |
-| 1     | Annotation + data model completion             | ⏳ pending  |        |        |
+| 0     | Gap analysis + baseline                        | ✅ done     | 07-20  | 07-20  | [commit 0c72df0](https://.../0c72df0) |
+| 1     | Annotation + data model completion             | ✅ done     | 07-20  | 07-20  | [commit 1de5627](https://.../1de5627) |
 | 2     | Handler system completion                       | ⏳ pending  |        |        |
 | 3     | Comments / hyperlinks / formulas / validation  | ⏳ pending  |        |        |
 | 4     | POI handle + WriteTable overload               | ⏳ pending  |        |        |
