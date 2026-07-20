@@ -20,18 +20,36 @@ use encoding_rs_io::DecodeReaderBytesBuilder;
 mod locale;
 mod locale_generated;
 mod read_cache;
+mod xls_display;
 mod xlsx_rows;
 
 pub mod analysis;
+pub mod cache;
+pub mod context;
+pub mod metadata;
 
 pub mod holder;
 pub mod builder;
 pub mod listener;
 pub mod processor;
 
+mod excel_reader;
+mod global_configuration;
+
+pub use cache::{
+    Ehcache, EternalReadCacheSelector, MapCache, ReadCache, ReadCacheSelector,
+    SimpleReadCacheSelector, XlsCache,
+};
+pub use excel_reader::ExcelReader;
+pub use global_configuration::{
+    apply_global_configuration_to_read_options, global_configuration_from_read_options,
+};
 pub use locale::ExcelLocale;
 pub use read_cache::ReadCacheMode;
+pub use analysis::v03::XlsSaxAnalyser;
+pub use analysis::v07::XlsxSaxAnalyser;
 
+use xls_display::load_xls_displays;
 use xlsx_rows::{XlsxDisplayCellReader, XlsxRowMetadata};
 
 /// Selects a worksheet by index, name, or all sheets.
@@ -64,8 +82,26 @@ impl ScientificFormatMode {
     }
 }
 
-/// Workbook read configuration shared by XLSX, XLS, and CSV engines.
+/// Stored cache selector matching Java `ReadCacheSelector` wiring.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredReadCacheSelector {
+    /// Mirrors Java `SimpleReadCacheSelector`.
+    Simple(SimpleReadCacheSelector),
+    /// Mirrors Java `EternalReadCacheSelector`.
+    Eternal(EternalReadCacheSelector),
+}
+
+impl ReadCacheSelector for StoredReadCacheSelector {
+    fn select_mode(&self, shared_strings_xml_size: u64) -> ReadCacheMode {
+        match self {
+            Self::Simple(selector) => selector.select_mode(shared_strings_xml_size),
+            Self::Eternal(selector) => selector.select_mode(shared_strings_xml_size),
+        }
+    }
+}
+
+/// Workbook read configuration shared by XLSX, XLS, and CSV engines.
+#[derive(Debug, Clone)]
 pub struct ReadOptions {
     /// Sheet selection.
     pub sheet: SheetSelector,
@@ -108,7 +144,32 @@ pub struct ReadOptions {
     pub converters: ConverterRegistry,
     /// Shared-string cache strategy used by the XLSX SAX reader.
     pub read_cache: ReadCacheMode,
+    /// Optional Java-style cache selector overriding [`Self::read_cache`].
+    pub read_cache_selector: Option<StoredReadCacheSelector>,
 }
+
+impl PartialEq for ReadOptions {
+    fn eq(&self, other: &Self) -> bool {
+        self.sheet == other.sheet
+            && self.head_row_number == other.head_row_number
+            && self.ignore_empty_row == other.ignore_empty_row
+            && self.auto_trim == other.auto_trim
+            && self.use_1904_windowing == other.use_1904_windowing
+            && self.scientific_format == other.scientific_format
+            && self.locale == other.locale
+            && self.start_row == other.start_row
+            && self.end_row == other.end_row
+            && self.header_aliases == other.header_aliases
+            && self.read_default_return == other.read_default_return
+            && self.extra_read == other.extra_read
+            && self.password == other.password
+            && self.charset == other.charset
+            && self.read_cache == other.read_cache
+            && self.read_cache_selector == other.read_cache_selector
+    }
+}
+
+impl Eq for ReadOptions {}
 
 impl Default for ReadOptions {
     fn default() -> Self {
@@ -130,6 +191,7 @@ impl Default for ReadOptions {
             charset: CsvCharset::default(),
             converters: ConverterRegistry::default(),
             read_cache: ReadCacheMode::default(),
+            read_cache_selector: None,
         }
     }
 }
@@ -146,6 +208,43 @@ where
 {
     let source = open_xlsx_source(path, options)?;
     read_xlsx_source::<T, L>(&source, options, listener)
+}
+
+
+/// Discovers worksheet names in workbook order.
+///
+/// Mirrors Java `XlsxSaxAnalyser` constructor sheet enumeration via `XSSFReader`.
+///
+/// # Errors
+///
+/// Returns an I/O or workbook-format error.
+pub fn list_xlsx_sheets(path: &Path, options: &ReadOptions) -> Result<Vec<(usize, String)>> {
+    let source = open_xlsx_source(path, options)?;
+    let reader = source.reader()?;
+    let metadata = xlsx_rows::XlsxRowMetadata::new_with_cache(reader, options)?;
+    Ok(metadata
+        .sheet_names()
+        .into_iter()
+        .enumerate()
+        .collect())
+}
+
+/// Discovers worksheet names in workbook order.
+///
+/// Mirrors Java `XlsSaxAnalyser.sheetList()` via `XlsListSheetListener` /
+/// calamine `Reader::sheet_names`.
+///
+/// # Errors
+///
+/// Returns an I/O or workbook-format error.
+pub fn list_xls_sheets(path: &Path, options: &ReadOptions) -> Result<Vec<(usize, String)>> {
+    reject_extra_read(options, "XLS")?;
+    let workbook: Xls<_> = open_workbook(path).map_err(format_error)?;
+    Ok(workbook
+        .sheet_names()
+        .into_iter()
+        .enumerate()
+        .collect())
 }
 
 fn open_xlsx_source(path: &Path, options: &ReadOptions) -> Result<XlsxSource> {
@@ -171,7 +270,7 @@ fn read_xlsx_source_with_consumer(
     options: &ReadOptions,
     consumer: &mut dyn RowConsumer,
 ) -> Result<()> {
-    let mut row_metadata = XlsxRowMetadata::new_with_cache(source.reader()?, options.read_cache)?;
+    let mut row_metadata = XlsxRowMetadata::new_with_cache(source.reader()?, options)?;
     let names = select_sheet_names(
         row_metadata.sheet_names(),
         &options.sheet,
@@ -302,9 +401,21 @@ where
     reject_extra_read(options, "XLS")?;
     let mut workbook: Xls<_> = open_workbook(path).map_err(format_error)?;
     let sheets = select_xls_sheets(workbook.worksheets(), &options.sheet, options.auto_trim)?;
+    // Overlay BIFF FORMAT/XF display strings so STRING mode matches Java
+    // BuiltinFormats (e.g. short date id 22 → `yyyy-m-d h:mm`).
+    let displays = load_xls_displays(path, options.use_1904_windowing, &options.locale.formatter());
     for (sheet_no, sheet_name, range) in sheets {
         let mut consumer = TypedRowConsumer::<T> { listener };
-        if read_range(&range, sheet_no, &sheet_name, options, &mut consumer)? == ReadFlow::Stop {
+        let sheet_displays = displays.get(sheet_no).cloned().unwrap_or_default();
+        if read_range(
+            &range,
+            sheet_no,
+            &sheet_name,
+            options,
+            &sheet_displays,
+            &mut consumer,
+        )? == ReadFlow::Stop
+        {
             break;
         }
     }
@@ -682,6 +793,7 @@ fn read_range(
     sheet_no: usize,
     sheet_name: &str,
     options: &ReadOptions,
+    sheet_displays: &HashMap<(u32, usize), String>,
     consumer: &mut dyn RowConsumer,
 ) -> Result<ReadFlow> {
     let mut headers = Arc::new(HashMap::new());
@@ -705,7 +817,13 @@ fn read_range(
             .filter_map(|(offset, value)| {
                 (!matches!(value, Data::Empty)).then_some(start_column + offset)
             })
-            .collect();
+            .collect::<HashSet<_>>();
+        let mut display_values = HashMap::new();
+        for &column in &present_columns {
+            if let Some(display) = sheet_displays.get(&(row_index, column)) {
+                display_values.insert(column, display.clone());
+            }
+        }
         if dispatch_row(
             consumer,
             sheet_no,
@@ -714,6 +832,7 @@ fn read_range(
             cells,
             SourceRowMetadata {
                 present_columns,
+                display_values,
                 ..SourceRowMetadata::default()
             },
             options,

@@ -1,0 +1,15 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.head.NoHeadDataTest#t01ReadAndWrite07",
+	"fixture":"artifacts/no_head_data.xlsx",
+	"sheet_index":0,
+	"head_row_number":0,
+	"row_count":1,
+	"cells":{
+		"0.0":"字符串0"
+	},
+	"rows":[
+		[
+			"字符串0"
+		]
+	]
+}

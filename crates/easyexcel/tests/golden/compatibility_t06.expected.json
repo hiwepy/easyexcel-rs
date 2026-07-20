@@ -1,0 +1,17 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.compatibility.CompatibilityTest#t06",
+	"fixture":"compatibility/t06.xlsx",
+	"sheet_index":0,
+	"head_row_number":0,
+	"row_count":1,
+	"cells":{
+		"0.2":"2087.03"
+	},
+	"rows":[
+		[
+			"7.500",
+			"278.27",
+			"2087.03"
+		]
+	]
+}

@@ -5,17 +5,24 @@
 //!
 //! Format strategy:
 //! - `.xlsx`: Full write→read round-trip
-//! - `.xls`:  Read-only from Java-generated fixtures (Rust cannot write .xls)
+//! - `.xls`: Real BIFF8 write→read (or explicit Unsupported for encrypt/image/fill/template)
 //! - `.csv`:  Full write→read round-trip with CSV structure verification
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 
 use chrono::NaiveDate;
 use easyexcel::{
-    CellExtraType, DynamicRow, DynamicValue, EasyExcel, ExcelRow, LoopMergeStrategy,
-    PageReadListener, ReadDefaultReturn, ReadListener, AnalysisContext, ExcelError, ErrorAction,
+    AnalysisContext, CellExtraType, CellStyle, DynamicRow, DynamicValue, EasyExcel, ErrorAction,
+    ExcelCellStyle, ExcelColor, ExcelError, ExcelFillPattern, ExcelRow, HorizontalCellStyleStrategy,
+    LoopMergeStrategy, PageReadListener, ReadDefaultReturn, ReadListener,
+    SimpleColumnWidthStyleStrategy, SimpleRowHeightStyleStrategy, VerticalCellStyleStrategy,
+    WriteCellData,
 };
 use tempfile::tempdir;
+use zip::ZipArchive;
 
 // ============================================================================
 // Helpers
@@ -58,6 +65,75 @@ fn read_dynamic_actual_no_head(path: &std::path::Path) -> Vec<DynamicRow> {
         .unwrap()
 }
 
+
+fn assert_xls_readable(path: &std::path::Path) {
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
+    let rows = EasyExcel::read_dynamic_sync(path)
+        .sheet(0usize)
+        .head_row_number(0)
+        .do_read_sync()
+        .unwrap();
+    assert!(
+        !rows.is_empty(),
+        "Java .xls fixture must be readable: {}",
+        path.display()
+    );
+}
+
+/// Reads a ZIP entry from an XLSX workbook as UTF-8 text.
+fn is_xls_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xls"))
+}
+
+fn assert_real_biff8(path: &Path) {
+    let bytes = std::fs::read(path).expect("read written workbook");
+    assert!(
+        bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]),
+        "expected real BIFF8/OLE compound document: {}",
+        path.display()
+    );
+}
+
+fn zip_entry(path: &Path, name: &str) -> String {
+    let file = File::open(path).expect("open xlsx");
+    let mut archive = ZipArchive::new(file).expect("open zip");
+    let mut entry = archive.by_name(name).expect("zip entry");
+    let mut value = String::new();
+    entry.read_to_string(&mut value).expect("read zip entry");
+    value
+}
+
+/// Parses `width` from `<col min="{one_based}" ... width="N"/>`.
+fn sheet_column_width(sheet_xml: &str, one_based_column: u16) -> f64 {
+    let marker = format!("<col min=\"{one_based_column}\"");
+    let (_, column) = sheet_xml
+        .split_once(&marker)
+        .unwrap_or_else(|| panic!("missing column {one_based_column}"));
+    let (_, width) = column
+        .split_once("width=\"")
+        .expect("missing column width");
+    let (width, _) = width.split_once('"').expect("unterminated column width");
+    width.parse().expect("column width f64")
+}
+
+/// Parses `ht` from `<row r="{one_based}" ... ht="N"/>`.
+fn sheet_row_height(sheet_xml: &str, one_based_row: u32) -> f64 {
+    let marker = format!("<row r=\"{one_based_row}\"");
+    let (_, row) = sheet_xml
+        .split_once(&marker)
+        .unwrap_or_else(|| panic!("missing row {one_based_row}"));
+    let (row, _) = row.split_once('>').expect("unterminated row");
+    let (_, height) = row.split_once("ht=\"").expect("missing row height");
+    let (height, _) = height.split_once('"').expect("unterminated row height");
+    height.parse().expect("row height f64")
+}
+
 // ============================================================================
 // SimpleDataTest (11 tests)
 // Java: com.alibaba.easyexcel.test.core.simple.SimpleDataTest
@@ -97,8 +173,8 @@ fn simple_t01_read_and_write_xlsx() {
 
 #[test]
 fn simple_t02_read_and_write_xls() {
-    // Rust cannot write .xls; test with .xlsx
-    assert_simple_read_and_write(&temp_path("simple03.xlsx"));
+    // Java t02ReadAndWrite03 writes/reads .xls.
+    assert_simple_read_and_write(&temp_path("simple03.xls"));
 }
 
 #[test]
@@ -126,7 +202,7 @@ fn simple_t04_read_and_write_stream_xlsx() {
 
 #[test]
 fn simple_t05_read_and_write_stream_xls() {
-    assert_simple_read_and_write_stream(&temp_path("simple03_stream.xlsx"));
+    assert_simple_read_and_write_stream(&temp_path("simple03_stream.xls"));
 }
 
 #[test]
@@ -154,7 +230,7 @@ fn simple_t11_synchronous_read_xlsx() {
 
 #[test]
 fn simple_t12_synchronous_read_xls() {
-    assert_simple_synchronous_read(&temp_path("simple03_sync.xlsx"));
+    assert_simple_synchronous_read(&temp_path("simple03_sync.xls"));
 }
 
 #[test]
@@ -262,7 +338,7 @@ fn sort_t01_read_and_write_xlsx() {
 
 #[test]
 fn sort_t02_read_and_write_xls() {
-    assert_sort_read_and_write(&temp_path("sort03.xlsx"));
+    assert_sort_read_and_write(&temp_path("sort03.xls"));
 }
 
 #[test]
@@ -317,7 +393,7 @@ fn sort_t11_no_head_xlsx() {
 
 #[test]
 fn sort_t12_no_head_xls() {
-    assert_sort_no_head(&temp_path("sortNoHead03.xlsx"));
+    assert_sort_no_head(&temp_path("sortNoHead03.xls"));
 }
 
 #[test]
@@ -390,7 +466,7 @@ fn exception_t01_read_and_write_xlsx() {
 
 #[test]
 fn exception_t02_read_and_write_xls() {
-    assert_exception_read_and_write(&temp_path("exception03.xlsx"));
+    assert_exception_read_and_write(&temp_path("exception03.xls"));
 }
 
 #[test]
@@ -428,7 +504,7 @@ fn exception_t11_throw_xlsx() {
 
 #[test]
 fn exception_t12_throw_xls() {
-    assert_exception_throw(&temp_path("exceptionThrow03.xlsx"));
+    assert_exception_throw(&temp_path("exceptionThrow03.xls"));
 }
 
 /// Java: write 5 sheets → readAll → assert each sheet has 5 rows with correct prefix
@@ -464,7 +540,7 @@ fn exception_t21_stop_sheet_xlsx() {
 
 #[test]
 fn exception_t22_stop_sheet_xls() {
-    assert_stop_sheet_exception(&temp_path("stopSheet03.xlsx"));
+    assert_stop_sheet_exception(&temp_path("stopSheet03.xls"));
 }
 
 // ============================================================================
@@ -506,8 +582,18 @@ fn encrypt_t01_read_and_write_xlsx() {
 
 #[test]
 fn encrypt_t02_read_and_write_xls() {
-    // .xls encryption not supported in Rust
-    assert_encrypt_read_and_write(&temp_path("encrypt03.xlsx"));
+    // Java encrypts .xls. Password protection for legacy XLS is Unsupported (visible).
+    let path = temp_path("encrypt03.xls");
+    let err = EasyExcel::write::<EncryptData>(&path)
+        .password("123456")
+        .sheet("Sheet1")
+        .do_write(encrypt_data())
+        .expect_err("legacy XLS password protection must fail explicitly");
+    assert!(
+        err.to_string().contains("password protection is not supported for legacy XLS")
+            || matches!(err, ExcelError::Unsupported(_)),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -517,7 +603,18 @@ fn encrypt_t03_stream_xlsx() {
 
 #[test]
 fn encrypt_t04_stream_xls() {
-    assert_encrypt_read_and_write(&temp_path("encrypt03_stream.xlsx"));
+    // Java stream-encrypts .xls. Password protection for legacy XLS is Unsupported.
+    let path = temp_path("encrypt03_stream.xls");
+    let err = EasyExcel::write::<EncryptData>(&path)
+        .password("123456")
+        .sheet("Sheet1")
+        .do_write(encrypt_data())
+        .expect_err("legacy XLS password protection must fail explicitly");
+    assert!(
+        err.to_string().contains("password protection is not supported for legacy XLS")
+            || matches!(err, ExcelError::Unsupported(_)),
+        "unexpected error: {err}"
+    );
 }
 
 // ============================================================================
@@ -631,7 +728,7 @@ fn converter_t01_read_and_write_xlsx() {
 
 #[test]
 fn converter_t02_read_and_write_xls() {
-    assert_converter_round_trip(&temp_path("converter03.xlsx"));
+    assert_converter_round_trip(&temp_path("converter03.xls"));
 }
 
 #[test]
@@ -647,7 +744,7 @@ fn converter_t11_read_all_converter_xlsx() {
 
 #[test]
 fn converter_t12_read_all_converter_xls() {
-    assert_converter_round_trip(&temp_path("converter03_all.xlsx"));
+    assert_converter_round_trip(&temp_path("converter03_all.xls"));
 }
 
 #[test]
@@ -677,7 +774,25 @@ fn converter_t21_write_image_xlsx() {
 
 #[test]
 fn converter_t22_write_image_xls() {
-    converter_t21_write_image_xlsx(); // Same logic
+    // Java writes images into .xls. BIFF8 image records remain Unsupported (visible).
+    let path = temp_path("converterImage03.xls");
+    #[derive(Debug, Clone, ExcelRow)]
+    struct ImageRow {
+        #[excel(name = "file", index = 0)]
+        file: WriteCellData,
+    }
+    let row = ImageRow {
+        file: WriteCellData::from_image(vec![0xFF, 0xD8, 0xFF, 0xD9]),
+    };
+    let err = EasyExcel::write::<ImageRow>(&path)
+        .sheet("Sheet1")
+        .do_write(vec![row])
+        .expect_err("legacy XLS image writing must fail explicitly");
+    assert!(
+        err.to_string().contains("does not support images")
+            || matches!(err, ExcelError::Unsupported(_)),
+        "unexpected error: {err}"
+    );
 }
 
 // ============================================================================
@@ -688,9 +803,7 @@ fn converter_t22_write_image_xls() {
 #[test]
 fn dateformat_t01_read_xlsx() {
     let path = fixture("dataformat/dataformat.xlsx");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = read_dynamic_string(&path);
     assert!(!rows.is_empty(), "dataformat.xlsx should have data");
 }
@@ -698,9 +811,7 @@ fn dateformat_t01_read_xlsx() {
 #[test]
 fn dateformat_t02_read_xls() {
     let path = fixture("xls/dataformat.xls");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = read_dynamic_string(&path);
     assert!(!rows.is_empty());
 }
@@ -709,9 +820,7 @@ fn dateformat_t02_read_xls() {
 fn dateformat_t03_read() {
     // Generic date format read test
     let path = fixture("dataformat/dataformat.xlsx");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = read_dynamic_actual(&path);
     assert!(!rows.is_empty());
 }
@@ -760,7 +869,7 @@ fn celldata_t01_read_and_write_xlsx() {
 
 #[test]
 fn celldata_t02_read_and_write_xls() {
-    assert_cell_data_round_trip(&temp_path("celldata03.xlsx"));
+    assert_cell_data_round_trip(&temp_path("celldata03.xls"));
 }
 
 #[test]
@@ -815,7 +924,7 @@ fn nomodel_t01_read_and_write_xlsx() {
 
 #[test]
 fn nomodel_t02_read_and_write_xls() {
-    assert_no_model(&temp_path("noModel03.xlsx"));
+    assert_no_model(&temp_path("noModel03.xls"));
 }
 
 #[test]
@@ -892,7 +1001,7 @@ fn skip_t01_read_and_write_xlsx() {
 
 #[test]
 fn skip_t02_read_and_write_xls() {
-    assert_skip(&temp_path("skip03.xlsx"));
+    assert_skip(&temp_path("skip03.xls"));
 }
 
 /// Java: CSV does not support multiple sheets → ExcelGenerateException
@@ -928,9 +1037,7 @@ fn skip_t03_read_and_write_csv() {
 #[test]
 fn large_t01_read_xlsx() {
     let path = fixture("large/large07.xlsx");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = read_dynamic_string(&path);
     assert!(!rows.is_empty(), "large07.xlsx should have data");
 }
@@ -939,9 +1046,7 @@ fn large_t01_read_xlsx() {
 fn large_t02_fill_xlsx() {
     // Template fill test
     let path = fixture("fill/simple.xlsx");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     // Verify template exists and is readable
     let bytes = std::fs::read(&path).unwrap();
     assert!(bytes.starts_with(b"PK"), "should be valid XLSX");
@@ -987,75 +1092,181 @@ fn large_t04_write_xlsx() {
 // Java: com.alibaba.easyexcel.test.core.template.TemplateDataTest
 // ============================================================================
 
+#[derive(Debug, Clone, ExcelRow)]
+struct TemplateWriteRow {
+    #[excel(name = "字符串0", index = 0)]
+    string0: String,
+    #[excel(name = "字符串1", index = 1)]
+    string1: String,
+}
+
+fn template_write_rows() -> Vec<TemplateWriteRow> {
+    vec![
+        TemplateWriteRow {
+            string0: "字符串0".to_owned(),
+            string1: "字符串01".to_owned(),
+        },
+        TemplateWriteRow {
+            string0: "字符串1".to_owned(),
+            string1: "字符串11".to_owned(),
+        },
+    ]
+}
+
+/// Java `TemplateDataTest#t01ReadAndWrite07`: `withTemplate(...).sheet().doWrite(data)`.
 #[test]
 fn template_t01_read_and_write_xlsx() {
-    let path = fixture("fill/simple.xlsx");
-    if !path.exists() {
-        return;
-    }
-    let bytes = std::fs::read(&path).unwrap();
-    assert!(bytes.starts_with(b"PK"), "template should be valid XLSX");
+    let template = fixture("template/template07.xlsx");
+    assert!(
+        template.exists(),
+        "required Java fixture missing: {}",
+        template.display()
+    );
+    let path = temp_path("template07_parity.xlsx");
+    EasyExcel::write::<TemplateWriteRow>(&path)
+        .with_template(&template)
+        .sheet("Sheet1")
+        .do_write(template_write_rows())
+        .unwrap();
+    let rows = EasyExcel::read_sync::<TemplateWriteRow>(&path)
+        .head_row_number(3)
+        .do_read_sync()
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].string0, "字符串0");
+    assert_eq!(rows[0].string1, "字符串01");
+    assert_eq!(rows[1].string0, "字符串1");
+    assert_eq!(rows[1].string1, "字符串11");
+
+    // Java `withTemplate(InputStream)` equivalent.
+    let bytes = std::fs::read(&template).unwrap();
+    let from_bytes = temp_path("template07_bytes.xlsx");
+    EasyExcel::write::<TemplateWriteRow>(&from_bytes)
+        .with_template_bytes(bytes)
+        .sheet("Sheet1")
+        .do_write(template_write_rows())
+        .unwrap();
+    let rows = EasyExcel::read_sync::<TemplateWriteRow>(&from_bytes)
+        .head_row_number(3)
+        .do_read_sync()
+        .unwrap();
+    assert_eq!(rows.len(), 2);
 }
 
+/// Java `TemplateDataTest#t02ReadAndWrite03`: `withTemplate(.xls).sheet().doWrite(data)`.
 #[test]
 fn template_t02_read_and_write_xls() {
-    let path = fixture("xls/fill/simple.xls");
-    if !path.exists() {
-        return;
-    }
-    let bytes = std::fs::read(&path).unwrap();
-    assert!(!bytes.is_empty());
+    let xls = fixture("template/template03.xls");
+    assert_xls_readable(&xls);
+    let path = temp_path("template03_parity.xls");
+    EasyExcel::write::<TemplateWriteRow>(&path)
+        .with_template(&xls)
+        .sheet("Sheet1")
+        .do_write(template_write_rows())
+        .unwrap();
+    assert_real_biff8(&path);
+    let rows = EasyExcel::read_sync::<TemplateWriteRow>(&path)
+        .head_row_number(3)
+        .do_read_sync()
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].string0, "字符串0");
+    assert_eq!(rows[0].string1, "字符串01");
+    assert_eq!(rows[1].string0, "字符串1");
+    assert_eq!(rows[1].string1, "字符串11");
 }
 
-// ============================================================================
 // StyleDataTest (5 tests)
 // Java: com.alibaba.easyexcel.test.core.style.StyleDataTest
 // ============================================================================
 
 #[derive(Debug, Clone, ExcelRow)]
 struct StyleData {
-    #[excel(name = "string", index = 0)]
+    #[excel(name = "字符串", index = 0)]
     string: String,
-    #[excel(name = "number", index = 1)]
-    number: f64,
+    #[excel(name = "字符串1", index = 1)]
+    string1: String,
 }
 
 fn style_data() -> Vec<StyleData> {
     vec![
         StyleData {
-            string: "style1".to_owned(),
-            number: 1.0,
+            string: "字符串0".to_owned(),
+            string1: "字符串01".to_owned(),
         },
         StyleData {
-            string: "style2".to_owned(),
-            number: 2.0,
+            string: "字符串1".to_owned(),
+            string1: "字符串11".to_owned(),
         },
     ]
 }
 
+fn style_data10() -> Vec<StyleData> {
+    (0..10)
+        .map(|_| StyleData {
+            string: "字符串0".to_owned(),
+            string1: "字符串01".to_owned(),
+        })
+        .collect()
+}
+
+/// Java `t01ReadAndWrite07` — styles/widths/heights applied **only** via
+/// registered strategies (no `WriteOptions` style/width, no `#[excel]` style).
 #[test]
 fn style_t01_read_and_write_xlsx() {
     let path = temp_path("style07.xlsx");
+    let mut head = ExcelCellStyle::new();
+    head.fill_pattern = Some(ExcelFillPattern::Solid);
+    head.fill_foreground_color = Some(ExcelColor::Rgb(0x00FF_FF00));
+    let mut content = ExcelCellStyle::new();
+    content.fill_pattern = Some(ExcelFillPattern::Solid);
+    content.fill_foreground_color = Some(ExcelColor::Rgb(0x0000_8080));
+
     EasyExcel::write::<StyleData>(&path)
+        .register_write_handler(SimpleColumnWidthStyleStrategy::uniform(50))
+        .register_write_handler(SimpleRowHeightStyleStrategy::new(Some(40), Some(50)))
+        .register_write_handler(HorizontalCellStyleStrategy::with_head_and_content(
+            head, content,
+        ))
         .sheet("Sheet1")
         .do_write(style_data())
         .unwrap();
+
     let rows = EasyExcel::read_sync::<StyleData>(&path)
         .do_read_sync()
         .unwrap();
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].string, "style1");
-    assert_eq!(rows[1].string, "style2");
+    assert_eq!(rows[0].string, "字符串0");
+    assert_eq!(rows[1].string1, "字符串11");
+
+    let sheet = zip_entry(&path, "xl/worksheets/sheet1.xml");
+    // rust_xlsxwriter stores Excel's padded character width (~50.71 for request 50).
+    let col_width = sheet_column_width(&sheet, 1);
+    assert!(
+        (col_width - 50.0).abs() < 1.0,
+        "expected ~50 character width, got {col_width}"
+    );
+    assert!((sheet_row_height(&sheet, 1) - 40.0).abs() < 0.5);
+    assert!((sheet_row_height(&sheet, 2) - 50.0).abs() < 0.5);
+
+    let styles = zip_entry(&path, "xl/styles.xml");
+    assert!(
+        styles.contains("rgb=\"FFFFFF00\"") || styles.contains("theme="),
+        "expected yellow head fill in styles.xml"
+    );
+    assert!(
+        styles.contains("rgb=\"FF008080\"")
+            || styles.contains("rgb=\"00008080\"")
+            || styles.contains("theme="),
+        "expected teal content fill in styles.xml: {}",
+        &styles[..styles.len().min(500)]
+    );
 }
 
 #[test]
 fn style_t02_read_and_write_xls() {
-    style_t01_read_and_write_xlsx();
-}
-
-#[test]
-fn style_t03_abstract_vertical_cell_style_strategy() {
-    let path = temp_path("style07_vertical.xlsx");
+    // Java style write to .xls — real BIFF8 data round-trip (style XF not asserted).
+    let path = temp_path("style03.xls");
     EasyExcel::write::<StyleData>(&path)
         .sheet("Sheet1")
         .do_write(style_data())
@@ -1064,6 +1275,50 @@ fn style_t03_abstract_vertical_cell_style_strategy() {
         .do_read_sync()
         .unwrap();
     assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].string, "字符串0");
+    assert_eq!(rows[1].string1, "字符串11");
+    assert_real_biff8(&path);
+}
+
+/// Java `t03AbstractVerticalCellStyleStrategy` — column-differentiated styles
+/// via [`VerticalCellStyleStrategy`] only (no field-level style annotations).
+#[test]
+fn style_t03_abstract_vertical_cell_style_strategy() {
+    let path = temp_path("verticalCellStyle.xlsx");
+    let strategy = VerticalCellStyleStrategy::new(
+        |column| {
+            let mut style = ExcelCellStyle::new();
+            style.fill_pattern = Some(ExcelFillPattern::Solid);
+            style.fill_foreground_color = Some(if column == 0 {
+                ExcelColor::Indexed(13) // YELLOW
+            } else {
+                ExcelColor::Indexed(12) // BLUE
+            });
+            style
+        },
+        |column| {
+            let mut style = ExcelCellStyle::new();
+            style.fill_pattern = Some(ExcelFillPattern::Solid);
+            style.fill_foreground_color = Some(if column == 0 {
+                ExcelColor::Indexed(58) // DARK_GREEN
+            } else {
+                ExcelColor::Indexed(14) // PINK / MAGENTA
+            });
+            style
+        },
+    );
+    EasyExcel::write::<StyleData>(&path)
+        .register_write_handler(strategy)
+        .sheet("Sheet1")
+        .do_write(style_data())
+        .unwrap();
+
+    let styles = zip_entry(&path, "xl/styles.xml");
+    // Indexed 13/12/58/14 → RGB yellow / blue / dark-green / magenta
+    assert!(styles.contains("rgb=\"FFFFFF00\""));
+    assert!(styles.contains("rgb=\"FF0000FF\""));
+    assert!(styles.contains("rgb=\"FF003300\""));
+    assert!(styles.contains("rgb=\"FFFF00FF\""));
 }
 
 #[test]
@@ -1073,16 +1328,22 @@ fn style_t04_abstract_vertical_cell_style_strategy_02() {
 
 #[test]
 fn style_t05_loop_merge_strategy() {
-    let path = temp_path("style07_loop_merge.xlsx");
+    let path = temp_path("loopMergeStrategy.xlsx");
     EasyExcel::write::<StyleData>(&path)
         .loop_merge(LoopMergeStrategy::new(2, 1, 0).unwrap())
         .sheet("Sheet1")
-        .do_write(style_data())
+        .do_write(style_data10())
         .unwrap();
     let rows = EasyExcel::read_sync::<StyleData>(&path)
         .do_read_sync()
         .unwrap();
-    assert_eq!(rows.len(), 2);
+    assert_eq!(rows.len(), 10);
+
+    let sheet = zip_entry(&path, "xl/worksheets/sheet1.xml");
+    assert!(
+        sheet.contains("mergeCell") || sheet.contains("mergeCells"),
+        "LoopMergeStrategy must emit merge regions"
+    );
 }
 
 // ============================================================================
@@ -1133,27 +1394,55 @@ fn parameter_t02_read_and_write_csv() {
 // ============================================================================
 
 #[derive(Debug, Clone, ExcelRow)]
+#[excel(column_width = 50, head_row_height = 50, content_row_height = 100)]
 struct AnnotationData {
-    #[excel(name = "姓名", index = 0)]
-    name: String,
-    #[excel(name = "年龄", index = 1)]
-    age: u32,
+    #[excel(name = "日期", index = 0)]
+    date: String,
+    #[excel(name = "数字", index = 1)]
+    number: f64,
+    #[excel(ignore)]
+    ignore: String,
 }
 
 fn annotation_data() -> Vec<AnnotationData> {
-    vec![
-        AnnotationData {
-            name: "张三".to_owned(),
-            age: 20,
-        },
-        AnnotationData {
-            name: "李四".to_owned(),
-            age: 25,
-        },
-    ]
+    vec![AnnotationData {
+        date: "2020-01-01 01:01:01".to_owned(),
+        number: 99.99,
+        ignore: "忽略".to_owned(),
+    }]
 }
 
-fn assert_annotation_read_and_write(path: &std::path::Path) {
+/// Java `AnnotationStyleData` — type + field Head/Content style + font.
+#[derive(Debug, Clone, ExcelRow)]
+#[excel(
+    head_style(fill_pattern = "solid", fill_foreground_color = 10),
+    head_font_style(font_height_in_points = 20, color = 15),
+    content_style(fill_pattern = "solid", fill_foreground_color = 17),
+    content_font_style(font_height_in_points = 30, color = 22)
+)]
+struct AnnotationStyleData {
+    #[excel(
+        name = "字符串",
+        index = 0,
+        head_style(fill_pattern = "solid", fill_foreground_color = 14),
+        head_font_style(font_height_in_points = 40, color = 51),
+        content_style(fill_pattern = "solid", fill_foreground_color = 40),
+        content_font_style(font_height_in_points = 50, color = 12)
+    )]
+    string: String,
+    #[excel(name = "字符串1", index = 1)]
+    string1: String,
+}
+
+fn annotation_style_data() -> Vec<AnnotationStyleData> {
+    vec![AnnotationStyleData {
+        string: "string".to_owned(),
+        string1: "string1".to_owned(),
+    }]
+}
+
+/// Java `t01ReadAndWrite07` — `@ColumnWidth(50)` / `@HeadRowHeight(50)` / `@ContentRowHeight(100)`.
+fn assert_annotation_dimensions(path: &Path) {
     EasyExcel::write::<AnnotationData>(path)
         .sheet("Sheet1")
         .do_write(annotation_data())
@@ -1161,42 +1450,101 @@ fn assert_annotation_read_and_write(path: &std::path::Path) {
     let rows = EasyExcel::read_sync::<AnnotationData>(path)
         .do_read_sync()
         .unwrap();
-    assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].name, "张三");
-    assert_eq!(rows[0].age, 20);
-    assert_eq!(rows[1].name, "李四");
-    assert_eq!(rows[1].age, 25);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].date, "2020-01-01 01:01:01");
+    assert!((rows[0].number - 99.99).abs() < f64::EPSILON);
+    // `#[excel(ignore)]` fields are not written/read; Default on sync read.
+    assert!(rows[0].ignore.is_empty());
+
+    if path.extension().and_then(|ext| ext.to_str()) == Some("csv") {
+        return;
+    }
+    if is_xls_path(path) {
+        assert_real_biff8(path);
+        return;
+    }
+
+    let meta = AnnotationData::write_metadata();
+    assert_eq!(meta.column_width, Some(50));
+    assert_eq!(meta.head_row_height, Some(50));
+    assert_eq!(meta.content_row_height, Some(100));
+
+    let sheet = zip_entry(path, "xl/worksheets/sheet1.xml");
+    let col_width = sheet_column_width(&sheet, 1);
+    assert!(
+        (col_width - 50.0).abs() < 1.0,
+        "expected ~50 character width, got {col_width}"
+    );
+    assert!((sheet_row_height(&sheet, 1) - 50.0).abs() < 0.5);
+    assert!((sheet_row_height(&sheet, 2) - 100.0).abs() < 0.5);
 }
 
 #[test]
 fn annotation_t01_read_and_write_xlsx() {
-    assert_annotation_read_and_write(&temp_path("annotation07.xlsx"));
+    assert_annotation_dimensions(&temp_path("annotation07.xlsx"));
 }
 
 #[test]
 fn annotation_t02_read_and_write_xls() {
-    assert_annotation_read_and_write(&temp_path("annotation03.xlsx"));
+    assert_annotation_dimensions(&temp_path("annotation03.xls"));
 }
 
 #[test]
 fn annotation_t03_read_and_write_csv() {
-    assert_annotation_read_and_write(&temp_path("annotation.csv"));
+    assert_annotation_dimensions(&temp_path("annotation.csv"));
 }
 
+/// Java `t11WriteStyle07` — field overrides type Head/Content style + font sizes.
 #[test]
 fn annotation_t11_write_style_xlsx() {
-    let path = temp_path("annotation07_style.xlsx");
-    EasyExcel::write::<AnnotationData>(&path)
+    let path = temp_path("annotationStyle07.xlsx");
+    EasyExcel::write::<AnnotationStyleData>(&path)
         .sheet("Sheet1")
-        .do_write(annotation_data())
+        .do_write(annotation_style_data())
         .unwrap();
-    let bytes = std::fs::read(&path).unwrap();
-    assert!(bytes.starts_with(b"PK"));
+
+    let meta = AnnotationStyleData::write_metadata();
+    assert!(meta.head_style.is_some());
+    assert!(meta.content_style.is_some());
+    assert!(meta.head_font_style.is_some());
+    assert!(meta.content_font_style.is_some());
+    assert!(AnnotationStyleData::schema()[0].head_style.is_some());
+    assert!(AnnotationStyleData::schema()[0].content_font_style.is_some());
+
+    let styles = zip_entry(&path, "xl/styles.xml");
+    // Indexed palette colors used by AnnotationStyleData
+    for expected in [
+        "rgb=\"FFFF00FF\"", // 14 magenta (field head fill)
+        "rgb=\"FFFFCC00\"", // 51
+        "rgb=\"FF00CCFF\"", // 40
+        "rgb=\"FF0000FF\"", // 12
+        "rgb=\"FFFF0000\"", // 10 type head fill
+        "rgb=\"FF00FFFF\"", // 15
+        "rgb=\"FF008000\"", // 17
+        "rgb=\"FFC0C0C0\"", // 22
+    ] {
+        assert!(
+            styles.contains(expected),
+            "styles.xml missing {expected}"
+        );
+    }
+    for size in [20, 30, 40, 50] {
+        assert!(
+            styles.contains(&format!("<sz val=\"{size}\"/>")),
+            "styles.xml missing font size {size}"
+        );
+    }
 }
 
 #[test]
 fn annotation_t12_write_xls() {
-    annotation_t11_write_style_xlsx();
+    // Java annotation style write to .xls — real BIFF8 write (style XF not asserted).
+    let path = temp_path("annotationStyle03.xls");
+    EasyExcel::write::<AnnotationStyleData>(&path)
+        .sheet("Sheet1")
+        .do_write(annotation_style_data())
+        .unwrap();
+    assert_real_biff8(&path);
 }
 
 // ============================================================================
@@ -1436,7 +1784,7 @@ fn handler_t01_workbook_write_xlsx() {
 
 #[test]
 fn handler_t02_workbook_write_xls() {
-    assert_write_handler_workbook(&temp_path("handler03.xlsx"));
+    assert_write_handler_workbook(&temp_path("handler03.xls"));
 }
 
 #[test]
@@ -1451,7 +1799,7 @@ fn handler_t11_sheet_write_xlsx() {
 
 #[test]
 fn handler_t12_sheet_write_xls() {
-    assert_write_handler_sheet(&temp_path("handler03_sheet.xlsx"));
+    assert_write_handler_sheet(&temp_path("handler03_sheet.xls"));
 }
 
 #[test]
@@ -1466,7 +1814,7 @@ fn handler_t21_table_write_xlsx() {
 
 #[test]
 fn handler_t22_table_write_xls() {
-    assert_write_handler_sheet(&temp_path("handler03_table.xlsx"));
+    assert_write_handler_sheet(&temp_path("handler03_table.xls"));
 }
 
 #[test]
@@ -1495,9 +1843,7 @@ use easyexcel::{FillConfig, FillWrapper, TemplateData};
 #[test]
 fn fill_t01_fill_xlsx() {
     let template = fixture("fill/simple.xlsx");
-    if !template.exists() {
-        return;
-    }
+    assert!(template.exists(), "required Java fixture missing: {}", template.display());
     let output = temp_path("fill_simple07.xlsx");
     let data = TemplateData::new()
         .with("name", "张三")
@@ -1528,21 +1874,23 @@ fn fill_t01_fill_xlsx() {
     assert!(found_number, "filled template should contain number 5.2");
 }
 
-/// Java t02: fill simple.xls template
-/// Rust cannot write .xls; test with .xlsx template
+/// Java t02: fill simple.xls template.
 #[test]
 fn fill_t02_fill_xls() {
-    let template = fixture("fill/simple.xlsx");
-    if !template.exists() {
-        return;
-    }
-    let output = temp_path("fill_simple03.xlsx");
+    // Java fills xls/fill/simple.xls. Legacy XLS template fill is Unsupported (visible).
+    let xls = fixture("xls/fill/simple.xls");
+    assert_xls_readable(&xls);
+    let output = temp_path("fill_t02_fill_xls.xls");
     let data = TemplateData::new()
         .with("name", "张三")
         .with("number", 5.2);
-    EasyExcel::fill_template(&template, &output, &data).unwrap();
-    let bytes = std::fs::read(&output).unwrap();
-    assert!(bytes.starts_with(b"PK"));
+    let err = EasyExcel::fill_template(&xls, &output, &data)
+        .expect_err("legacy XLS template fill must fail explicitly");
+    assert!(
+        err.to_string().contains("legacy XLS template fill is not supported")
+            || matches!(err, ExcelError::Unsupported(_)),
+        "unexpected error: {err}"
+    );
 }
 
 /// Java t03: CSV fill → assertThrows ExcelGenerateException("csv cannot use template.")
@@ -1574,9 +1922,7 @@ fn fill_t03_fill_csv() {
 #[test]
 fn fill_t03_complex_fill_xlsx() {
     let template = fixture("fill/complex.xlsx");
-    if !template.exists() {
-        return;
-    }
+    assert!(template.exists(), "required Java fixture missing: {}", template.display());
     let output = temp_path("fill_complex07.xlsx");
     // complex.xlsx placeholders: {date}, {.name}, {.number}, {total}
     // Use fill_template_list for collection fill
@@ -1602,20 +1948,23 @@ fn fill_t03_complex_fill_xlsx() {
     assert!(found_name, "complex fill should contain 张三");
 }
 
-/// Java t04: complex fill .xls → same as t03 with .xls template
+/// Java t04: complex fill .xls → same as t03 with .xls template.
 #[test]
 fn fill_t04_complex_fill_xls() {
-    let template = fixture("fill/complex.xlsx");
-    if !template.exists() {
-        return;
-    }
-    let output = temp_path("fill_complex03.xlsx");
+    // Java fills xls/fill/complex.xls. Legacy XLS template fill is Unsupported (visible).
+    let xls = fixture("xls/fill/complex.xls");
+    assert_xls_readable(&xls);
+    let output = temp_path("fill_t04_complex_fill_xls.xls");
     let data = TemplateData::new()
         .with("name", "张三")
         .with("number", 5.2);
-    EasyExcel::fill_template(&template, &output, &data).unwrap();
-    let bytes = std::fs::read(&output).unwrap();
-    assert!(bytes.starts_with(b"PK"));
+    let err = EasyExcel::fill_template(&xls, &output, &data)
+        .expect_err("legacy XLS template fill must fail explicitly");
+    assert!(
+        err.to_string().contains("legacy XLS template fill is not supported")
+            || matches!(err, ExcelError::Unsupported(_)),
+        "unexpected error: {err}"
+    );
 }
 
 /// Java t05: horizontal fill
@@ -1624,9 +1973,7 @@ fn fill_t04_complex_fill_xls() {
 #[test]
 fn fill_t05_horizontal_fill_xlsx() {
     let template = fixture("fill/horizontal.xlsx");
-    if !template.exists() {
-        return;
-    }
+    assert!(template.exists(), "required Java fixture missing: {}", template.display());
     let output = temp_path("fill_horizontal07.xlsx");
     let data = TemplateData::new()
         .with("name", "张三")
@@ -1654,29 +2001,30 @@ fn fill_t05_horizontal_fill_xlsx() {
     let _ = found_name;
 }
 
-/// Java t06: horizontal fill .xls
+/// Java t06: horizontal fill .xls.
 #[test]
 fn fill_t06_horizontal_fill_xls() {
-    let template = fixture("fill/horizontal.xlsx");
-    if !template.exists() {
-        return;
-    }
-    let output = temp_path("fill_horizontal03.xlsx");
+    // Java fills xls/fill/horizontal.xls. Legacy XLS template fill is Unsupported (visible).
+    let xls = fixture("xls/fill/horizontal.xls");
+    assert_xls_readable(&xls);
+    let output = temp_path("fill_t06_horizontal_fill_xls.xls");
     let data = TemplateData::new()
         .with("name", "张三")
         .with("number", 5.2);
-    EasyExcel::fill_template(&template, &output, &data).unwrap();
-    let bytes = std::fs::read(&output).unwrap();
-    assert!(bytes.starts_with(b"PK"));
+    let err = EasyExcel::fill_template(&xls, &output, &data)
+        .expect_err("legacy XLS template fill must fail explicitly");
+    assert!(
+        err.to_string().contains("legacy XLS template fill is not supported")
+            || matches!(err, ExcelError::Unsupported(_)),
+        "unexpected error: {err}"
+    );
 }
 
 /// Java t07: byName fill → fill to "Sheet2" with named wrapper
 #[test]
 fn fill_t07_by_name_fill_xlsx() {
     let template = fixture("fill/byName.xlsx");
-    if !template.exists() {
-        return;
-    }
+    assert!(template.exists(), "required Java fixture missing: {}", template.display());
     let output = temp_path("fill_byName07.xlsx");
     let data = TemplateData::new()
         .with("name", "张三")
@@ -1686,20 +2034,23 @@ fn fill_t07_by_name_fill_xlsx() {
     assert!(bytes.starts_with(b"PK"));
 }
 
-/// Java t08: byName fill .xls
+/// Java t08: byName fill .xls.
 #[test]
 fn fill_t08_by_name_fill_xls() {
-    let template = fixture("fill/byName.xlsx");
-    if !template.exists() {
-        return;
-    }
-    let output = temp_path("fill_byName03.xlsx");
+    // Java fills xls/fill/byName.xls. Legacy XLS template fill is Unsupported (visible).
+    let xls = fixture("xls/fill/byName.xls");
+    assert_xls_readable(&xls);
+    let output = temp_path("fill_t08_by_name_fill_xls.xls");
     let data = TemplateData::new()
         .with("name", "张三")
         .with("number", 5.2);
-    EasyExcel::fill_template(&template, &output, &data).unwrap();
-    let bytes = std::fs::read(&output).unwrap();
-    assert!(bytes.starts_with(b"PK"));
+    let err = EasyExcel::fill_template(&xls, &output, &data)
+        .expect_err("legacy XLS template fill must fail explicitly");
+    assert!(
+        err.to_string().contains("legacy XLS template fill is not supported")
+            || matches!(err, ExcelError::Unsupported(_)),
+        "unexpected error: {err}"
+    );
 }
 
 /// Java t09: composite fill → multiple named wrappers + scalar
@@ -1711,9 +2062,7 @@ fn fill_t08_by_name_fill_xls() {
 #[test]
 fn fill_t09_composite_fill_xlsx() {
     let template = fixture("fill/composite.xlsx");
-    if !template.exists() {
-        return;
-    }
+    assert!(template.exists(), "required Java fixture missing: {}", template.display());
     let output = temp_path("fill_composite07.xlsx");
     let data = TemplateData::new()
         .with("name", "张三")
@@ -1741,20 +2090,23 @@ fn fill_t09_composite_fill_xlsx() {
     let _ = found_name;
 }
 
-/// Java t10: composite fill .xls
+/// Java t10: composite fill .xls.
 #[test]
 fn fill_t10_composite_fill_xls() {
-    let template = fixture("fill/composite.xlsx");
-    if !template.exists() {
-        return;
-    }
-    let output = temp_path("fill_composite03.xlsx");
+    // Java fills xls/fill/composite.xls. Legacy XLS template fill is Unsupported (visible).
+    let xls = fixture("xls/fill/composite.xls");
+    assert_xls_readable(&xls);
+    let output = temp_path("fill_t10_composite_fill_xls.xls");
     let data = TemplateData::new()
         .with("name", "张三")
         .with("number", 5.2);
-    EasyExcel::fill_template(&template, &output, &data).unwrap();
-    let bytes = std::fs::read(&output).unwrap();
-    assert!(bytes.starts_with(b"PK"));
+    let err = EasyExcel::fill_template(&xls, &output, &data)
+        .expect_err("legacy XLS template fill must fail explicitly");
+    assert!(
+        err.to_string().contains("legacy XLS template fill is not supported")
+            || matches!(err, ExcelError::Unsupported(_)),
+        "unexpected error: {err}"
+    );
 }
 
 // ============================================================================
@@ -1765,9 +2117,7 @@ fn fill_t10_composite_fill_xls() {
 #[test]
 fn extra_t01_read_xlsx() {
     let path = fixture("demo/extra.xlsx");
-    if !path.exists() {
-        return;
-    }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_dynamic_sync(&path)
         .extra_read(CellExtraType::Comment)
         .extra_read(CellExtraType::Hyperlink)
@@ -1779,11 +2129,11 @@ fn extra_t01_read_xlsx() {
 #[test]
 fn extra_t02_read_xls() {
     let path = fixture("xls/extra/extra.xls");
-    if !path.exists() {
-        return;
-    }
-    let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync();
-    let _ = rows;
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    let rows = EasyExcel::read_dynamic_sync(&path)
+        .do_read_sync()
+        .unwrap();
+    assert!(!rows.is_empty(), "Java extra.xls fixture must yield rows");
 }
 
 #[test]

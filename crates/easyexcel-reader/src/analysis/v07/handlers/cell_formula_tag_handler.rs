@@ -1,14 +1,51 @@
 //! Mirrors Java `com.alibaba.excel.analysis.v07.handlers.CellFormulaTagHandler`.
-//!
-//! Java's handler processes one XML tag type inside the SAX event loop.
-//! In Rust, the equivalent logic is inlined into the `quick_xml` event
-//! match arms in `xlsx_rows.rs::XlsxDisplayCellReader`. This struct
-//! exists for 1:1 Java package parity.
 
-use super::super::handlers::xlsx_tag_handler::XlsxTagHandler;
+use super::xlsx_tag_handler::XlsxTagHandler;
 
 /// Mirrors Java `CellFormulaTagHandler`.
-#[allow(dead_code)]
-pub struct CellFormulaTagHandler;
+#[derive(Debug, Default)]
+pub struct CellFormulaTagHandler {
+    /// Accumulated formula text. (Java `XlsxReadSheetHolder.tempFormula`)
+    pub temp_formula: String,
+}
 
-impl XlsxTagHandler for CellFormulaTagHandler {}
+impl CellFormulaTagHandler {
+    /// Creates an idle handler.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Java `CellFormulaTagHandler.startElement`.
+    pub fn begin_formula(&mut self) {
+        self.temp_formula.clear();
+    }
+
+    /// Java `CellFormulaTagHandler.endElement` — returns the formula string.
+    pub fn finish_formula(&mut self) -> String {
+        std::mem::take(&mut self.temp_formula)
+    }
+}
+
+impl XlsxTagHandler for CellFormulaTagHandler {
+    /// Java `CellFormulaTagHandler.startElement`.
+    fn start_element(&mut self, name: &str, _attrs: &str) {
+        let local = name.rsplit(':').next().unwrap_or(name);
+        if local == "f" {
+            self.begin_formula();
+        }
+    }
+
+    /// Java `CellFormulaTagHandler.endElement`.
+    fn end_element(&mut self, name: &str) {
+        let local = name.rsplit(':').next().unwrap_or(name);
+        if local == "f" {
+            let _ = self.finish_formula();
+        }
+    }
+
+    /// Java `CellFormulaTagHandler.characters`.
+    fn characters(&mut self, ch: &str) {
+        self.temp_formula.push_str(ch);
+    }
+}

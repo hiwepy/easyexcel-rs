@@ -1,0 +1,15 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.compatibility.CompatibilityTest#t09",
+	"fixture":"compatibility/t09.xlsx",
+	"sheet_index":0,
+	"head_row_number":0,
+	"row_count":1,
+	"cells":{
+		"0.0":"SH_x000D_Z002"
+	},
+	"rows":[
+		[
+			"SH_x000D_Z002"
+		]
+	]
+}

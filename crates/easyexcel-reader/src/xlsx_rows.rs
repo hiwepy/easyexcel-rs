@@ -3,14 +3,41 @@ use std::io::{BufRead, BufReader, Read, Seek};
 
 use bigdecimal::BigDecimal;
 use calamine::{ExcelDateTime, ExcelDateTimeType};
-use easyexcel_core::{CellExtra, CellExtraType, CellValue, ExcelError, FormulaData, Result};
+use easyexcel_core::constant::builtin_format_code;
+use easyexcel_core::metadata::format::{
+    java_compat_date_format_code, java_compat_display, java_compat_format_code,
+};
+use easyexcel_core::{CellValue, ExcelError, FormulaData, Result};
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Decoder, Reader as XmlReader, XmlVersion};
 use ssfmt::{DateSystem, FormatOptions, Locale, NumberFormat, format, format_code_from_id};
 use zip::ZipArchive;
 
-use crate::read_cache::{ReadCacheMode, SharedStringCache, SharedStringCacheReader, SharedStringCacheWriter, create_cache, memory_cache};
+use crate::analysis::v07::handlers::cell_formula_tag_handler::CellFormulaTagHandler;
+use crate::analysis::v07::handlers::cell_inline_string_value_tag_handler::CellInlineStringValueTagHandler;
+use crate::analysis::v07::handlers::cell_tag_handler::CellTagHandler;
+use crate::analysis::v07::handlers::cell_value_tag_handler::CellValueTagHandler;
+use crate::analysis::v07::handlers::count_tag_handler::CountTagHandler;
+use crate::analysis::v07::handlers::hyperlink_tag_handler::HyperlinkTagHandler;
+use crate::analysis::v07::handlers::merge_cell_tag_handler::MergeCellTagHandler;
+use crate::analysis::v07::handlers::row_tag_handler::RowTagHandler;
+use crate::analysis::v07::handlers::sax::shared_strings_table_handler::{
+    local_tag, utf_decode, SharedStringsTableHandler,
+};
+use crate::analysis::v07::handlers::xlsx_tag_handler::XlsxTagHandler;
+use crate::cache::resolve_read_cache_mode;
+use crate::read_cache::{
+    create_cache, memory_cache, ReadCacheMode, SharedStringCache, SharedStringCacheReader,
+    SharedStringCacheWriter,
+};
+use crate::ReadOptions;
+
+
+/// Prefer EasyExcel BuiltinFormats over ssfmt ECMA table (Java locale-aware codes).
+fn easyexcel_builtin_format_code(id: u32) -> Option<&'static str> {
+    builtin_format_code(id as u16)
+}
 
 const MAX_XLSX_ROW_NUMBER: u32 = 1_048_576;
 const MAX_XLSX_COLUMN_NUMBER: usize = 16_384;
@@ -62,11 +89,13 @@ impl XlsxNumberFormat {
         };
         match self {
             Self::Builtin(id) => {
-                format_code_from_id(*id).and_then(|code| format(value, code, &options).ok())
+                // Prefer EasyExcel BuiltinFormats (locale-aware CN/ALL tables) over ssfmt's
+                // ECMA builtin table so STRING display matches Java (e.g. id 22 → yyyy-m-d h:mm).
+                let code = easyexcel_builtin_format_code(*id).or_else(|| format_code_from_id(*id));
+                code.and_then(|code| format_with_resolved_code(value, code, &options))
             }
-            Self::Custom(code) => format(value, code, &options).ok(),
+            Self::Custom(code) => format_with_resolved_code(value, code, &options),
         }
-        .map(|value| value.trim().to_owned())
     }
 
     fn is_general(&self) -> bool {
@@ -78,7 +107,7 @@ impl XlsxNumberFormat {
 
     fn is_date_format(&self) -> bool {
         let code = match self {
-            Self::Builtin(id) => format_code_from_id(*id),
+            Self::Builtin(id) => easyexcel_builtin_format_code(*id).or_else(|| format_code_from_id(*id)),
             Self::Custom(code) => Some(code.as_str()),
         };
         code.and_then(|code| NumberFormat::parse(code).ok())
@@ -117,17 +146,17 @@ pub(crate) struct XlsxDisplayCellReader<'a> {
 impl XlsxRowMetadata {
     #[cfg(test)]
     pub(crate) fn new(input: impl Read + Seek + 'static) -> Result<Self> {
-        Self::new_with_cache(input, ReadCacheMode::default())
+        Self::new_with_cache(input, &ReadOptions::default())
     }
 
     pub(crate) fn new_with_cache(
         input: impl Read + Seek + 'static,
-        cache_mode: ReadCacheMode,
+        options: &ReadOptions,
     ) -> Result<Self> {
-        Self::new_boxed(Box::new(input), cache_mode)
+        Self::new_boxed(Box::new(input), options)
     }
 
-    fn new_boxed(input: Box<dyn ReadSeek>, cache_mode: ReadCacheMode) -> Result<Self> {
+    fn new_boxed(input: Box<dyn ReadSeek>, options: &ReadOptions) -> Result<Self> {
         let mut archive = ZipArchive::new(input).map_err(format_error)?;
         let path_cache = path_cache(&archive);
         let package_relationships = read_relationships(&mut archive, &path_cache, "_rels/.rels")?;
@@ -164,7 +193,7 @@ impl XlsxRowMetadata {
             .map(|(target, _)| resolve_target(&workbook_path, target))
             .transpose()?;
         let shared_strings = match shared_strings_path {
-            Some(path) => read_shared_strings(&mut archive, &path_cache, &path, cache_mode)?,
+            Some(path) => read_shared_strings(&mut archive, &path_cache, &path, options)?,
             None => memory_cache(),
         };
         for path in sheet_paths.values() {
@@ -214,6 +243,8 @@ impl XlsxRowMetadata {
     }
 
     pub(crate) fn last_explicit_row(&mut self, sheet_name: &str) -> Result<Option<u32>> {
+        // Uses scan_last_row → CountTagHandler for `<dimension>` fallback
+        // (Java `com.alibaba.excel.analysis.v07.handlers.CountTagHandler`).
         let path = self
             .sheet_paths
             .get(sheet_name)
@@ -311,30 +342,24 @@ impl<'a> XlsxDisplayCellReader<'a> {
             {
                 Event::Start(element) if element.local_name().as_ref() == b"row" => {
                     let values = attributes(&element, self.reader.decoder())?;
-                    self.row_index = values
-                        .get("r")
-                        .map_or(Ok(self.row_index), |value| parse_row_number(value))?;
+                    // Java `RowTagHandler.startElement` → `PositionUtils.getRowByRowTagt`
+                    self.row_index = RowTagHandler::resolve_row_index(
+                        values.get("r").map(String::as_str),
+                        self.row_index,
+                    )?;
                     self.column_index = 0;
                 }
                 Event::Start(element) if element.local_name().as_ref() == b"c" => {
                     let values = attributes(&element, self.reader.decoder())?;
-                    let position = values
-                        .get("r")
-                        .map_or(Ok((self.row_index, self.column_index)), |reference| {
-                            parse_cell_reference(reference)
-                        })?;
-                    let style_index = values
-                        .get("s")
-                        .map(|value| value.parse::<usize>().map_err(format_error))
-                        .transpose()?
-                        .unwrap_or_default();
-                    let cell_type = values.get("t").map(String::as_str);
+                    // Java `CellTagHandler.startElement` attribute portion
+                    let started =
+                        CellTagHandler::parse_start(&values, self.row_index, self.column_index)?;
                     let (value, formula, display_value, decimal_value) =
-                        self.read_cell(style_index, cell_type)?;
-                    self.row_index = position.0;
-                    self.column_index = position.1.saturating_add(1);
+                        self.read_cell(started.style_index, started.cell_type.as_deref())?;
+                    self.row_index = started.position.0;
+                    self.column_index = started.position.1.saturating_add(1);
                     return Ok(Some(XlsxDisplayCell {
-                        position,
+                        position: started.position,
                         value,
                         formula,
                         display_value,
@@ -342,6 +367,8 @@ impl<'a> XlsxDisplayCellReader<'a> {
                     }));
                 }
                 Event::End(element) if element.local_name().as_ref() == b"row" => {
+                    // Java `RowTagHandler.endElement` advances the cursor after
+                    // emitting the row; display-cell streaming only needs the index.
                     self.row_index = self.row_index.saturating_add(1);
                     self.column_index = 0;
                 }
@@ -359,13 +386,15 @@ impl<'a> XlsxDisplayCellReader<'a> {
     }
 
     fn read_cell(&mut self, style_index: usize, cell_type: Option<&str>) -> Result<ParsedCell> {
+        // Dual-track: accumulate via Java-parity handlers while the quick_xml
+        // loop remains the event driver (只增不减).
+        let mut value_handler = CellValueTagHandler::new();
+        let mut inline_handler = CellInlineStringValueTagHandler::new();
+        let mut formula_handler = CellFormulaTagHandler::new();
         let mut in_value = false;
         let mut in_formula = false;
         let mut in_text = false;
         let mut phonetic_depth = 0_u32;
-        let mut raw_value = String::new();
-        let mut inline_value = String::new();
-        let mut formula = String::new();
         loop {
             self.cell_buffer.clear();
             match self
@@ -374,9 +403,12 @@ impl<'a> XlsxDisplayCellReader<'a> {
                 .map_err(format_error)?
             {
                 Event::Start(element) if element.local_name().as_ref() == b"v" => {
+                    // Java `CellValueTagHandler` / `AbstractCellValueTagHandler`
                     in_value = true;
                 }
                 Event::Start(element) if element.local_name().as_ref() == b"f" => {
+                    // Java `CellFormulaTagHandler.startElement`
+                    formula_handler.begin_formula();
                     in_formula = true;
                 }
                 Event::Start(element) if element.local_name().as_ref() == b"rPh" => {
@@ -385,46 +417,58 @@ impl<'a> XlsxDisplayCellReader<'a> {
                 Event::Start(element)
                     if phonetic_depth == 0 && element.local_name().as_ref() == b"t" =>
                 {
+                    // Java `CellInlineStringValueTagHandler` (inherits characters)
                     in_text = true;
                 }
                 Event::Text(value) if in_value => {
-                    raw_value.push_str(
+                    value_handler.characters(
                         &value
                             .xml_content(XmlVersion::Implicit1_0)
                             .map_err(format_error)?,
                     );
                 }
-                Event::Text(value) if in_formula => formula.push_str(
-                    &value
-                        .xml_content(XmlVersion::Implicit1_0)
-                        .map_err(format_error)?,
-                ),
-                Event::Text(value) if in_text => inline_value.push_str(
-                    &value
-                        .xml_content(XmlVersion::Implicit1_0)
-                        .map_err(format_error)?,
-                ),
+                Event::Text(value) if in_formula => {
+                    // Java `CellFormulaTagHandler.characters`
+                    formula_handler.characters(
+                        &value
+                            .xml_content(XmlVersion::Implicit1_0)
+                            .map_err(format_error)?,
+                    );
+                }
+                Event::Text(value) if in_text => {
+                    inline_handler.characters(
+                        &value
+                            .xml_content(XmlVersion::Implicit1_0)
+                            .map_err(format_error)?,
+                    );
+                }
                 Event::CData(value) if in_value => {
-                    raw_value.push_str(
+                    value_handler.characters(
                         &value
                             .xml_content(XmlVersion::Implicit1_0)
                             .map_err(format_error)?,
                     );
                 }
-                Event::CData(value) if in_formula => formula.push_str(
-                    &value
-                        .xml_content(XmlVersion::Implicit1_0)
-                        .map_err(format_error)?,
-                ),
-                Event::CData(value) if in_text => inline_value.push_str(
-                    &value
-                        .xml_content(XmlVersion::Implicit1_0)
-                        .map_err(format_error)?,
-                ),
+                Event::CData(value) if in_formula => {
+                    formula_handler.characters(
+                        &value
+                            .xml_content(XmlVersion::Implicit1_0)
+                            .map_err(format_error)?,
+                    );
+                }
+                Event::CData(value) if in_text => {
+                    inline_handler.characters(
+                        &value
+                            .xml_content(XmlVersion::Implicit1_0)
+                            .map_err(format_error)?,
+                    );
+                }
                 Event::End(element) if element.local_name().as_ref() == b"v" => {
                     in_value = false;
                 }
                 Event::End(element) if element.local_name().as_ref() == b"f" => {
+                    // Java `CellFormulaTagHandler.endElement` attaches formula to
+                    // tempCellData; we keep it on the handler until `</c>`.
                     in_formula = false;
                 }
                 Event::End(element) if element.local_name().as_ref() == b"t" => {
@@ -434,7 +478,11 @@ impl<'a> XlsxDisplayCellReader<'a> {
                     phonetic_depth = phonetic_depth.saturating_sub(1);
                 }
                 Event::End(element) if element.local_name().as_ref() == b"c" => {
-                    let formula = (!formula.is_empty()).then(|| FormulaData::new(formula));
+                    let formula_text = formula_handler.finish_formula();
+                    let formula =
+                        (!formula_text.is_empty()).then(|| FormulaData::new(formula_text));
+                    let raw_value = value_handler.take();
+                    let inline_value = inline_handler.take();
                     return self.finish_cell(
                         style_index,
                         cell_type,
@@ -481,7 +529,7 @@ impl<'a> XlsxDisplayCellReader<'a> {
                 CellValue::String(self.shared_strings.get(index)?)
             }
             Some("inlineStr" | "str") => {
-                CellValue::String(decode_excel_escapes(if inline_value.is_empty() {
+                CellValue::String(utf_decode(if inline_value.is_empty() {
                     raw_value
                 } else {
                     inline_value
@@ -533,6 +581,45 @@ impl<'a> XlsxDisplayCellReader<'a> {
         }
         CellValue::Float(number)
     }
+}
+
+
+/// Format a numeric cell with an Excel format code (BuiltinFormats / custom).
+pub(crate) fn format_with_code(
+    value: f64,
+    code: &str,
+    date_1904: bool,
+    locale: &Locale,
+) -> Option<String> {
+    let options = FormatOptions {
+        date_system: if date_1904 {
+            DateSystem::Date1904
+        } else {
+            DateSystem::Date1900
+        },
+        locale: locale.clone(),
+    };
+    format_with_resolved_code(value, code, &options)
+}
+
+/// Apply EasyExcel number-format cleaning then ssfmt + [`java_compat_display`].
+///
+/// Date codes go through [`java_compat_date_format_code`] (CN `上午/下午` → `AM/PM`,
+/// `mmmmm` → POI PUA wrap) while keeping escaped literals (`yyyy\-m\-dd`).
+/// Number codes go through [`java_compat_format_code`] so `_X` pads disappear and
+/// `\ ` trailing spaces remain.
+fn format_with_resolved_code(value: f64, code: &str, options: &FormatOptions) -> Option<String> {
+    let is_date = NumberFormat::parse(code)
+        .ok()
+        .is_some_and(|parsed| parsed.is_date_format());
+    let resolved = if is_date {
+        java_compat_date_format_code(code)
+    } else {
+        java_compat_format_code(code)
+    };
+    format(value, &resolved, options)
+        .ok()
+        .map(|formatted| java_compat_display(&formatted))
 }
 
 fn excel_display_number(value: f64) -> f64 {
@@ -686,42 +773,41 @@ fn parse_worksheet_extras(
     config.check_comments = false;
     config.expand_empty_elements = true;
     let mut extras = Vec::new();
+    let mut merge_handler =
+        MergeCellTagHandler::new(enabled.contains(&easyexcel_core::CellExtraType::Merge));
+    let mut hyperlink_handler =
+        HyperlinkTagHandler::new(enabled.contains(&easyexcel_core::CellExtraType::Hyperlink));
     let mut buffer = Vec::with_capacity(256);
     loop {
         buffer.clear();
         match reader.read_event_into(&mut buffer).map_err(format_error)? {
-            Event::Start(element)
-                if enabled.contains(&easyexcel_core::CellExtraType::Merge)
-                    && element.local_name().as_ref() == b"mergeCell" =>
-            {
+            Event::Start(element) if element.local_name().as_ref() == b"mergeCell" => {
+                // Java `MergeCellTagHandler.startElement`
                 let attributes = attributes(&element, reader.decoder())?;
-                let reference = required_attribute(&attributes, "ref", "merge cell")?;
-                let (first_row, last_row, first_column, last_column) = parse_cell_range(reference)?;
-                extras.push(easyexcel_core::CellExtra::new(
-                    easyexcel_core::CellExtraType::Merge,
-                    None,
-                    first_row,
-                    last_row,
-                    first_column,
-                    last_column,
-                ));
+                merge_handler.start_merge_required(&attributes)?;
+                if let Some(extra) = merge_handler.last_extra.take() {
+                    extras.push(extra);
+                }
             }
-            Event::Start(element)
-                if enabled.contains(&easyexcel_core::CellExtraType::Hyperlink)
-                    && element.local_name().as_ref() == b"hyperlink" =>
-            {
+            Event::Start(element) if element.local_name().as_ref() == b"hyperlink" => {
+                // Java `HyperlinkTagHandler.startElement`
                 let attributes = attributes(&element, reader.decoder())?;
-                let reference = required_attribute(&attributes, "ref", "hyperlink")?;
-                let text = hyperlink_text(&attributes, relationships)?;
-                let (first_row, last_row, first_column, last_column) = parse_cell_range(reference)?;
-                extras.push(easyexcel_core::CellExtra::new(
-                    easyexcel_core::CellExtraType::Hyperlink,
-                    Some(text),
-                    first_row,
-                    last_row,
-                    first_column,
-                    last_column,
-                ));
+                hyperlink_handler.start_hyperlink_required(&attributes, &|r_id| {
+                    relationships
+                        .get(r_id)
+                        .filter(|(_, relationship_type, _)| {
+                            relationship_type.ends_with("/hyperlink")
+                        })
+                        .map(|(target, _, _)| target.clone())
+                        .ok_or_else(|| {
+                            ExcelError::Format(format!(
+                                "hyperlink relationship not found: {r_id}"
+                            ))
+                        })
+                })?;
+                if let Some(extra) = hyperlink_handler.last_extra.take() {
+                    extras.push(extra);
+                }
             }
             Event::End(element) if element.local_name().as_ref() == b"worksheet" => break,
             Event::Eof => {
@@ -733,25 +819,6 @@ fn parse_worksheet_extras(
         }
     }
     Ok(extras)
-}
-
-fn hyperlink_text(
-    attributes: &HashMap<String, String>,
-    relationships: &RawRelationships,
-) -> Result<String> {
-    if let Some(location) = attributes.get("location") {
-        return Ok(location.clone());
-    }
-    let relationship_id = required_attribute(attributes, "id", "hyperlink")?;
-    relationships
-        .get(relationship_id)
-        .filter(|(_, relationship_type, _)| relationship_type.ends_with("/hyperlink"))
-        .map(|(target, _, _)| target.clone())
-        .ok_or_else(|| {
-            ExcelError::Format(format!(
-                "hyperlink relationship not found: {relationship_id}"
-            ))
-        })
 }
 
 fn read_comments<R: Read + Seek>(
@@ -953,9 +1020,17 @@ fn read_shared_strings<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     path_cache: &HashMap<String, String>,
     path: &str,
-    mode: ReadCacheMode,
+    options: &ReadOptions,
 ) -> Result<Box<dyn SharedStringCacheReader>> {
-    let mut cache_factory = |xml_size| create_cache(mode, xml_size);
+    let mode = options.read_cache;
+    let selector = options
+        .read_cache_selector
+        .as_ref()
+        .map(|stored| stored as &dyn crate::cache::ReadCacheSelector);
+    let mut cache_factory = |xml_size| {
+        let effective = resolve_read_cache_mode(mode, selector, xml_size);
+        create_cache(effective, xml_size)
+    };
     read_shared_strings_with_factory(archive, path_cache, path, &mut cache_factory)
 }
 
@@ -982,79 +1057,40 @@ fn parse_shared_strings(input: &mut dyn BufRead, cache: &mut dyn SharedStringCac
     let mut reader = XmlReader::from_reader(input);
     reader.config_mut().expand_empty_elements = true;
     let mut buffer = Vec::with_capacity(256);
-    let mut current = String::new();
-    let mut in_item = false;
-    let mut in_text = false;
-    let mut phonetic_depth = 0_u32;
+    // Java `SharedStringsTableHandler` — driven by the same quick_xml loop.
+    let mut handler = SharedStringsTableHandler::new();
     loop {
         buffer.clear();
         match reader.read_event_into(&mut buffer).map_err(format_error)? {
-            Event::Start(element) if element.local_name().as_ref() == b"si" => {
-                current.clear();
-                in_item = true;
+            Event::Start(element) => {
+                let name = String::from_utf8_lossy(element.local_name().as_ref()).into_owned();
+                handler.start_element(local_tag(&name));
             }
-            Event::Start(element) if in_item && element.local_name().as_ref() == b"rPh" => {
-                phonetic_depth = phonetic_depth.saturating_add(1);
+            Event::Text(value) => {
+                handler.characters(
+                    &value
+                        .xml_content(XmlVersion::Implicit1_0)
+                        .map_err(format_error)?,
+                );
             }
-            Event::Start(element)
-                if in_item && phonetic_depth == 0 && element.local_name().as_ref() == b"t" =>
-            {
-                in_text = true;
+            Event::CData(value) => {
+                handler.characters(
+                    &value
+                        .xml_content(XmlVersion::Implicit1_0)
+                        .map_err(format_error)?,
+                );
             }
-            Event::Text(value) if in_text => current.push_str(
-                &value
-                    .xml_content(XmlVersion::Implicit1_0)
-                    .map_err(format_error)?,
-            ),
-            Event::CData(value) if in_text => current.push_str(
-                &value
-                    .xml_content(XmlVersion::Implicit1_0)
-                    .map_err(format_error)?,
-            ),
-            Event::End(element) if element.local_name().as_ref() == b"t" => {
-                in_text = false;
-            }
-            Event::End(element) if element.local_name().as_ref() == b"rPh" => {
-                phonetic_depth = phonetic_depth.saturating_sub(1);
-            }
-            Event::End(element) if element.local_name().as_ref() == b"si" => {
-                cache.put(decode_excel_escapes(&current))?;
-                in_item = false;
-                in_text = false;
-                phonetic_depth = 0;
+            Event::End(element) => {
+                let name = String::from_utf8_lossy(element.local_name().as_ref()).into_owned();
+                if let Some(decoded) = handler.end_element(local_tag(&name)) {
+                    cache.put(decoded)?;
+                }
             }
             Event::Eof => break,
             _ => {}
         }
     }
     Ok(())
-}
-
-fn decode_excel_escapes(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut output = String::with_capacity(value.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if index + 7 <= bytes.len()
-            && bytes[index] == b'_'
-            && bytes[index + 1] == b'x'
-            && bytes[index + 6] == b'_'
-            && let Ok(hex) = std::str::from_utf8(&bytes[index + 2..index + 6])
-            && let Ok(code) = u16::from_str_radix(hex, 16)
-            && let Some(character) = char::from_u32(u32::from(code))
-        {
-            output.push(character);
-            index += 7;
-        } else {
-            let character = value[index..]
-                .chars()
-                .next()
-                .expect("index is inside the UTF-8 string");
-            output.push(character);
-            index += character.len_utf8();
-        }
-    }
-    output
 }
 
 fn read_workbook_metadata<R: Read + Seek>(
@@ -1122,6 +1158,14 @@ fn attributes(element: &BytesStart<'_>, decoder: Decoder) -> Result<HashMap<Stri
     Ok(values)
 }
 
+/// Scans worksheet XML for the last explicit row index.
+///
+/// Prefers real `<row>` markers inside `<sheetData>`. When the sheet has no
+/// row elements, falls back to
+/// [`CountTagHandler`](crate::analysis::v07::handlers::count_tag_handler::CountTagHandler)
+/// parsing of `<dimension ref="...">` (Java
+/// `com.alibaba.excel.analysis.v07.handlers.CountTagHandler` →
+/// `ReadSheetHolder.approximateTotalRowNumber`).
 fn scan_last_row<R: BufRead>(input: R) -> Result<Option<u32>> {
     let mut reader = XmlReader::from_reader(input);
     reader.config_mut().expand_empty_elements = true;
@@ -1129,9 +1173,16 @@ fn scan_last_row<R: BufRead>(input: R) -> Result<Option<u32>> {
     let mut in_sheet_data = false;
     let mut current_row = 0_u32;
     let mut last_row = None;
+    // Java CountTagHandler — dimension-derived approximate total / last row.
+    let mut count_handler = CountTagHandler::new();
     loop {
         buffer.clear();
         match reader.read_event_into(&mut buffer).map_err(format_error)? {
+            Event::Start(element) if element.local_name().as_ref() == b"dimension" => {
+                // Wire CountTagHandler into the last_explicit_row hot path.
+                let attrs = attributes(&element, reader.decoder())?;
+                count_handler.start_dimension(&attrs)?;
+            }
             Event::Start(element) if element.local_name().as_ref() == b"sheetData" => {
                 in_sheet_data = true;
             }
@@ -1146,7 +1197,11 @@ fn scan_last_row<R: BufRead>(input: R) -> Result<Option<u32>> {
                 current_row = current_row.saturating_add(1);
             }
             Event::End(element) if element.local_name().as_ref() == b"sheetData" => {
-                return Ok(last_row);
+                // Prefer observed rows; otherwise use CountTagHandler dimension.
+                if last_row.is_some() {
+                    return Ok(last_row);
+                }
+                return Ok(count_handler.last_explicit_row_index());
             }
             Event::Eof => {
                 return Err(ExcelError::Format(

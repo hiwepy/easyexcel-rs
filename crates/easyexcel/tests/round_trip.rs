@@ -13,9 +13,9 @@ use easyexcel::{
     AnalysisContext, AnchorType, BigInt, CellStyle, CellValue, ClientAnchorData, Converter,
     CoordinateData, EasyExcel, ExcelColor, ExcelColumn, ExcelError, ExcelFontScript, ExcelRow,
     ExcelUnderline, HorizontalAlignment, ImageData, ImageInputStream, InputStreamImageConverter,
-    IntoExcelCell, PageReadListener, ReadConverterContext, ReadListener, Result,
-    RichTextStringData, Url, UrlImageConverter, VerticalAlignment, WriteCellData,
-    WriteConverterContext, WriteFont,
+    IntoExcelCell, LoopMergeProperty, OnceAbsoluteMergeProperty, PageReadListener,
+    ReadConverterContext, ReadListener, Result, RichTextStringData, Url, UrlImageConverter,
+    VerticalAlignment, WriteCellData, WriteConverterContext, WriteFont,
 };
 use tempfile::tempdir;
 use zip::ZipArchive;
@@ -169,14 +169,21 @@ struct AnnotatedDimensions {
     ),
     content_style(wrapped = true),
     head_font_style(font_name = "Arial", font_height_in_points = 14, bold = true),
-    content_font_style(italic = true)
+    content_font_style(italic = true),
+    once_absolute_merge(
+        first_row_index = 0,
+        last_row_index = 0,
+        first_column_index = 0,
+        last_column_index = 1
+    )
 )]
 struct AnnotatedStyles {
     #[excel(
         name = "姓名",
         index = 0,
         head_style(fill_pattern = "solid", fill_foreground_color = 0x0000_00ff),
-        head_font_style(font_height_in_points = 20)
+        head_font_style(font_height_in_points = 20),
+        content_loop_merge(each_row = 2, column_extend = 1)
     )]
     name: String,
     #[excel(name = "年龄", index = 1)]
@@ -705,16 +712,28 @@ fn derive_writes_java_style_cell_and_font_annotations() -> Result<()> {
     assert!(metadata.content_style.is_some());
     assert!(metadata.head_font_style.is_some());
     assert!(metadata.content_font_style.is_some());
+    assert_eq!(
+        metadata.once_absolute_merge,
+        Some(OnceAbsoluteMergeProperty::new(0, 0, 0, 1))
+    );
     assert!(AnnotatedStyles::schema()[0].head_style.is_some());
     assert!(AnnotatedStyles::schema()[0].head_font_style.is_some());
+    assert_eq!(
+        AnnotatedStyles::schema()[0].loop_merge,
+        Some(LoopMergeProperty::new(2, 1))
+    );
 
     let directory = tempdir()?;
-    EasyExcel::write::<AnnotatedStyles>(directory.path().join("annotated-styles.xlsx")).do_write(
-        [AnnotatedStyles {
+    EasyExcel::write::<AnnotatedStyles>(directory.path().join("annotated-styles.xlsx")).do_write([
+        AnnotatedStyles {
             name: "Alice".to_owned(),
             age: 30,
-        }],
-    )?;
+        },
+        AnnotatedStyles {
+            name: "Bob".to_owned(),
+            age: 31,
+        },
+    ])?;
     Ok(())
 }
 

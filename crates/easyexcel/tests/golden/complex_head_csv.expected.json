@@ -1,0 +1,23 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.head.ComplexHeadDataTest#t03ReadAndWriteCsv",
+	"fixture":"artifacts/complex_head.csv",
+	"sheet_index":0,
+	"head_row_number":3,
+	"row_count":1,
+	"cells":{
+		"0.0":"字符串0",
+		"0.1":"字符串1",
+		"0.2":"字符串2",
+		"0.3":"字符串3",
+		"0.4":"字符串4"
+	},
+	"rows":[
+		[
+			"字符串0",
+			"字符串1",
+			"字符串2",
+			"字符串3",
+			"字符串4"
+		]
+	]
+}

@@ -1,0 +1,16 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.skip.SkipDataTest#t01ReadAndWrite07#sheet3",
+	"fixture":"artifacts/skip_data.xlsx",
+	"sheet_index":0,
+	"sheet_name":"第四个",
+	"head_row_number":1,
+	"row_count":1,
+	"cells":{
+		"0.0":"name4"
+	},
+	"rows":[
+		[
+			"name4"
+		]
+	]
+}

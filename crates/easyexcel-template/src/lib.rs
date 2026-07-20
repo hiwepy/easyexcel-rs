@@ -1,5 +1,9 @@
 //! OOXML-preserving XLSX template filling.
 
+mod builder_fill_executor;
+
+pub use builder_fill_executor::{BuilderFillExecutor, create_builder_fill_executor};
+
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::fmt::Write as FmtWrite;
@@ -794,7 +798,19 @@ type ArchiveWriter = ZipWriter<Box<dyn WriteSeek>>;
 /// # Errors
 ///
 /// Returns an I/O or format error for invalid ZIP/OOXML input or output failures.
+/// Legacy `.xls` templates return typed [`ExcelError::Unsupported`].
 pub fn fill_xlsx_template(template: &Path, output: &Path, data: &TemplateData) -> Result<()> {
+    if template
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xls"))
+    {
+        return Err(ExcelError::Unsupported(
+            // Java: ExcelWriter.fill on HSSFWorkbook. Rust fill is OOXML-only;
+            // use with_template + doWrite (Biff8TemplatePackage) for .xls cells.
+            "legacy XLS template fill is not supported".to_owned(),
+        ));
+    }
     let mut writer = ExcelTemplateWriter::new(template, output)?;
     writer.sheets[0].scalar.values.extend(data.values.clone());
     writer.finish()
@@ -813,6 +829,17 @@ pub fn fill_xlsx_template_list(
     data: &FillWrapper,
     config: FillConfig,
 ) -> Result<()> {
+    if template
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xls"))
+    {
+        return Err(ExcelError::Unsupported(
+            // Java: ExcelWriter.fill on HSSFWorkbook. Rust fill is OOXML-only;
+            // use with_template + doWrite (Biff8TemplatePackage) for .xls cells.
+            "legacy XLS template fill is not supported".to_owned(),
+        ));
+    }
     let mut writer = ExcelTemplateWriter::new(template, output)?;
     if !data.rows().is_empty() {
         writer.sheets[0].collections.push(PendingCollectionFill {
@@ -1042,16 +1069,42 @@ fn merge_collection_cells(existing_row: &str, collection_row: &str) -> String {
 fn all_cells(row: &str) -> Vec<(usize, usize, &str)> {
     let mut cells = Vec::new();
     let mut offset = 0;
-    while let Some(relative_start) = row[offset..].find("<c") {
-        let start = offset + relative_start;
-        let Some(relative_end) = row[start..].find("</c>") else {
-            break;
-        };
-        let end = start + relative_end + 4;
+    while let Some((start, end)) = find_next_cell(row, offset) {
         cells.push((start, end, &row[start..end]));
         offset = end;
     }
     cells
+}
+
+/// Finds the next OOXML cell element (`<c ...>` / `<c .../>`).
+///
+/// Must not match similarly-prefixed tags such as `<cols>` / `<col>` — those
+/// false positives previously rewrote worksheet XML during scalar fill and
+/// left `complex.xlsx` unreadable by quick_xml.
+fn find_next_cell(xml: &str, from: usize) -> Option<(usize, usize)> {
+    let bytes = xml.as_bytes();
+    let mut search = from;
+    while search < xml.len() {
+        let relative = xml[search..].find("<c")?;
+        let start = search + relative;
+        let after_c = start + 2;
+        let next = *bytes.get(after_c)?;
+        // Local name must be exactly `c` (followed by space, `/`, or `>`).
+        if !matches!(next, b' ' | b'\t' | b'\n' | b'\r' | b'/' | b'>') {
+            search = after_c;
+            continue;
+        }
+        let relative_gt = xml[after_c..].find('>')?;
+        let gt = after_c + relative_gt;
+        // Self-closing `<c .../>` — do not scan forward for `</c>`.
+        if gt > start && bytes[gt - 1] == b'/' {
+            return Some((start, gt + 1));
+        }
+        let relative_end = xml[gt..].find("</c>")?;
+        let end = gt + relative_end + 4;
+        return Some((start, end));
+    }
+    None
 }
 
 fn row_index(row: &str) -> Option<usize> {
@@ -1354,9 +1407,7 @@ fn find_collection_cell<'a>(
     shared_strings: &[String],
 ) -> Option<(usize, usize, &'a str)> {
     let mut offset = 0;
-    while let Some(relative_start) = row[offset..].find("<c") {
-        let start = offset + relative_start;
-        let end = start + row[start..].find("</c>")? + 4;
+    while let Some((start, end)) = find_next_cell(row, offset) {
         let cell = &row[start..end];
         if cell_value(cell, shared_strings)
             .is_some_and(|value| contains_collection_marker(&value, wrapper))
@@ -1377,12 +1428,7 @@ fn fill_row_cells(
 ) -> String {
     let mut output = String::new();
     let mut offset = 0;
-    while let Some(relative_start) = row[offset..].find("<c") {
-        let start = offset + relative_start;
-        let Some(relative_end) = row[start..].find("</c>") else {
-            break;
-        };
-        let end = start + relative_end + 4;
+    while let Some((start, end)) = find_next_cell(row, offset) {
         output.push_str(&row[offset..start]);
         output.push_str(&fill_cell(
             &row[start..end],
@@ -1570,12 +1616,7 @@ fn replace_scalar_cells_in_xml(
 ) -> String {
     let mut output = String::with_capacity(xml.len());
     let mut offset = 0;
-    while let Some(relative_start) = xml[offset..].find("<c") {
-        let start = offset + relative_start;
-        let Some(relative_end) = xml[start..].find("</c>") else {
-            break;
-        };
-        let end = start + relative_end + 4;
+    while let Some((start, end)) = find_next_cell(xml, offset) {
         let cell = &xml[start..end];
         output.push_str(&xml[offset..start]);
         let replacement = cell_value(cell, shared_strings).map_or_else(
@@ -1799,6 +1840,19 @@ fn column_name(mut column: usize) -> String {
 }
 
 fn load_entries(path: &Path) -> Result<Vec<TemplateEntry>> {
+    // Scalar `.xls` fill is handled by [`fill_xlsx_template`] before ZIP load.
+    // Stateful ExcelTemplateWriter / collection fill stay OOXML-only.
+    if path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xls"))
+    {
+        return Err(ExcelError::Unsupported(
+            // Java: ExcelWriter.fill on HSSFWorkbook. Rust fill is OOXML-only;
+            // use with_template + doWrite (Biff8TemplatePackage) for .xls cells.
+            "legacy XLS template fill is not supported".to_owned(),
+        ));
+    }
     load_entries_from(Box::new(File::open(path)?))
 }
 

@@ -1,0 +1,21 @@
+{
+	"source":"com.alibaba.easyexcel.test.temp.issue2443.Issue2443Test#date1",
+	"fixture":"dataformat/date1.xlsx",
+	"sheet_index":0,
+	"head_row_number":0,
+	"row_count":2,
+	"cells":{
+		"0.0":"a",
+		"0.1":"b"
+	},
+	"rows":[
+		[
+			"a",
+			"b"
+		],
+		[
+			"1.00",
+			"1"
+		]
+	]
+}

@@ -178,6 +178,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cfb"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a347dcabdae9c31b0825fd6a8bed285ec9c2acb89c47827126d52fa4f59cece3"
+dependencies = [
+ "fnv",
+ "uuid",
+ "web-time",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -323,6 +334,8 @@ dependencies = [
  "easyexcel-template",
  "easyexcel-writer",
  "num-bigint",
+ "serde",
+ "serde_json",
  "tempfile",
  "zip 7.2.0",
 ]
@@ -358,6 +371,7 @@ dependencies = [
  "base64",
  "bigdecimal",
  "calamine",
+ "cfb 0.14.0",
  "csv",
  "easyexcel-core",
  "encoding_rs",
@@ -396,10 +410,12 @@ version = "0.1.0"
 dependencies = [
  "bigdecimal",
  "calamine",
+ "cfb 0.14.0",
  "chrono",
  "csv",
  "easyexcel-core",
  "encoding_rs",
+ "flate2",
  "ms-offcrypto-writer",
  "rand",
  "rust_xlsxwriter",
@@ -854,7 +870,7 @@ dependencies = [
  "aes",
  "base64",
  "cbc",
- "cfb",
+ "cfb 0.10.0",
  "cipher",
  "hmac",
  "rand",
@@ -1169,6 +1185,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]
@@ -1189,6 +1206,19 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.150"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
+dependencies = [
+ "itoa",
+ "memchr",
+ "serde",
+ "serde_core",
+ "zmij",
 ]
 
 [[package]]
@@ -1533,6 +1563,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "webpki-roots"
 version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1854,6 +1894,12 @@ name = "zlib-rs"
 version = "0.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b142a20ec14a91d5bc708c1dc21b080c550113d8aa77afa29635673a65dd02c5"
+
+[[package]]
+name = "zmij"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
 name = "zopfli"

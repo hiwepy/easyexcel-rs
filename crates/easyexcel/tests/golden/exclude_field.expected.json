@@ -1,0 +1,15 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.excludeorinclude.ExcludeOrIncludeDataTest#t11ExcludeFieldName07",
+	"fixture":"artifacts/exclude_field.xlsx",
+	"sheet_index":0,
+	"head_row_number":1,
+	"row_count":1,
+	"cells":{
+		"0.0":"column2"
+	},
+	"rows":[
+		[
+			"column2"
+		]
+	]
+}

@@ -3,6 +3,7 @@
 use crate::holder::read_workbook_holder::ReadWorkbookHolder;
 
 /// Mirrors Java `XlsReadWorkbookHolder extends ReadWorkbookHolder`.
+#[derive(Debug, Clone)]
 pub struct XlsReadWorkbookHolder {
     inner: ReadWorkbookHolder,
 }

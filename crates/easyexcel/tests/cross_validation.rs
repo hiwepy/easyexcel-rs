@@ -50,7 +50,7 @@ fn t01_t09_compatibility_fixtures_exist() {
 #[test]
 fn t02_read_simple_xlsx() {
     let path = fixture("compatibility/t02.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
         .head_row_number(0)
         .read_default_return(ReadDefaultReturn::ActualData)
@@ -72,7 +72,7 @@ fn t02_read_simple_xlsx() {
 #[test]
 fn t03_read_xlsx_with_different_column_types() {
     let path = fixture("compatibility/t03.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
         .read_default_return(ReadDefaultReturn::ActualData)
         .do_read_sync().unwrap();
@@ -88,7 +88,7 @@ fn t03_read_xlsx_with_different_column_types() {
 #[test]
 fn t04_read_xlsx_with_merged_cells() {
     let path = fixture("compatibility/t04.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
         .read_default_return(ReadDefaultReturn::ActualData)
         .do_read_sync().unwrap();
@@ -112,7 +112,7 @@ fn t04_read_xlsx_with_merged_cells() {
 #[test]
 fn t05_read_xlsx_with_formulas() {
     let path = fixture("compatibility/t05.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
         .do_read_sync().unwrap();
     assert!(rows.len() >= 5, "t05.xlsx should have at least 5 rows for date rounding test");
@@ -142,7 +142,7 @@ fn t05_read_xlsx_with_formulas() {
 #[test]
 fn t06_read_xlsx_with_hyperlinks() {
     let path = fixture("compatibility/t06.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
         .head_row_number(0)
         .do_read_sync().unwrap();
@@ -166,7 +166,7 @@ fn t06_read_xlsx_with_hyperlinks() {
 #[test]
 fn t07_read_xlsx_with_dates() {
     let path = fixture("compatibility/t07.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     // First read with ACTUAL_DATA mode to get BigDecimal precision
     let rows_actual = EasyExcel::read_dynamic_sync(&path)
         .read_default_return(ReadDefaultReturn::ActualData)
@@ -201,7 +201,7 @@ fn t07_read_xlsx_with_dates() {
 #[test]
 fn t09_read_xlsx_with_booleans() {
     let path = fixture("compatibility/t09.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
         .head_row_number(0)
         .do_read_sync().unwrap();
@@ -223,7 +223,7 @@ fn t09_read_xlsx_with_booleans() {
 #[test]
 fn demo_xlsx_basic_read() {
     let path = fixture("demo/demo.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
         .read_default_return(ReadDefaultReturn::ActualData)
         .do_read_sync().unwrap();
@@ -239,7 +239,7 @@ fn demo_xlsx_basic_read() {
 #[test]
 fn demo_csv_basic_read() {
     let path = fixture("demo/demo.csv");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
     let rows = EasyExcel::read_sync::<DynamicRow>(&path).do_read_sync().unwrap();
     assert!(!rows.is_empty(), "demo.csv should have data");
 }
@@ -398,7 +398,7 @@ fn fill_horizontal_xlsx_exists() {
 #[test]
 fn cross_validation_simple_xlsx_row_count() {
     let path = fixture("demo/demo.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
 
     // Java reads this file with EasyExcel.read(path, DemoData.class, listener).sheet().doRead()
     // The listener collects rows into a list
@@ -418,7 +418,7 @@ fn cross_validation_simple_xlsx_row_count() {
 #[test]
 fn cross_validation_demo_csv_row_count() {
     let path = fixture("demo/demo.csv");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
 
     let rows = EasyExcel::read_sync::<DynamicRow>(&path).do_read_sync().unwrap();
     assert!(!rows.is_empty(), "demo.csv should produce data rows in Rust too");
@@ -429,7 +429,7 @@ fn cross_validation_demo_csv_row_count() {
 #[test]
 fn cross_validation_t02_header_names() {
     let path = fixture("compatibility/t02.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
 
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
         .head_row_number(1)
@@ -449,7 +449,7 @@ fn cross_validation_t02_header_names() {
 #[test]
 fn cross_validation_t09_boolean_values() {
     let path = fixture("compatibility/t09.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
 
     let rows = EasyExcel::read_sync::<DynamicRow>(&path).do_read_sync();
     // t09.xlsx has boolean data - test passes regardless of result
@@ -486,7 +486,7 @@ fn cross_validation_t09_boolean_values() {
 #[test]
 fn cross_validation_t07_date_values() {
     let path = fixture("compatibility/t07.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
 
     let rows = EasyExcel::read_sync::<DynamicRow>(&path).do_read_sync().unwrap();
     assert!(!rows.is_empty(), "t07.xlsx should have date data");
@@ -497,7 +497,7 @@ fn cross_validation_t07_date_values() {
 #[test]
 fn cross_validation_shared_strings() {
     let path = fixture("demo/demo.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
 
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
         .read_default_return(ReadDefaultReturn::ActualData)
@@ -522,7 +522,7 @@ fn cross_validation_shared_strings() {
 #[test]
 fn cross_validation_csv_encoding() {
     let path = fixture("demo/demo.csv");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
 
     // Read with UTF-8 (default)
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
@@ -711,7 +711,7 @@ fn cross_validation_encrypted_xlsx() {
 #[test]
 fn cross_validation_multi_sheet_xlsx() {
     let path = fixture("multiplesheets/multiplesheets.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
 
     // Read all sheets (Java: EasyExcel.read(path).sheet(0/1/2).doRead())
     let rows_sheet0 = EasyExcel::read_sync::<DynamicRow>(&path)
@@ -726,7 +726,7 @@ fn cross_validation_multi_sheet_xlsx() {
 #[test]
 fn cross_validation_no_model_read() {
     let path = fixture("demo/demo.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
 
     // Read as DynamicRow (Java equivalent: EasyExcel.read(path).sheet().doReadSync())
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
@@ -754,7 +754,7 @@ fn cross_validation_no_model_read() {
 #[test]
 fn cross_validation_read_cell_data_mode() {
     let path = fixture("demo/demo.xlsx");
-    if !path.exists() { return; }
+    assert!(path.exists(), "required Java fixture missing: {}", path.display());
 
     let rows = EasyExcel::read_sync::<DynamicRow>(&path)
         .read_default_return(ReadDefaultReturn::ReadCellData)

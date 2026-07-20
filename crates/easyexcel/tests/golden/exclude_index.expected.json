@@ -1,0 +1,17 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.excludeorinclude.ExcludeOrIncludeDataTest#t01ExcludeIndex07",
+	"fixture":"artifacts/exclude_index.xlsx",
+	"sheet_index":0,
+	"head_row_number":1,
+	"row_count":1,
+	"cells":{
+		"0.0":"column2",
+		"0.1":"column3"
+	},
+	"rows":[
+		[
+			"column2",
+			"column3"
+		]
+	]
+}

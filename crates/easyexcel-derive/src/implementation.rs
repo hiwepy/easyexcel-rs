@@ -12,6 +12,7 @@ struct StructOptions {
     content_style: Option<proc_macro2::TokenStream>,
     head_font_style: Option<proc_macro2::TokenStream>,
     content_font_style: Option<proc_macro2::TokenStream>,
+    once_absolute_merge: Option<proc_macro2::TokenStream>,
 }
 
 #[derive(Default)]
@@ -28,6 +29,15 @@ struct FieldOptions {
     content_style: Option<proc_macro2::TokenStream>,
     head_font_style: Option<proc_macro2::TokenStream>,
     content_font_style: Option<proc_macro2::TokenStream>,
+    content_loop_merge: Option<proc_macro2::TokenStream>,
+    // Phase 1: new annotation-derived attribute slots
+    image: Option<LitStr>,
+    comment: Option<LitStr>,
+    hyperlink: Option<LitStr>,
+    formula: Option<LitStr>,
+    data_validation: Option<proc_macro2::TokenStream>,
+    conditional: Option<proc_macro2::TokenStream>,
+    filter: bool,
 }
 
 pub(crate) fn expand_excel_row_tokens(
@@ -92,6 +102,14 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
             options.content_style,
             options.head_font_style,
             options.content_font_style,
+            options.content_loop_merge,
+            options.image,
+            options.comment,
+            options.hyperlink,
+            options.formula,
+            options.data_validation,
+            options.conditional,
+            options.filter,
         );
         columns.push(column);
         let position = syn::Index::from(schema_position);
@@ -183,6 +201,7 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn decorate_column(
     mut column: proc_macro2::TokenStream,
     width: Option<LitInt>,
@@ -190,6 +209,14 @@ fn decorate_column(
     content_style: Option<proc_macro2::TokenStream>,
     head_font_style: Option<proc_macro2::TokenStream>,
     content_font_style: Option<proc_macro2::TokenStream>,
+    content_loop_merge: Option<proc_macro2::TokenStream>,
+    image: Option<LitStr>,
+    comment: Option<LitStr>,
+    hyperlink: Option<LitStr>,
+    formula: Option<LitStr>,
+    data_validation: Option<proc_macro2::TokenStream>,
+    conditional: Option<proc_macro2::TokenStream>,
+    filter: bool,
 ) -> proc_macro2::TokenStream {
     if let Some(width) = width {
         column = quote!(#column.with_column_width(#width));
@@ -205,6 +232,31 @@ fn decorate_column(
     }
     if let Some(style) = content_font_style {
         column = quote!(#column.with_content_font_style(#style));
+    }
+    if let Some(merge) = content_loop_merge {
+        column = quote!(#column.with_loop_merge(#merge));
+    }
+    // Phase 1: new annotation-derived columns
+    if let Some(img) = image {
+        column = quote!(#column.with_image_path(#img));
+    }
+    if let Some(cmt) = comment {
+        column = quote!(#column.with_comment(#cmt));
+    }
+    if let Some(link) = hyperlink {
+        column = quote!(#column.with_hyperlink(#link));
+    }
+    if let Some(f) = formula {
+        column = quote!(#column.with_formula(#f));
+    }
+    if let Some(dv) = data_validation {
+        column = quote!(#column.with_data_validation(#dv));
+    }
+    if let Some(cf) = conditional {
+        column = quote!(#column.with_conditional_format(#cf));
+    }
+    if filter {
+        column = quote!(#column.with_auto_filter());
     }
     column
 }
@@ -397,6 +449,10 @@ fn parse_struct_options(
                 options.content_font_style = Some(parse_font_style(&meta, crate_path)?);
                 return Ok(());
             }
+            if meta.path.is_ident("once_absolute_merge") {
+                options.once_absolute_merge = Some(parse_once_absolute_merge(&meta, crate_path)?);
+                return Ok(());
+            }
             Err(meta.error("unsupported ExcelRow struct option"))
         })?;
     }
@@ -453,6 +509,39 @@ fn parse_field_options(
             }
             if meta.path.is_ident("content_font_style") {
                 options.content_font_style = Some(parse_font_style(&meta, crate_path)?);
+                return Ok(());
+            }
+            if meta.path.is_ident("content_loop_merge") {
+                options.content_loop_merge = Some(parse_content_loop_merge(&meta, crate_path)?);
+                return Ok(());
+            }
+            // Phase 1: new annotation attributes
+            if meta.path.is_ident("image") {
+                options.image = Some(meta.value()?.parse()?);
+                return Ok(());
+            }
+            if meta.path.is_ident("comment") {
+                options.comment = Some(meta.value()?.parse()?);
+                return Ok(());
+            }
+            if meta.path.is_ident("hyperlink") {
+                options.hyperlink = Some(meta.value()?.parse()?);
+                return Ok(());
+            }
+            if meta.path.is_ident("formula") {
+                options.formula = Some(meta.value()?.parse()?);
+                return Ok(());
+            }
+            if meta.path.is_ident("data_validation") {
+                options.data_validation = Some(parse_data_validation(&meta, crate_path)?);
+                return Ok(());
+            }
+            if meta.path.is_ident("conditional") {
+                options.conditional = Some(parse_conditional(&meta, crate_path)?);
+                return Ok(());
+            }
+            if meta.path.is_ident("filter") {
+                options.filter = true;
                 return Ok(());
             }
             Err(meta.error("unsupported ExcelRow field option"))
@@ -740,6 +829,152 @@ fn parse_font_style(
     }))
 }
 
+/// Parses `content_loop_merge(each_row = N, column_extend = M)` into
+/// [`easyexcel_core::LoopMergeProperty`] construction tokens.
+fn parse_content_loop_merge(
+    meta: &ParseNestedMeta<'_>,
+    crate_path: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mut each_row: Option<LitInt> = None;
+    let mut column_extend: Option<LitInt> = None;
+    meta.parse_nested_meta(|property| {
+        if property.path.is_ident("each_row") {
+            each_row = Some(parse_integer::<u32>(&property)?);
+            return Ok(());
+        }
+        if property.path.is_ident("column_extend") {
+            column_extend = Some(parse_integer::<u16>(&property)?);
+            return Ok(());
+        }
+        Err(property.error("unsupported content_loop_merge property"))
+    })?;
+    // Java defaults: eachRow = 1, columnExtend = 1.
+    let each_row = each_row.unwrap_or_else(|| LitInt::new("1", proc_macro2::Span::call_site()));
+    let column_extend =
+        column_extend.unwrap_or_else(|| LitInt::new("1", proc_macro2::Span::call_site()));
+    Ok(quote!(#crate_path::LoopMergeProperty::new(#each_row, #column_extend)))
+}
+
+/// Parses `data_validation(type = "...", operator = "...", formula1 = "...", formula2 = "...")`
+/// into construction tokens for the column metadata.
+fn parse_data_validation(
+    meta: &ParseNestedMeta<'_>,
+    crate_path: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mut data_type: Option<LitStr> = None;
+    let mut operator: Option<LitStr> = None;
+    let mut formula1: Option<LitStr> = None;
+    let mut formula2: Option<LitStr> = None;
+    meta.parse_nested_meta(|property| {
+        if property.path.is_ident("type") {
+            data_type = Some(property.value()?.parse()?);
+            return Ok(());
+        }
+        if property.path.is_ident("operator") {
+            operator = Some(property.value()?.parse()?);
+            return Ok(());
+        }
+        if property.path.is_ident("formula1") {
+            formula1 = Some(property.value()?.parse()?);
+            return Ok(());
+        }
+        if property.path.is_ident("formula2") {
+            formula2 = Some(property.value()?.parse()?);
+            return Ok(());
+        }
+        Err(property.error("unsupported data_validation property"))
+    })?;
+    // Java defaults: type = "list", operator = "between"
+    let default_str = |v: &str| LitStr::new(v, proc_macro2::Span::call_site());
+    let data_type = data_type.unwrap_or_else(|| default_str("list"));
+    let operator = operator.unwrap_or_else(|| default_str("between"));
+    let formula1 = formula1.unwrap_or_else(|| default_str(""));
+    let formula2 = formula2.unwrap_or_else(|| default_str(""));
+    Ok(quote!(#crate_path::ExcelDataValidationMeta::new(
+        #data_type,
+        #operator,
+        #formula1,
+        #formula2,
+    )))
+}
+
+/// Parses `conditional(condition = "...", font_color = "...", background_color = "...")`
+/// into construction tokens for conditional-formatting metadata.
+fn parse_conditional(
+    meta: &ParseNestedMeta<'_>,
+    _crate_path: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mut condition: Option<LitStr> = None;
+    let mut font_color: Option<LitStr> = None;
+    let mut background_color: Option<LitStr> = None;
+    meta.parse_nested_meta(|property| {
+        if property.path.is_ident("condition") {
+            condition = Some(property.value()?.parse()?);
+            return Ok(());
+        }
+        if property.path.is_ident("font_color") {
+            font_color = Some(property.value()?.parse()?);
+            return Ok(());
+        }
+        if property.path.is_ident("background_color") {
+            background_color = Some(property.value()?.parse()?);
+            return Ok(());
+        }
+        Err(property.error("unsupported conditional property"))
+    })?;
+    let default_str = |v: &str| LitStr::new(v, proc_macro2::Span::call_site());
+    let condition = condition.unwrap_or_else(|| default_str(""));
+    let font_color = font_color.unwrap_or_else(|| default_str(""));
+    let background_color = background_color.unwrap_or_else(|| default_str(""));
+    // Return a tuple matching ExcelColumn::with_conditional_format signature:
+    // (&'static str, &'static str, &'static str). Outer parens + inner comma
+    // produce the tuple when interpolated into the call site.
+    Ok(quote!((#condition, #font_color, #background_color)))
+}
+
+/// Parses `once_absolute_merge(first_row_index = ..., ...)` into
+/// [`easyexcel_core::OnceAbsoluteMergeProperty`] construction tokens.
+fn parse_once_absolute_merge(
+    meta: &ParseNestedMeta<'_>,
+    crate_path: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let mut first_row_index: Option<LitInt> = None;
+    let mut last_row_index: Option<LitInt> = None;
+    let mut first_column_index: Option<LitInt> = None;
+    let mut last_column_index: Option<LitInt> = None;
+    meta.parse_nested_meta(|property| {
+        if property.path.is_ident("first_row_index") {
+            first_row_index = Some(parse_signed_integer(&property)?);
+            return Ok(());
+        }
+        if property.path.is_ident("last_row_index") {
+            last_row_index = Some(parse_signed_integer(&property)?);
+            return Ok(());
+        }
+        if property.path.is_ident("first_column_index") {
+            first_column_index = Some(parse_signed_integer(&property)?);
+            return Ok(());
+        }
+        if property.path.is_ident("last_column_index") {
+            last_column_index = Some(parse_signed_integer(&property)?);
+            return Ok(());
+        }
+        Err(property.error("unsupported once_absolute_merge property"))
+    })?;
+    // Java defaults are -1 (unset).
+    let default = || LitInt::new("-1", proc_macro2::Span::call_site());
+    let first_row_index = first_row_index.unwrap_or_else(default);
+    let last_row_index = last_row_index.unwrap_or_else(default);
+    let first_column_index = first_column_index.unwrap_or_else(default);
+    let last_column_index = last_column_index.unwrap_or_else(default);
+    Ok(quote!(#crate_path::OnceAbsoluteMergeProperty::new(
+        #first_row_index,
+        #last_row_index,
+        #first_column_index,
+        #last_column_index,
+    )))
+}
+
 fn parse_integer<T>(meta: &ParseNestedMeta<'_>) -> syn::Result<LitInt>
 where
     T: std::str::FromStr,
@@ -750,6 +985,48 @@ where
         .base10_parse::<T>()
         .map_err(|error| syn::Error::new_spanned(&value, error))?;
     Ok(value)
+}
+
+/// Parses a signed integer literal, including unary negation (`-1`).
+fn parse_signed_integer(meta: &ParseNestedMeta<'_>) -> syn::Result<LitInt> {
+    let expr: syn::Expr = meta.value()?.parse()?;
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: Lit::Int(value),
+            ..
+        }) => {
+            value
+                .base10_parse::<i32>()
+                .map_err(|error| syn::Error::new_spanned(&value, error))?;
+            Ok(value)
+        }
+        syn::Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => match *expr {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: Lit::Int(value),
+                ..
+            }) => {
+                let magnitude = value
+                    .base10_parse::<i32>()
+                    .map_err(|error| syn::Error::new_spanned(&value, error))?;
+                let negated = magnitude
+                    .checked_neg()
+                    .ok_or_else(|| syn::Error::new_spanned(&value, "integer overflow"))?;
+                Ok(LitInt::new(&negated.to_string(), value.span()))
+            }
+            other => Err(syn::Error::new_spanned(
+                other,
+                "merge index must be an integer",
+            )),
+        },
+        other => Err(syn::Error::new_spanned(
+            other,
+            "merge index must be an integer",
+        )),
+    }
 }
 
 fn parse_named_variant(
@@ -793,6 +1070,9 @@ fn write_metadata_tokens(
     }
     if let Some(style) = &options.content_font_style {
         metadata = quote!(#metadata.content_font_style(#style));
+    }
+    if let Some(merge) = &options.once_absolute_merge {
+        metadata = quote!(#metadata.once_absolute_merge(#merge));
     }
     metadata
 }

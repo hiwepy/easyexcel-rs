@@ -2,12 +2,13 @@
 
 use easyexcel_core::AnalysisContext;
 
-/// Mirrors Java `ExcelAnalyser`.
+/// Mirrors Java `com.alibaba.excel.analysis.ExcelAnalyser`.
 ///
 /// Java declares four methods: `analysis`, `finish`, `excelExecutor`,
-/// `analysisContext`. Rust's `read_xlsx` / `read_xls` / `read_csv`
-/// functions cover the same contract functionally; this trait exists
-/// for 1:1 Java package parity.
+/// `analysisContext`. Rust's [`crate::read_xlsx`] / [`crate::read_xls`] /
+/// [`crate::read_csv`] functions cover the same contract functionally;
+/// [`super::ExcelAnalyserImpl`] is the hot-path dispatcher that selects among
+/// them. This trait exists for 1:1 Java package parity.
 pub trait ExcelAnalyser {
     /// Parses the specified sheets. (Java `analysis(List<ReadSheet>, Boolean)`)
     fn analysis(&mut self);

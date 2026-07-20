@@ -9,18 +9,22 @@ repository.workspace = true
 
 [dependencies]
 bigdecimal.workspace = true
+calamine.workspace = true
+cfb.workspace = true
+chrono.workspace = true
 easyexcel-core = { path = "../easyexcel-core" }
 csv.workspace = true
 encoding_rs.workspace = true
+flate2.workspace = true
 ms-offcrypto-writer.workspace = true
 rand.workspace = true
 rust_xlsxwriter.workspace = true
-
-[dev-dependencies]
-calamine.workspace = true
-chrono.workspace = true
 tempfile.workspace = true
 zip.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

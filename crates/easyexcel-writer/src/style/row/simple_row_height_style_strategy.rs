@@ -23,7 +23,16 @@ impl SimpleRowHeightStyleStrategy {
 
 impl WriteHandler for SimpleRowHeightStyleStrategy {
     fn order(&self) -> i32 {
+        // Java `OrderConstant.DEFINE_STYLE`
         -50_000
+    }
+
+    fn style_head_row_height(&self) -> Option<u16> {
+        AbstractRowHeightStyleStrategy::head_row_height(self)
+    }
+
+    fn style_content_row_height(&self) -> Option<u16> {
+        AbstractRowHeightStyleStrategy::content_row_height(self)
     }
 }
 

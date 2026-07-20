@@ -1,14 +1,37 @@
 //! Mirrors Java `com.alibaba.excel.analysis.v07.handlers.CellInlineStringValueTagHandler`.
 //!
-//! Java's handler processes one XML tag type inside the SAX event loop.
-//! In Rust, the equivalent logic is inlined into the `quick_xml` event
-//! match arms in `xlsx_rows.rs::XlsxDisplayCellReader`. This struct
-//! exists for 1:1 Java package parity.
+//! Java class is empty — it inherits `characters` from
+//! `AbstractCellValueTagHandler` for the inline `<t>` tag.
 
-use super::super::handlers::xlsx_tag_handler::XlsxTagHandler;
+use super::abstract_cell_value_tag_handler::AbstractCellValueTagHandler;
+use super::xlsx_tag_handler::XlsxTagHandler;
 
-/// Mirrors Java `CellInlineStringValueTagHandler`.
-#[allow(dead_code)]
-pub struct CellInlineStringValueTagHandler;
+/// Mirrors Java `CellInlineStringValueTagHandler` (inline string `<t>`).
+#[derive(Debug, Default)]
+pub struct CellInlineStringValueTagHandler {
+    inner: AbstractCellValueTagHandler,
+}
 
-impl XlsxTagHandler for CellInlineStringValueTagHandler {}
+impl CellInlineStringValueTagHandler {
+    /// Creates an idle inline-string handler.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Takes accumulated inline `<t>` text.
+    pub fn take(&mut self) -> String {
+        self.inner.take()
+    }
+}
+
+impl XlsxTagHandler for CellInlineStringValueTagHandler {
+    /// Java `CellInlineStringValueTagHandler` inherits empty `startElement` —
+    /// multiple rich-text `<t>` runs append into the same `tempData`.
+    fn start_element(&mut self, _name: &str, _attrs: &str) {}
+
+    /// Java `AbstractCellValueTagHandler.characters`.
+    fn characters(&mut self, ch: &str) {
+        self.inner.append(ch);
+    }
+}

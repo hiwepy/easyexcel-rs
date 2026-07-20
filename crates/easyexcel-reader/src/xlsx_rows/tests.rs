@@ -359,18 +359,26 @@ impl SharedStringCacheReader for RejectingSharedStringCache {
 
 impl SharedStringCache for RejectingSharedStringCache {}
 
+fn memory_read_options() -> crate::ReadOptions {
+    crate::ReadOptions {
+        read_cache: ReadCacheMode::Memory,
+        ..crate::ReadOptions::default()
+    }
+}
+
 #[test]
 fn shared_string_stream_propagates_package_xml_utf8_factory_and_cache_failures() {
+    let options = memory_read_options();
     let mut missing = archive(&[]);
     let cache = path_cache(&missing);
     assert!(
-        read_shared_strings(&mut missing, &cache, "missing.xml", ReadCacheMode::Memory).is_err()
+        read_shared_strings(&mut missing, &cache, "missing.xml", &options).is_err()
     );
 
     let mut malformed = archive(&[("shared.xml", "<sst><si><")]);
     let cache = path_cache(&malformed);
     assert!(
-        read_shared_strings(&mut malformed, &cache, "shared.xml", ReadCacheMode::Memory).is_err()
+        read_shared_strings(&mut malformed, &cache, "shared.xml", &options).is_err()
     );
 
     for bytes in [
@@ -381,7 +389,7 @@ fn shared_string_stream_propagates_package_xml_utf8_factory_and_cache_failures()
             .expect("shared-string ZIP archive");
         let cache = path_cache(&archive);
         assert!(
-            read_shared_strings(&mut archive, &cache, "shared.xml", ReadCacheMode::Memory).is_err()
+            read_shared_strings(&mut archive, &cache, "shared.xml", &options).is_err()
         );
     }
 
@@ -468,6 +476,20 @@ fn row_scanner_handles_empty_implicit_limits_and_malformed_xml() -> Result<()> {
             b"<worksheet><sheetData/></worksheet>".as_slice(),
         ))?,
         None
+    );
+    // CountTagHandler dimension fallback when sheetData has no <row> elements.
+    assert_eq!(
+        scan_last_row(Cursor::new(
+            br#"<worksheet><dimension ref="A1:C10"/><sheetData/></worksheet>"#.as_slice(),
+        ))?,
+        Some(9)
+    );
+    // Observed <row> wins over an oversized dimension.
+    assert_eq!(
+        scan_last_row(Cursor::new(
+            br#"<worksheet><dimension ref="A1:Z99"/><sheetData><row r="2"/></sheetData></worksheet>"#.as_slice(),
+        ))?,
+        Some(1)
     );
     assert_eq!(
         scan_last_row(Cursor::new(

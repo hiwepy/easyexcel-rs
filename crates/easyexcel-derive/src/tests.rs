@@ -45,7 +45,18 @@ fn crate_paths_support_self_renames_and_fallback_lookup() {
 #[test]
 fn struct_options_accept_ignore_unannotated_and_reject_unknown_values() {
     let input: DeriveInput = parse_quote! {
-        #[excel(ignore_unannotated, column_width = 25, head_row_height = 20, content_row_height = 16)]
+        #[excel(
+            ignore_unannotated,
+            column_width = 25,
+            head_row_height = 20,
+            content_row_height = 16,
+            once_absolute_merge(
+                first_row_index = 0,
+                last_row_index = 1,
+                first_column_index = 0,
+                last_column_index = 2
+            )
+        )]
         struct User { name: String }
     };
     let options = parse_struct_options(&input.attrs, &quote!(::easyexcel)).expect("valid option");
@@ -74,6 +85,7 @@ fn struct_options_accept_ignore_unannotated_and_reject_unknown_values() {
             .expect("u16"),
         16
     );
+    assert!(options.once_absolute_merge.is_some());
 
     let input: DeriveInput = parse_quote! {
         #[excel(unknown)]
@@ -93,6 +105,8 @@ fn struct_options_accept_ignore_unannotated_and_reject_unknown_values() {
         "column_width = 65536",
         "head_row_height",
         "content_row_height = -1",
+        "once_absolute_merge(unknown = 1)",
+        "once_absolute_merge(first_row_index = \"zero\")",
     ] {
         let source = format!("#[excel({attribute})] struct User {{ value: String }}");
         let input = syn::parse_str::<DeriveInput>(&source).expect("attribute tokens");
@@ -221,6 +235,7 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
                 content_style(wrapped = false),
                 head_font_style(bold = true),
                 content_font_style(italic = true),
+                content_loop_merge(each_row = 2, column_extend = 1),
                 ignore
             )]
             name: String,
@@ -264,6 +279,7 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
     assert!(options.content_style.is_some());
     assert!(options.head_font_style.is_some());
     assert!(options.content_font_style.is_some());
+    assert!(options.content_loop_merge.is_some());
 
     let input: DeriveInput = parse_quote! {
         struct User { #[excel(unknown)] name: String }
@@ -301,6 +317,9 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
         "content_style(unknown = true)",
         "head_font_style(unknown = true)",
         "content_font_style(unknown = true)",
+        "content_loop_merge(unknown = 1)",
+        "content_loop_merge(each_row = \"two\")",
+        "content_loop_merge(column_extend = 65536)",
     ] {
         let source = format!("struct User {{ #[excel({attribute})] value: String }}");
         let input = syn::parse_str::<DeriveInput>(&source).expect("attribute tokens");
@@ -329,7 +348,13 @@ fn expansion_generates_schema_readers_writers_defaults_and_generics() {
             head_style(fill_pattern = "solid"),
             content_style(wrapped = true),
             head_font_style(bold = true),
-            content_font_style(italic = true)
+            content_font_style(italic = true),
+            once_absolute_merge(
+                first_row_index = 0,
+                last_row_index = 0,
+                first_column_index = 0,
+                last_column_index = 1
+            )
         )]
         struct User<T>
         where
@@ -344,7 +369,8 @@ fn expansion_generates_schema_readers_writers_defaults_and_generics() {
                 head_style(wrapped = false),
                 content_style(shrink_to_fit = true),
                 head_font_style(font_name = "Arial"),
-                content_font_style(bold = false)
+                content_font_style(bold = false),
+                content_loop_merge(each_row = 2, column_extend = 1)
             )]
             name: String,
             #[excel(ignore)]
@@ -362,7 +388,11 @@ fn expansion_generates_schema_readers_writers_defaults_and_generics() {
         "with_content_style",
         "with_head_font_style",
         "with_content_font_style",
+        "with_loop_merge",
+        "LoopMergeProperty :: new (2 , 1)",
         "ExcelWriteMetadata :: new () . column_width (25) . head_row_height (20) . content_row_height (16) . head_style",
+        "once_absolute_merge",
+        "OnceAbsoluteMergeProperty :: new",
         "姓名",
         "Option :: Some (0)",
         "Option :: Some (\"text\")",

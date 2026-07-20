@@ -5,15 +5,20 @@ use crate::excel_border_style::ExcelBorderStyle;
 use crate::excel_color::ExcelColor;
 use crate::excel_data_format::ExcelDataFormat;
 use crate::excel_fill_pattern::ExcelFillPattern;
+use crate::excel_font_style::ExcelFontStyle;
 use crate::excel_horizontal_alignment::ExcelHorizontalAlignment;
 use crate::excel_vertical_alignment::ExcelVerticalAlignment;
 
 /// Cell-style properties generated from `HeadStyle` or `ContentStyle` equivalents.
 ///
-/// All 23 fields correspond one-for-one to Java's `WriteCellStyle`. Java's
-/// boxed `Short` / `Integer` becomes `Option<u16>` / `Option<i16>`; Java's
-/// `BooleanEnum` becomes `Option<bool>`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// Fields correspond to Java's `WriteCellStyle`. Java's boxed `Short` /
+/// `Integer` becomes `Option<u16>` / `Option<i16>`; Java's `BooleanEnum`
+/// becomes `Option<bool>`. Nested `writeFont` is carried as [`ExcelFontStyle`]
+/// (Copy annotation/strategy font; runtime owned [`crate::WriteFont`] converts
+/// via writer helpers).
+///
+/// `Eq` is not derived because [`ExcelFontStyle`] embeds `f64` font size.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ExcelCellStyle {
     /// Whether the cell is hidden when the sheet is protected.
     pub hidden: Option<bool>,
@@ -57,6 +62,8 @@ pub struct ExcelCellStyle {
     pub shrink_to_fit: Option<bool>,
     /// Built-in or custom Excel number format.
     pub data_format: Option<ExcelDataFormat>,
+    /// Nested font. (Java `WriteCellStyle.writeFont` / `WriteFont`)
+    pub font: Option<ExcelFontStyle>,
 }
 
 impl ExcelCellStyle {
@@ -85,6 +92,14 @@ impl ExcelCellStyle {
             fill_foreground_color: None,
             shrink_to_fit: None,
             data_format: None,
+            font: None,
         }
+    }
+
+    /// Attaches a nested font. (Java `WriteCellStyle.setWriteFont(WriteFont)`)
+    #[must_use]
+    pub const fn with_font(mut self, font: ExcelFontStyle) -> Self {
+        self.font = Some(font);
+        self
     }
 }

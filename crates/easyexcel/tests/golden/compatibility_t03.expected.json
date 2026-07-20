@@ -1,0 +1,27 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.compatibility.CompatibilityTest#t03",
+	"fixture":"compatibility/t03.xlsx",
+	"sheet_index":0,
+	"head_row_number":1,
+	"row_count":1,
+	"cells":{
+		"0.0":"3",
+		"0.11":"3"
+	},
+	"rows":[
+		[
+			"3",
+			"3",
+			"4",
+			"3",
+			"3",
+			"3",
+			"3",
+			"3",
+			"6",
+			"5",
+			"4",
+			"3"
+		]
+	]
+}

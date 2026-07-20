@@ -1,0 +1,21 @@
+{
+	"source":"com.alibaba.easyexcel.test.core.template.TemplateDataTest#template03#read",
+	"fixture":"template/template03.xls",
+	"sheet_index":0,
+	"head_row_number":0,
+	"row_count":2,
+	"cells":{
+		"0.0":"字符串0",
+		"0.1":"字符串1"
+	},
+	"rows":[
+		[
+			"字符串0",
+			"字符串1"
+		],
+		[
+			"字符串0",
+			"字符串1"
+		]
+	]
+}
