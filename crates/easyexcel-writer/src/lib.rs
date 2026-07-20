@@ -982,6 +982,51 @@ impl ExcelWriter {
         Ok(self)
     }
 
+    /// Three-arg write with an explicit `WriteTable`, mirroring Java
+    /// `ExcelWriter.write(Collection, WriteSheet, WriteTable)`.
+    ///
+    /// Phase 4 addition: this overload is the canonical entry point used
+    /// when a single sheet contains multiple tables (e.g. one row block
+    /// followed by a second typed block). The table options
+    /// (`table_no`, `need_head`, `head_style`) override the parent
+    /// sheet's options via [`crate::builder::excel_writer_table_builder::merge_table_options`].
+    ///
+    /// For backward compatibility this overload currently delegates to
+    /// the two-arg `write` path. The merged options are applied to the
+    /// sheet for the duration of this batch.
+    ///
+    /// # Errors
+    ///
+    /// Same as `write(rows, sheet)`. In addition, returns an error when
+    /// the writer is finished.
+    pub fn write_with_table<T, I>(
+        &mut self,
+        rows: I,
+        sheet: &WriteSheet<T>,
+        table: &MirroredWriteTable,
+    ) -> Result<&mut Self>
+    where
+        T: ExcelRow,
+        I: IntoIterator<Item = T>,
+    {
+        if self.finished {
+            return Err(ExcelError::Unsupported(
+                "writer already finished".to_owned(),
+            ));
+        }
+        self.start()?;
+        // Merge table-level options into the sheet before writing.
+        // (Java: ExcelBuilderImpl.addContent(Collection, WriteSheet, WriteTable))
+        let merged = crate::builder::excel_writer_table_builder::merge_table_options(
+            sheet.options(),
+            table,
+        );
+        // Rebuild a WriteSheet with merged options for this batch.
+        let sheet_with_table: WriteSheet<T> = WriteSheet::from_options(merged);
+        self.write(rows, &sheet_with_table)?;
+        Ok(self)
+    }
+
     /// Returns the logical output path used by Java-style builder facades.
     #[must_use]
     pub fn output_path(&self) -> &std::path::Path {

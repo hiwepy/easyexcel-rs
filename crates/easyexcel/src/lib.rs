@@ -120,6 +120,26 @@ impl EasyExcel {
         WriteSheet::new_index(index)
     }
 
+    /// Creates a `WriteTable` value mirroring Java
+    /// `EasyExcelFactory.writerTable(Integer)`. (Java `writerTable(int)`)
+    #[must_use]
+    pub fn writer_table(table_no: i32) -> easyexcel_writer::MirroredWriteTable {
+        easyexcel_writer::MirroredWriteTable::with_table_no(table_no)
+    }
+
+    /// Begins a multi-table write flow that produces an `ExcelWriterTableBuilder`.
+    ///
+    /// Mirrors Java `ExcelWriterBuilder.table(Integer)` which yields an
+    /// `ExcelWriterTableBuilder` for configuring per-table options before
+    /// calling `.do_write(rows, sheet, table)`.
+    ///
+    /// Phase 4 addition: provides the three-arg `write(Collection, WriteSheet, WriteTable)`
+    /// overload at the public facade level.
+    #[must_use]
+    pub fn writer_table_builder(table_no: i32) -> easyexcel_writer::ExcelWriterTableBuilder {
+        easyexcel_writer::ExcelWriterTableBuilder::new().table_no(table_no)
+    }
+
     /// Fills scalar `{key}` placeholders in an existing XLSX template.
     ///
     /// Legacy `.xls` templates return typed [`ExcelError::Unsupported`]
