@@ -39,5 +39,10 @@ pub fn declared_fields(_type_id: TypeId) -> &'static [&'static str] {
 /// Mirrors `com.alibaba.excel.util.ClassUtils#removeThreadLocalCache`.
 ///
 /// Java caches reflected `Field` arrays in a `ThreadLocal` for performance.
-/// Rust has no runtime reflection to cache, so this is a no-op.
-pub fn remove_thread_local_cache() {}
+/// Rust field info is compile-time (`&'static [ExcelColumn]`), no runtime
+/// cache needed. The counter allows callers to verify the clear lifecycle.
+pub fn remove_thread_local_cache() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static CLEAR_COUNT: AtomicU32 = AtomicU32::new(0);
+    CLEAR_COUNT.fetch_add(1, Ordering::Relaxed);
+}

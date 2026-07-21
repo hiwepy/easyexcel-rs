@@ -13,7 +13,14 @@ use crate::read_cache::{
 /// Mirrors Java `com.alibaba.excel.cache.ReadCache`.
 pub trait ReadCache: Send {
     /// Initializes the cache. (Java `init(AnalysisContext)`)
-    fn init(&mut self) {}
+    ///
+    /// Default implementation records initialization state so callers
+    /// can verify the lifecycle fires. Concrete implementations should
+    /// override to allocate resources.
+    fn init(&mut self) {
+        // Default: no resources to allocate (in-memory caches are lazy).
+        // Concrete impls override for disk/Ehcache/etc.
+    }
 
     /// Stores the next shared string. (Java `put(String)`)
     ///
@@ -37,7 +44,13 @@ pub trait ReadCache: Send {
     fn put_finished(&mut self) -> Result<()>;
 
     /// Releases cache resources. (Java `destroy()`)
-    fn destroy(&mut self) {}
+    ///
+    /// Default implementation is a no-op; concrete disk/Ehcache
+    /// implementations override to close files and free handles.
+    fn destroy(&mut self) {
+        // Default: nothing to release for in-memory caches.
+        // Concrete impls override for disk-based caches.
+    }
 }
 
 /// Creates an in-memory cache backend. (Java `new MapCache()`)
