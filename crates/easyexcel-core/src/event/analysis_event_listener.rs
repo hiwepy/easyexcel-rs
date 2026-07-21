@@ -3,10 +3,15 @@
 use crate::CellValue;
 
 pub trait AnalysisEventListener<T>: crate::ReadListener<T> {
-    fn invoke_head_map(fn invoke_head_map(&mut self, _head_map: std::collections::HashMap<usize, String>, _context: &crate::AnalysisContext) {}mut self, _head_map: std::collections::HashMap<usize, String>, _context: &crate::AnalysisContext) { let _ = (_head_map, _context); }
-    fn do_after_all_analysed(&mut self, _context: &crate::AnalysisContext) -> crate::Result<()> { Ok(()) }
+    fn invoke_head_map(&mut self, head_map: std::collections::HashMap<usize, String>, context: &crate::AnalysisContext) {
+        let _ = (head_map, context);
+    }
+    fn do_after_all_analysed(&mut self, context: &crate::AnalysisContext) -> crate::Result<()> {
+        let _ = context;
+        Ok(())
+    }
 }
 
-fn _import_marker(_: CellValue) {
-    let _ = _;
+fn _import_marker(v: CellValue) {
+    let _ = v;
 }

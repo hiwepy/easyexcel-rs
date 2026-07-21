@@ -1,6 +1,7 @@
 //! Mirrors Java SAX ContentHandler for XLSX tag dispatch.
 
 pub trait XlsxTagHandler {
+    fn support(&self) -> bool { true }
     fn start_element(&mut self, name: &str, attrs: &str) {
         let _ = (name, attrs);
     }

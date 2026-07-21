@@ -6,12 +6,14 @@ use crate::cell_extra::CellExtra;
 use crate::read_listener::ReadListener;
 
 pub trait AbstractIgnoreExceptionReadListener<T>: ReadListener<T> {
-    fn on_exception_silent(fn on_exception_silent(&mut self, _error: &crate::excel_error::ExcelError, _context: &AnalysisContext) {}mut self, _error: &crate::excel_error::ExcelError, _context: &AnalysisContext) { let _ = (_error, _context); }
+    fn on_exception_silent(&mut self, error: &crate::excel_error::ExcelError, context: &AnalysisContext) {
+        let _ = (error, context);
+    }
     fn extra_silent(&mut self, extra: &CellExtra, context: &AnalysisContext) {
         let _ = (extra, context);
     }
 }
 
-fn _import_marker(_: HashMap<usize, String>) {
-    let _ = _;
+fn _import_marker(m: HashMap<usize, String>) {
+    let _ = m;
 }
