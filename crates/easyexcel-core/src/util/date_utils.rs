@@ -74,8 +74,13 @@ pub fn is_internal_date_format(format: &str) -> bool {
 /// Mirrors `com.alibaba.excel.util.DateUtils#removeThreadLocalCache`.
 ///
 /// Java keeps `ThreadLocal<Format>` caches for `SimpleDateFormat` thread safety.
-/// `chrono` is already thread-safe so this is a no-op shim.
-pub fn remove_thread_local_cache() {}
+/// `chrono` is already thread-safe. The Rust port uses a global counter so
+/// callers can verify the cache-clearing lifecycle fires.
+pub fn remove_thread_local_cache() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static CLEAR_COUNT: AtomicU32 = AtomicU32::new(0);
+    CLEAR_COUNT.fetch_add(1, Ordering::Relaxed);
+}
 
 /// Best-effort translation of Java `SimpleDateFormat` pattern letters to
 /// `chrono` format specifiers. Only the letters actually used by EasyExcel
