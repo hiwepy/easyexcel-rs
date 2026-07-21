@@ -34,7 +34,7 @@ impl CellValueTagHandler {
 impl XlsxTagHandler for CellValueTagHandler {
     /// Java `CellValueTagHandler` inherits empty `startElement` — buffer is
     /// cleared by `CellTagHandler.startElement` when `<c>` opens.
-    fn start_element(&mut self, _name: &str, _attrs: &str) {}
+    fn start_element(&mut self, name: &str, attrs: &str) { let _ = (name, attrs); }
 
     /// Java `AbstractCellValueTagHandler.characters`.
     fn characters(&mut self, ch: &str) {
