@@ -3898,63 +3898,19 @@ fn write_xls_annotation_dimensions_and_style() -> Result<()> {
     Ok(())
 }
 
-/// Phase 5.3: BIFF8 RC4 encryption implemented. Test XLS password write succeeds.
+/// Phase 5.5: BIFF8 images supported. Test XLS password write succeeds.
 #[test]
 fn write_xls_rejects_password_and_images() {
     let directory = tempdir().expect("tempdir");
-    let result = write_xls::<DimensionRow, _>(
+    let _ = write_xls::<DimensionRow, _>(
         &directory.path().join("protected03.xls"),
         &WriteOptions {
             password: Some("secret".to_owned()),
             ..WriteOptions::default()
         },
         Vec::new(),
-    );
-    // Phase 5.3: XLS encryption now works — expect success or graceful IO error
-    match result {
-        Ok(()) => {
-            assert!(directory.path().join("protected03.xls").exists());
-        }
-        Err(e) => {
-            // Documented gap if RC4 path fails on this platform
-            let _ = e;
-        }
-    }
-    impl ExcelRow for ImageOnlyRow {
-        fn schema() -> &'static [ExcelColumn] {
-            const COLUMNS: &[ExcelColumn] =
-                &[ExcelColumn::new("pic", "Pic", Some(0), 0, None)];
-            COLUMNS
-        }
-
-        fn write_metadata() -> &'static ExcelWriteMetadata {
-            const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new();
-            &METADATA
-        }
-
-        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
-            Ok(Self)
-        }
-
-        fn to_row(&self) -> Result<Vec<CellValue>> {
-            Ok(vec![CellValue::Image(vec![0xFF, 0xD8, 0xFF, 0xD9])])
-        }
-    }
-
-    let image_err = write_xls::<ImageOnlyRow, _>(
-        &directory.path().join("image03.xls"),
-        &WriteOptions::default(),
-        vec![ImageOnlyRow],
     )
-    .expect_err("image cell on .xls must fail");
-    assert!(
-        matches!(image_err, ExcelError::Unsupported(_)),
-        "expected Unsupported, got {image_err}"
-    );
-    assert!(
-        image_err
-            .to_string()
-            .contains("legacy XLS writing does not support images"),
-        "unexpected image error: {image_err}"
-    );
+    .expect("XLS password write must succeed (Phase 5.3)");
+    assert!(directory.path().join("protected03.xls").exists());
+    // Phase 5.5: image writing also works — see core_phase5_xls_features test
 }

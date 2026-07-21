@@ -1306,13 +1306,12 @@ fn facade_borrowed_xlsx_stream_is_real_and_remains_caller_owned() -> Result<()> 
         .do_write([Value("biff8".to_owned())])?;
     // OLE/CFB compound-document signature (D0 CF 11 E0).
     assert!(xls_stream.bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]));
-    assert!(matches!(
-        EasyExcel::write::<Value>("response.xls")
-            .password("123456")
-            .to_writer(&mut FacadeProbeWrite::default())
-            .do_write([Value("encrypted".to_owned())]),
-        Err(ExcelError::Unsupported(_))
-    ));
+    // Phase 5.3: XLS password is now supported via BIFF8 RC4
+    assert!(EasyExcel::write::<Value>("response.xls")
+        .password("123456")
+        .to_writer(&mut FacadeProbeWrite::default())
+        .do_write([Value("encrypted".to_owned())])
+        .is_ok());
     Ok(())
 }
 
@@ -1628,12 +1627,11 @@ fn facade_propagates_read_sync_and_write_failures() {
         .do_write(Vec::<Value>::new())
         .expect("empty BIFF8 write");
     assert!(xls_empty.exists());
-    assert!(matches!(
-        EasyExcel::write::<Value>(directory.path().join("encrypted.xls"))
-            .password("123456")
-            .do_write(Vec::new()),
-        Err(ExcelError::Unsupported(_))
-    ));
+    // Phase 5.3: XLS password is now supported via BIFF8 RC4
+    assert!(EasyExcel::write::<Value>(directory.path().join("encrypted.xls"))
+        .password("123456")
+        .do_write(Vec::new())
+        .is_ok());
 
     let date = NaiveDate::from_ymd_opt(2026, 7, 17).expect("valid date");
     for (index, value) in [
