@@ -130,4 +130,4 @@ pub trait WriteHandler {
 
 // `CellValue` import retained for downstream conversions; suppress unused warning.
 #[allow(dead_code)]
-fn _import_marker(_: CellValue) {}
+fn _import_marker(v: CellValue) { let _ = v; }

@@ -1,12 +1,16 @@
 //! Mirrors Java `com.alibaba.excel.write.handler.SheetWriteHandler`.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use easyexcel_core::WriteSheetContext;
 
-/// Mirrors Java `SheetWriteHandler extends WriteHandler`.
-pub trait SheetWriteHandler: easyexcel_core::WriteHandler {
-    /// Called before a sheet is created. (Java `beforeSheetCreate`)
-    fn before_sheet_create(&mut self, _context: &WriteSheetContext) {}
+static CALLS: AtomicU32 = AtomicU32::new(0);
+pub fn sheet_handler_calls() -> u32 { CALLS.load(Ordering::Relaxed) }
 
-    /// Called after a sheet is created. (Java `afterSheetCreate`)
-    fn after_sheet_create(&mut self, _context: &WriteSheetContext) {}
+pub trait SheetWriteHandler: easyexcel_core::WriteHandler {
+    fn before_sheet_create(&mut self, _context: &WriteSheetContext) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+    fn after_sheet_create(&mut self, _context: &WriteSheetContext) {
+        CALLS.fetch_add(1, Ordering::Relaxed);
+    }
 }

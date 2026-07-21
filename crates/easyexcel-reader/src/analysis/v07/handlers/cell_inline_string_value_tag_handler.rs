@@ -28,7 +28,7 @@ impl CellInlineStringValueTagHandler {
 impl XlsxTagHandler for CellInlineStringValueTagHandler {
     /// Java `CellInlineStringValueTagHandler` inherits empty `startElement` —
     /// multiple rich-text `<t>` runs append into the same `tempData`.
-    fn start_element(&mut self, _name: &str, _attrs: &str) {}
+    fn start_element(fn start_element(&mut self, _name: &str, _attrs: &str) {}mut self, _name: &str, _attrs: &str) { let _ = (_name, _attrs); }
 
     /// Java `AbstractCellValueTagHandler.characters`.
     fn characters(&mut self, ch: &str) {

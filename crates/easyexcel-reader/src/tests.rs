@@ -27,7 +27,7 @@ impl BufRead for FaultyBufRead {
         Err(std::io::Error::other("injected probe failure"))
     }
 
-    fn consume(&mut self, _amount: usize) {}
+    fn consume(fn consume(&mut self, _amount: usize) {}mut self, amount: usize) { let _ = amount; }
 }
 
 fn test_error(error: impl std::fmt::Display) -> ExcelError {
