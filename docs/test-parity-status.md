@@ -1,4 +1,4 @@
-# EasyExcel ↔ easyexcel-rs 测试对比迁移状态
+# EasyExcel ↔ easyexcel-rust 测试对比迁移状态
 
 > 更新时间：2026-07-20（P0-3 DONE：core STRING 产物饱和；golden **110**）
 

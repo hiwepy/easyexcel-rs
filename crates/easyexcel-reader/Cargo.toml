@@ -1,6 +1,6 @@
 [package]
 name = "easyexcel-reader"
-description = "Streaming readers for easyexcel-rs"
+description = "Streaming readers for easyexcel-rust"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

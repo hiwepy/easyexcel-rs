@@ -1,9 +1,9 @@
-# easyexcel-rs
+# easyexcel-rust
 
 [![Rust](https://img.shields.io/badge/rust-1.88+-blue.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 
-**easyexcel-rs** 是阿里巴巴 [EasyExcel](https://github.com/alibaba/easyexcel) 的 Rust 原生移植版本。
+**easyexcel-rust** 是阿里巴巴 [EasyExcel](https://github.com/alibaba/easyexcel) 的 Rust 原生移植版本。
 以惯用 Rust 方式提供 Java EasyExcel 编程模型：Builder 模式、类型化行映射、事件监听器、类型转换器、流式读取、常量内存写入、模板填充和写入处理器。
 
 ---
@@ -212,7 +212,7 @@ impl Converter<String> for YesNoConverter {
 
 ## Java 兼容性
 
-`easyexcel-rs` 与 Java EasyExcel 4.0.3 保持 1:1 对应：
+`easyexcel-rust` 与 Java EasyExcel 4.0.3 保持 1:1 对应：
 
 - **335 个 Java @Test 方法** 全部有 Rust `#[test]` 对应
 - **88 个 Golden 测试** 输出与 Java 完全一致

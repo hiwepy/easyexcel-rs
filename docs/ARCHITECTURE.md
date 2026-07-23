@@ -1,4 +1,4 @@
-# easyexcel-rs Architecture
+# easyexcel-rust Architecture
 
 > Rust 1:1 mirror of Alibaba EasyExcel 4.0.3. Covers reading, writing,
 > template filling, converters, handlers, and encryption for XLSX/XLS/CSV.
@@ -11,7 +11,7 @@
 > JSON mapping: **Jackson / Fastjson2 → serde + serde_json**.
 
 ```
-easyexcel-rs/                        (workspace root)
+easyexcel-rust/                        (workspace root)
 ├── crates/
 │   ├── easyexcel/                   ← user-facing facade
 │   ├── easyexcel-core/              ← traits, data models, errors

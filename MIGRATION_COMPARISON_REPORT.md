@@ -1,4 +1,4 @@
-# easyexcel vs easyexcel-rs 详细迁移对比报告
+# easyexcel vs easyexcel-rust 详细迁移对比报告
 
 **生成日期**: 2026-07-18
 **分析工具**: code-review-graph MCP
@@ -9,7 +9,7 @@
 
 ### 1.1 代码规模对比
 
-| 指标 | Java easyexcel | Rust easyexcel-rs | 覆盖率 |
+| 指标 | Java easyexcel | Rust easyexcel-rust | 覆盖率 |
 |------|---------------|-------------------|--------|
 | **源文件数** | 534 (easyexcel-core) | 87 (.rs files) | 16% |
 | **图谱节点数** | 3,157 | 1,528 | 48% |

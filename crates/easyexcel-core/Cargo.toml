@@ -1,6 +1,6 @@
 [package]
 name = "easyexcel-core"
-description = "Core types and extension points for easyexcel-rs"
+description = "Core types and extension points for easyexcel-rust"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

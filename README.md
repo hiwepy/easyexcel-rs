@@ -1,10 +1,10 @@
-# easyexcel-rs
+# easyexcel-rust
 
 [![Rust](https://img.shields.io/badge/rust-1.88+-blue.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
-[![tests](https://img.shields.io/badge/tests-1315+-green.svg)](https://github.com/hiwepy/easyexcel-rs)
+[![tests](https://img.shields.io/badge/tests-1315+-green.svg)](https://github.com/easy-4-rust/easyexcel-rust)
 
-**easyexcel-rs** is a native Rust port of Alibaba [EasyExcel](https://github.com/alibaba/easyexcel) 4.0.3.
+**easyexcel-rust** is a native Rust port of Alibaba [EasyExcel](https://github.com/alibaba/easyexcel) 4.0.3.
 It delivers the Java EasyExcel programming model in idiomatic Rust: builders,
 typed row mapping, event listeners, converters, streaming reads,
 constant-memory writes, template filling, and write handlers.
@@ -154,7 +154,7 @@ EasyExcel::write::<User>("output.xlsx")
 
 ## Java Compatibility
 
-easyexcel-rs is a 1:1 mirror of Java EasyExcel 4.0.3:
+easyexcel-rust is a 1:1 mirror of Java EasyExcel 4.0.3:
 
 - **335 Java @Test methods** — all have Rust `#[test]` counterparts
 - **88 Golden tests** — byte-level output matches Java

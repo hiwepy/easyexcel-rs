@@ -1,4 +1,4 @@
-//! easyexcel-rs 仓库维护命令（对齐 sa-token-rs xtask）。
+//! easyexcel-rust 仓库维护命令（对齐 sa-token-rs xtask）。
 //!
 //! 用法：
 //! ```text

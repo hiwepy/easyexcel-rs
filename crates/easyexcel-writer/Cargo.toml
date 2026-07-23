@@ -1,6 +1,6 @@
 [package]
 name = "easyexcel-writer"
-description = "Streaming writers for easyexcel-rs"
+description = "Streaming writers for easyexcel-rust"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

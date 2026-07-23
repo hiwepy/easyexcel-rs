@@ -1,4 +1,4 @@
-# easyexcel (Java) vs easyexcel-rs — Object/Method Matrix
+# easyexcel (Java) vs easyexcel-rust — Object/Method Matrix
 
 > Generated 2026-07-20. Each row is one method declaration. Status legend:
 > `[OK]` = same name + same semantics implemented in Rust.

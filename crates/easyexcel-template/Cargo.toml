@@ -1,6 +1,6 @@
 [package]
 name = "easyexcel-template"
-description = "OOXML template filling for easyexcel-rs"
+description = "OOXML template filling for easyexcel-rust"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

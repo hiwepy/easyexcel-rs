@@ -1,6 +1,6 @@
 [package]
 name = "easyexcel-derive"
-description = "Derive macros for easyexcel-rs"
+description = "Derive macros for easyexcel-rust"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

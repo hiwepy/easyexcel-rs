@@ -1,9 +1,9 @@
 # Hutool POI Excel adoption plan
 
-`easyexcel-rs` follows Java EasyExcel as its compatibility contract. Hutool POI
+`easyexcel-rust` follows Java EasyExcel as its compatibility contract. Hutool POI
 is a secondary source of practical Excel ergonomics that may be added only when
 they preserve EasyExcel's event-driven, low-memory model. This document records
-the boundary so the future Rust Hutool POI facade can depend on `easyexcel-rs`
+the boundary so the future Rust Hutool POI facade can depend on `easyexcel-rust`
 without forcing random-access workbook behavior into the core.
 
 ## Adoption rules
@@ -11,7 +11,7 @@ without forcing random-access workbook behavior into the core.
 1. Java EasyExcel naming, defaults, callback order, and file semantics win when
    the two Java projects differ.
 2. Hutool-inspired APIs are additive and must not change an EasyExcel default.
-3. A feature belongs in `easyexcel-rs` only when it works with streaming rows or
+3. A feature belongs in `easyexcel-rust` only when it works with streaming rows or
    write-time worksheet metadata.
 4. Backend limitations return typed errors; they never trigger silent workbook
    materialization or format substitution.
@@ -54,7 +54,7 @@ do not belong in the EasyExcel core:
 
 A future Rust Hutool POI implementation can expose these conveniences through a
 separate random-access engine and delegate streaming imports/exports to
-`easyexcel-rs`. This keeps the dependency direction clear: the Hutool facade may
+`easyexcel-rust`. This keeps the dependency direction clear: the Hutool facade may
 depend on EasyExcel, while EasyExcel does not depend on the Hutool facade.
 
 ## Delivery order
@@ -64,5 +64,5 @@ depend on EasyExcel, while EasyExcel does not depend on the Hutool facade.
    do not delay an equivalent EasyExcel feature.
 3. Complete image reads, rich formulas, and optional merged-value propagation.
 4. Build the separate Hutool-style Rust facade on top of the stable public
-   `easyexcel-rs` traits and metadata types.
+   `easyexcel-rust` traits and metadata types.
 

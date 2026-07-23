@@ -1,7 +1,7 @@
 //! Cell value editor trait — mirrors hutool `cn.hutool.poi.excel.cell.CellEditor`.
 //!
 //! In hutool, `CellEditor` transforms cell values during reading.
-//! In easyexcel-rs, this can be registered on the reader builder and
+//! In easyexcel-rust, this can be registered on the reader builder and
 //! applied before the value reaches the `ReadListener`.
 
 use crate::CellValue;
@@ -25,7 +25,7 @@ pub trait CellEditor: Send + Sync {
 /// Trims whitespace from string cell values.
 ///
 /// Mirrors hutool `TrimEditor`.
-/// Note: easyexcel-rs has `auto_trim(true)` which does this globally
+/// Note: easyexcel-rust has `auto_trim(true)` which does this globally
 /// without needing a CellEditor. This editor is for selective trimming.
 #[derive(Debug, Default, Clone)]
 pub struct TrimEditor;

@@ -2,7 +2,7 @@
 
 > **版本**：v2.0（整合 codegraph 双侧审计 + sa-token-rs / hitool-rs 模板 + Web/JSON 生态映射）  
 > **基线 Java**：EasyExcel **4.0.3**（`/Users/wandl/workspaces/workspace-github/easyexcel` @ `3afdea9d`）  
-> **目标仓库**：`/Users/wandl/workspaces/workspace-github/easyexcel-rs` @ `7ac0e40`  
+> **目标仓库**：`/Users/wandl/workspaces/workspace-github/easyexcel-rust` @ `7ac0e40`  
 > **参考项目**：
 > - `sa-token-rs`（`crates/` monorepo、`xtask` 审计、`sa-token-web-{axum,actix}`、demo 矩阵）
 > - `hitool-rs`（命名对齐、分阶段补齐、`IMPLEMENTATION_PLAN` 体例）
@@ -56,7 +56,7 @@ Alibaba **EasyExcel** 是 Java 生态最常用的 Excel 读写库之一，核心
 
 - `calamine` / `rust_xlsxwriter` / `csv` 等碎片化，缺少 EasyExcel 级编程模型
 - Java 用户迁移时心智模型断裂（Builder、Listener、Handler、Converter）
-- 本仓 `easyexcel-rs` **已存在** `crates/` monorepo 与大量实现，但仍缺 sa-token-rs 级「账本 + 严格审计 + xtask + web/demo 子树」闭环
+- 本仓 `easyexcel-rust` **已存在** `crates/` monorepo 与大量实现，但仍缺 sa-token-rs 级「账本 + 严格审计 + xtask + web/demo 子树」闭环
 
 ### 1.2 目标
 
@@ -125,7 +125,7 @@ easyexcel-parent
 
 | 指标 | 值 |
 |---|---|
-| 仓库 | `/Users/wandl/workspaces/workspace-github/easyexcel-rs` |
+| 仓库 | `/Users/wandl/workspaces/workspace-github/easyexcel-rust` |
 | Git | `7ac0e40` |
 | `.rs` 源文件（crates，含测试） | ≈ **500** |
 | 生产侧 `.rs`（排除 `tests.rs` / `tests/`） | ≈ **452** |
@@ -180,7 +180,7 @@ easyexcel-parent
 
 ### 3.2 相对 sa-token-rs 仍缺的工程能力
 
-| 项 | sa-token-rs | easyexcel-rs 现状 | 计划 |
+| 项 | sa-token-rs | easyexcel-rust 现状 | 计划 |
 |---|---|---|---|
 | `xtask` 迁移审计 | ✅ `migration-audit` / `strict` | ❌ 无 | Phase 0 |
 | `file-map.csv` 全量账本 | ✅ | ❌ | Phase 0 |
@@ -360,7 +360,7 @@ Java 多异常类 → 单一 `ExcelError`（`thiserror`）+ `Result<T>`；监听
 ### 6.1 目标树
 
 ```text
-easyexcel-rs/
+easyexcel-rust/
 ├── Cargo.toml                          # workspace：resolver=3, edition=2024, MSRV 1.88
 ├── Cargo.lock
 ├── README.md / README_CN.md

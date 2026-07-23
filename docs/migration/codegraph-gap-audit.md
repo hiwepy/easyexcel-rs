@@ -1,7 +1,7 @@
 # CodeGraph Gap Audit: Java vs Rust
 
 > Generated 2026-07-21 by direct codegraph_node queries comparing
-> `com.alibaba:easyexcel` (Java 4.0.3) with `easyexcel-rs`.
+> `com.alibaba:easyexcel` (Java 4.0.3) with `easyexcel-rust`.
 >
 > **Goal**: identify every Java method that does NOT have a
 > corresponding Rust method with the same name (modulo Rust

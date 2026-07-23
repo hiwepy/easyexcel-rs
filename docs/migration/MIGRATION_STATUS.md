@@ -1,4 +1,4 @@
-# easyexcel-rs Migration Status Tracker
+# easyexcel-rust Migration Status Tracker
 
 > 迁移进度追踪。以 `docs/migration/file-map.csv` + `xtask migration-audit` 为准。
 > **不以「测试绿」替代账本 `complete`。**

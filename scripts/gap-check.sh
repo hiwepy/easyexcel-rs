@@ -18,7 +18,7 @@ cd "$REPO_ROOT"
 PHASE="${1:-phase0}"
 
 echo "==========================================================="
-echo "  easyexcel-rs migration gap-check :: $PHASE"
+echo "  easyexcel-rust migration gap-check :: $PHASE"
 echo "==========================================================="
 echo "repo: $REPO_ROOT"
 echo "date: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"

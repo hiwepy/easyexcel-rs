@@ -1,4 +1,4 @@
-//! Core data model and extension points for `easyexcel-rs`.
+//! Core data model and extension points for `easyexcel-rust`.
 //!
 //! This crate is the Rust port of Alibaba `EasyExcel` 4.0.3's
 //! `com.alibaba.excel.*` package. Java splits every concept into its own

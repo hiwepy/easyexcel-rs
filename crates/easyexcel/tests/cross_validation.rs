@@ -1,4 +1,4 @@
-//! Cross-validation tests: Java easyexcel ↔ easyexcel-rs
+//! Cross-validation tests: Java easyexcel ↔ easyexcel-rust
 //!
 //! These tests read Java-generated .xlsx/.csv fixtures with the Rust
 //! library and compare the parsed results against the expected Java

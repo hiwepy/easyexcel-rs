@@ -1,7 +1,7 @@
-# easyexcel-rs Usage Guide
+# easyexcel-rust Usage Guide
 
 This guide covers the most common patterns for reading, writing, and
-filling Excel files with easyexcel-rs.
+filling Excel files with easyexcel-rust.
 
 ## Reading
 
