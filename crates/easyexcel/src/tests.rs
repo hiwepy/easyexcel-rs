@@ -961,14 +961,10 @@ fn facade_executes_event_sync_and_iterator_workflows() -> Result<()> {
         )?
         .fill_list(&FillWrapper::default(), FillConfig::new())?
         .write_rows([vec![CellValue::String("summary".to_owned())]])?;
-    assert!(
-        template_writer
-            .fill_list(
-                &FillWrapper::new([TemplateData::new().with("name", "invalid")]),
-                FillConfig::new().direction(FillDirection::Horizontal),
-            )
-            .is_err()
-    );
+    template_writer.fill_list(
+        &FillWrapper::new([TemplateData::new().with("name", "horizontal")]),
+        FillConfig::new().direction(FillDirection::Horizontal),
+    )?;
     template_writer.finish()?;
     template_writer.finish()?;
     assert!(template_writer.fill(&TemplateData::new()).is_err());

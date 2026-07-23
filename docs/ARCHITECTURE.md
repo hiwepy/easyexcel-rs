@@ -114,6 +114,14 @@ User Code
 | ZIP (XLSX container) | `zip` crate | `zip` crate |
 | OLE (XLS container) | `cfb` crate | `cfb` crate |
 
+`calamine 0.36` remains the compatibility-oriented workbook backend, currently
+used for legacy XLS reads. XLSX listener reads stay on the custom `quick-xml`
+event pipeline because `worksheet_range` materializes a complete sheet and
+`worksheet_range_at` selects a sheet by ordinal rather than reading a rectangular
+chunk. ODS support is intentionally outside the Java EasyExcel compatibility
+contract and can be added later as an opt-in extension without changing this
+core pipeline.
+
 ## Derive Macro
 
 `#[derive(ExcelRow)]` replaces Java's runtime annotation processing.

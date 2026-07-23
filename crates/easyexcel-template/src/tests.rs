@@ -774,6 +774,290 @@ fn stateful_template_writer_isolates_scalar_list_and_rows_by_sheet() -> Result<(
 }
 
 #[test]
+fn repeated_fill_reuses_java_cursor_when_direction_changes() -> Result<()> {
+    let directory = tempdir().map_err(test_error)?;
+    let template = directory.path().join("direction-change-template.xlsx");
+    let output = directory.path().join("direction-change-filled.xlsx");
+    let mut workbook = Workbook::new();
+    workbook
+        .add_worksheet()
+        .set_name("纵转横")
+        .map_err(test_error)?
+        .write_string(0, 0, "{items.name}")
+        .map_err(test_error)?;
+    workbook
+        .add_worksheet()
+        .set_name("横转纵")
+        .map_err(test_error)?
+        .write_string(0, 0, "{items.name}")
+        .map_err(test_error)?;
+    workbook.save(&template).map_err(test_error)?;
+
+    let first = FillWrapper::named(
+        "items",
+        [
+            TemplateData::new().with("name", "A"),
+            TemplateData::new().with("name", "B"),
+        ],
+    );
+    let second = FillWrapper::named(
+        "items",
+        [
+            TemplateData::new().with("name", "C"),
+            TemplateData::new().with("name", "D"),
+        ],
+    );
+    let mut writer = ExcelTemplateWriter::new(&template, &output)?;
+    writer
+        .fill_list_on_sheet(
+            &TemplateSheet::name("纵转横"),
+            &first,
+            FillConfig::new(),
+        )?
+        .fill_list_on_sheet(
+            &TemplateSheet::name("纵转横"),
+            &second,
+            FillConfig::new().direction(FillDirection::Horizontal),
+        )?
+        .fill_list_on_sheet(
+            &TemplateSheet::name("横转纵"),
+            &first,
+            FillConfig::new().direction(FillDirection::Horizontal),
+        )?
+        .fill_list_on_sheet(
+            &TemplateSheet::name("横转纵"),
+            &second,
+            FillConfig::new(),
+        )?
+        .finish()?;
+
+    let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
+    let vertical_then_horizontal = workbook
+        .worksheet_range("纵转横")
+        .map_err(test_error)?;
+    assert_eq!(
+        vertical_then_horizontal.get((0, 0)),
+        Some(&Data::String("A".to_owned()))
+    );
+    assert_eq!(
+        vertical_then_horizontal.get((1, 0)),
+        Some(&Data::String("B".to_owned()))
+    );
+    assert_eq!(
+        vertical_then_horizontal.get((0, 2)),
+        Some(&Data::String("C".to_owned()))
+    );
+    assert_eq!(
+        vertical_then_horizontal.get((0, 3)),
+        Some(&Data::String("D".to_owned()))
+    );
+
+    let horizontal_then_vertical = workbook
+        .worksheet_range("横转纵")
+        .map_err(test_error)?;
+    assert_eq!(
+        horizontal_then_vertical.get((0, 0)),
+        Some(&Data::String("A".to_owned()))
+    );
+    assert_eq!(
+        horizontal_then_vertical.get((0, 1)),
+        Some(&Data::String("B".to_owned()))
+    );
+    assert_eq!(
+        horizontal_then_vertical.get((2, 0)),
+        Some(&Data::String("C".to_owned()))
+    );
+    assert_eq!(
+        horizontal_then_vertical.get((3, 0)),
+        Some(&Data::String("D".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn repeated_fill_applies_each_calls_force_row_and_auto_style_config() -> Result<()> {
+    let directory = tempdir().map_err(test_error)?;
+    let template = directory.path().join("config-change-template.xlsx");
+    let output = directory.path().join("config-change-filled.xlsx");
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet
+        .write_string_with_format(0, 0, "{items.name}", &Format::new().set_bold())
+        .map_err(test_error)?;
+    worksheet
+        .write_string(1, 0, "Footer")
+        .map_err(test_error)?;
+    workbook.save(&template).map_err(test_error)?;
+
+    let mut writer = ExcelTemplateWriter::new(&template, &output)?;
+    writer
+        .fill_list(
+            &FillWrapper::named("items", [TemplateData::new().with("name", "A")]),
+            FillConfig::new(),
+        )?
+        .fill_list(
+            &FillWrapper::named(
+                "items",
+                [
+                    TemplateData::new().with("name", "B"),
+                    TemplateData::new().with("name", "C"),
+                ],
+            ),
+            FillConfig::new()
+                .force_new_row(true)
+                .auto_style(false),
+        )?
+        .finish()?;
+
+    let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    for (row, value) in [(0, "A"), (1, "B"), (2, "C"), (3, "Footer")] {
+        assert_eq!(
+            range.get((row, 0)),
+            Some(&Data::String(value.to_owned()))
+        );
+    }
+
+    let entries = load_entries(&output)?;
+    let sheet = entries
+        .iter()
+        .find(|entry| entry.name == "xl/worksheets/sheet1.xml")
+        .expect("sheet1 exists");
+    let xml = std::str::from_utf8(&sheet.bytes).map_err(test_error)?;
+    let style = |reference| {
+        all_cells(xml)
+            .into_iter()
+            .find(|(_, _, cell)| attribute_value(cell, "r") == Some(reference))
+            .and_then(|(_, _, cell)| attribute_value(cell, "s"))
+    };
+    assert!(style("A1").is_some());
+    assert_eq!(style("A2"), None);
+    assert_eq!(style("A3"), None);
+    Ok(())
+}
+
+#[test]
+fn collection_cursor_defensive_paths_and_shifted_cached_templates_are_covered() -> Result<()> {
+    let wrapper = FillWrapper::named(
+        "items",
+        [TemplateData::new().with("name", "value")],
+    );
+    let fill = PendingCollectionFill {
+        wrapper: wrapper.clone(),
+        config: FillConfig::new(),
+        order: 0,
+    };
+    assert!(replace_collection_fills_in_sheet(&mut [], "missing.xml", &[]).is_ok());
+    assert!(matches!(
+        replace_collection_fills_in_sheet(&mut [], "missing.xml", std::slice::from_ref(&fill)),
+        Err(ExcelError::Format(message)) if message.contains("worksheet part")
+    ));
+    let mut invalid_utf8 = vec![synthetic_entry("xl/worksheets/sheet1.xml", vec![0xff])];
+    assert!(replace_collection_fills_in_sheet(
+        &mut invalid_utf8,
+        "xl/worksheets/sheet1.xml",
+        std::slice::from_ref(&fill)
+    )
+    .is_err());
+    let worksheet_without_marker =
+        r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>plain</t></is></c></row></sheetData></worksheet>"#;
+    let mut entries_without_marker = vec![synthetic_entry(
+        "xl/worksheets/sheet1.xml",
+        worksheet_without_marker.as_bytes().to_vec(),
+    )];
+    let fill_without_marker = PendingCollectionFill {
+        wrapper: wrapper.clone(),
+        config: FillConfig::new().force_new_row(true),
+        order: 1,
+    };
+    replace_collection_fills_in_sheet(
+        &mut entries_without_marker,
+        "xl/worksheets/sheet1.xml",
+        std::slice::from_ref(&fill_without_marker),
+    )?;
+    assert_eq!(
+        entries_without_marker[0].bytes,
+        worksheet_without_marker.as_bytes()
+    );
+
+    assert!(collection_template_cells("<row", &wrapper, &[]).is_empty());
+    assert!(
+        collection_template_cells(
+            r#"<row><c t="inlineStr"><is><t>{items.name}</t></is></c></row>"#,
+            &wrapper,
+            &[]
+        )
+        .is_empty()
+    );
+    assert!(
+        collection_template_cells(
+            r#"<row><c r="bad" t="inlineStr"><is><t>{items.name}</t></is></c></row>"#,
+            &wrapper,
+            &[]
+        )
+        .is_empty()
+    );
+    assert_eq!(row_tag_with_reference("<row>", 7), "<row>");
+    assert!(validate_collection_target(1_048_576, 0).is_err());
+    assert!(validate_collection_target(0, 16_384).is_err());
+    assert_eq!(last_worksheet_row("<row"), None);
+    assert_eq!(
+        last_worksheet_row(r#"<row r="2"></row><row r="5"></row>"#),
+        Some(4)
+    );
+    assert_eq!(shift_worksheet_rows_after("<row", 0, 1), "<row");
+    assert_eq!(
+        shift_worksheet_rows_after(r#"<row r="1"></row>"#, 1, 1),
+        r#"<row r="1"></row>"#
+    );
+
+    let worksheet = r#"<worksheet><dimension ref="A1:A5"/><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>{a.name}</t></is></c></row><row r="3"><c r="A3" t="inlineStr"><is><t>{b.name}</t></is></c></row><row r="5"><c r="A5" t="inlineStr"><is><t>Footer</t></is></c></row></sheetData></worksheet>"#;
+    let mut entries = vec![synthetic_entry(
+        "xl/worksheets/sheet1.xml",
+        worksheet.as_bytes().to_vec(),
+    )];
+    let fills = [
+        PendingCollectionFill {
+            wrapper: FillWrapper::named(
+                "b",
+                [TemplateData::new().with("name", "B1")],
+            ),
+            config: FillConfig::new(),
+            order: 0,
+        },
+        PendingCollectionFill {
+            wrapper: FillWrapper::named(
+                "a",
+                [
+                    TemplateData::new().with("name", "A1"),
+                    TemplateData::new().with("name", "A2"),
+                ],
+            ),
+            config: FillConfig::new().force_new_row(true),
+            order: 1,
+        },
+        PendingCollectionFill {
+            wrapper: FillWrapper::named(
+                "b",
+                [TemplateData::new().with("name", "B2")],
+            ),
+            config: FillConfig::new(),
+            order: 2,
+        },
+    ];
+    replace_collection_fills_in_sheet(
+        &mut entries,
+        "xl/worksheets/sheet1.xml",
+        &fills,
+    )?;
+    let xml = std::str::from_utf8(&entries[0].bytes).map_err(test_error)?;
+    assert!(xml.contains("A2"));
+    assert!(xml.contains("B2"));
+    assert!(xml.contains(r#"ref="A1:A6""#));
+    Ok(())
+}
+
+#[test]
 fn template_sheet_selection_reports_missing_names_and_indexes() -> Result<()> {
     let (directory, template) = multi_sheet_template_fixture()?;
     assert_eq!(TemplateSheet::default(), TemplateSheet::first());
@@ -819,10 +1103,8 @@ fn template_sheet_selection_reports_missing_names_and_indexes() -> Result<()> {
             &rows,
             FillConfig::new().direction(FillDirection::Horizontal),
         )?;
-    assert!(
-        matches!(writer.finish(), Err(ExcelError::Format(message)) if message.contains("cannot change configuration"))
-    );
-    assert!(!writer.is_finished());
+    writer.finish()?;
+    assert!(writer.is_finished());
 
     let mut writer = ExcelTemplateWriter::new(
         &template,
@@ -845,7 +1127,15 @@ fn template_sheet_selection_reports_missing_names_and_indexes() -> Result<()> {
         .fill_list_on_sheet(&TemplateSheet::name("明细"), &rows, FillConfig::new())?
         .fill_list_on_sheet(&TemplateSheet::index(1), &rows, FillConfig::new())?;
     let resolved = writer.resolved_sheet_fills()?;
-    assert_eq!(resolved[1].collections[0].wrapper.rows().len(), 2);
+    assert_eq!(resolved[1].collections.len(), 2);
+    assert_eq!(
+        resolved[1]
+            .collections
+            .iter()
+            .map(|fill| fill.wrapper.rows().len())
+            .sum::<usize>(),
+        2
+    );
     Ok(())
 }
 
@@ -1206,14 +1496,6 @@ fn stateful_template_writer_matches_java_repeated_and_composite_fill() -> Result
             CellValue::Empty,
             CellValue::String("统计:1000".to_owned()),
         ]])?;
-    assert!(
-        writer
-            .fill_list(
-                &FillWrapper::named("data1", [TemplateData::new().with("name", "invalid")]),
-                FillConfig::new(),
-            )
-            .is_err()
-    );
     writer.finish()?;
     writer.finish()?;
     assert!(writer.is_finished());
@@ -1753,6 +2035,7 @@ fn collection_coordinate_helpers_and_missing_input_are_deterministic() -> Result
         output: TemplateOutput::Path(directory.path().join("invalid-scalar.xlsx")),
         entries: invalid_sheet,
         sheets: vec![PendingSheetFill::new(TemplateSheet::first())],
+        next_collection_order: 0,
         finished: false,
         auto_close_stream: true,
     };
@@ -1767,6 +2050,7 @@ fn collection_coordinate_helpers_and_missing_input_are_deterministic() -> Result
             collections: Vec::new(),
             appended_rows: vec![vec![]],
         }],
+        next_collection_order: 0,
         finished: false,
         auto_close_stream: true,
     };

@@ -313,6 +313,7 @@ struct TemplateEntry {
 struct PendingCollectionFill {
     wrapper: FillWrapper,
     config: FillConfig,
+    order: usize,
 }
 
 /// Worksheet selected for Java-style template fill and write operations.
@@ -383,6 +384,7 @@ pub struct ExcelTemplateWriter<'a> {
     output: TemplateOutput<'a>,
     entries: Vec<TemplateEntry>,
     sheets: Vec<PendingSheetFill>,
+    next_collection_order: usize,
     finished: bool,
     auto_close_stream: bool,
 }
@@ -463,6 +465,7 @@ impl<'a> ExcelTemplateWriter<'a> {
             output,
             entries,
             sheets: vec![PendingSheetFill::new(TemplateSheet::first())],
+            next_collection_order: 0,
             finished: false,
             auto_close_stream: true,
         }
@@ -584,13 +587,13 @@ impl<'a> ExcelTemplateWriter<'a> {
 
     /// Accumulates a named or unnamed collection fill.
     ///
-    /// Repeated calls with the same prefix append rows. Java maintains one
-    /// cursor per prefix; therefore changing the direction/configuration for an
-    /// already-used prefix is rejected instead of silently restarting it.
+    /// Repeated calls with the same prefix append rows through Java-compatible
+    /// per-prefix cursors. Each call keeps its own configuration, including
+    /// direction, `force_new_row`, and `auto_style`.
     ///
     /// # Errors
     ///
-    /// Returns an error after finish or when a prefix changes its fill config.
+    /// Returns an error after the writer has finished.
     pub fn fill_list(&mut self, data: &FillWrapper, config: FillConfig) -> Result<&mut Self> {
         self.fill_list_on_sheet(&TemplateSheet::first(), data, config)
     }
@@ -599,7 +602,7 @@ impl<'a> ExcelTemplateWriter<'a> {
     ///
     /// # Errors
     ///
-    /// Returns an error after finish or when a prefix changes its fill config.
+    /// Returns an error after the writer has finished.
     pub fn fill_list_on_sheet(
         &mut self,
         sheet: &TemplateSheet,
@@ -610,24 +613,13 @@ impl<'a> ExcelTemplateWriter<'a> {
         if data.rows().is_empty() {
             return Ok(self);
         }
+        let order = self.next_collection_order;
+        self.next_collection_order = self.next_collection_order.saturating_add(1);
         let state = self.sheet_state_mut(sheet);
-        if let Some(pending) = state
-            .collections
-            .iter_mut()
-            .find(|pending| pending.wrapper.name == data.name)
-        {
-            if pending.config != config {
-                return Err(ExcelError::Format(format!(
-                    "collection fill prefix {:?} cannot change configuration between fills",
-                    data.name()
-                )));
-            }
-            pending.wrapper.rows.extend(data.rows.iter().cloned());
-            return Ok(self);
-        }
         state.collections.push(PendingCollectionFill {
             wrapper: data.clone(),
             config,
+            order,
         });
         Ok(self)
     }
@@ -673,14 +665,11 @@ impl<'a> ExcelTemplateWriter<'a> {
             return Ok(());
         }
         for sheet in self.resolved_sheet_fills()? {
-            for pending in &sheet.collections {
-                replace_collection_placeholders_in_sheet(
-                    &mut self.entries,
-                    &sheet.worksheet,
-                    &pending.wrapper,
-                    pending.config,
-                );
-            }
+            replace_collection_fills_in_sheet(
+                &mut self.entries,
+                &sheet.worksheet,
+                &sheet.collections,
+            )?;
             replace_scalar_cells_in_sheet(&mut self.entries, &sheet.worksheet, &sheet.scalar)?;
             append_rows_to_sheet(&mut self.entries, &sheet.worksheet, &sheet.appended_rows)?;
         }
@@ -728,24 +717,9 @@ impl<'a> ExcelTemplateWriter<'a> {
                     .scalar
                     .values
                     .extend(pending_sheet.scalar.values.clone());
-                for pending_collection in &pending_sheet.collections {
-                    if let Some(collection) = sheet.collections.iter_mut().find(|collection| {
-                        collection.wrapper.name == pending_collection.wrapper.name
-                    }) {
-                        if collection.config != pending_collection.config {
-                            return Err(ExcelError::Format(format!(
-                                "collection fill prefix {:?} cannot change configuration between fills",
-                                pending_collection.wrapper.name()
-                            )));
-                        }
-                        collection
-                            .wrapper
-                            .rows
-                            .extend(pending_collection.wrapper.rows.iter().cloned());
-                    } else {
-                        sheet.collections.push(pending_collection.clone());
-                    }
-                }
+                sheet
+                    .collections
+                    .extend(pending_sheet.collections.iter().cloned());
                 sheet
                     .appended_rows
                     .extend(pending_sheet.appended_rows.iter().cloned());
@@ -757,6 +731,9 @@ impl<'a> ExcelTemplateWriter<'a> {
                     appended_rows: pending_sheet.appended_rows.clone(),
                 });
             }
+        }
+        for sheet in &mut resolved {
+            sheet.collections.sort_by_key(|collection| collection.order);
         }
         Ok(resolved)
     }
@@ -837,6 +814,7 @@ pub fn fill_xlsx_template_list(
         writer.sheets[0].collections.push(PendingCollectionFill {
             wrapper: data.clone(),
             config,
+            order: 0,
         });
     }
     writer.finish()
@@ -900,6 +878,251 @@ fn fill_xls_template_list(
     pkg.save_to_path(output)
 }
 
+#[derive(Debug, Clone)]
+struct CollectionTemplateCell {
+    row: usize,
+    column: usize,
+    row_tag: String,
+    cell: String,
+}
+
+#[derive(Debug)]
+struct CollectionFillCursor {
+    templates: Vec<CollectionTemplateCell>,
+    last_indices: Vec<Option<usize>>,
+    initialized: bool,
+}
+
+fn replace_collection_fills_in_sheet(
+    entries: &mut [TemplateEntry],
+    worksheet: &str,
+    fills: &[PendingCollectionFill],
+) -> Result<()> {
+    if fills.is_empty() {
+        return Ok(());
+    }
+    let shared_strings = entries
+        .iter()
+        .find(|entry| entry.name.eq_ignore_ascii_case("xl/sharedStrings.xml"))
+        .and_then(|entry| std::str::from_utf8(&entry.bytes).ok())
+        .map(shared_string_values)
+        .unwrap_or_default();
+    let Some(entry) = entries
+        .iter_mut()
+        .find(|entry| entry.name.eq_ignore_ascii_case(worksheet))
+    else {
+        return Err(ExcelError::Format(format!(
+            "worksheet part {worksheet:?} is missing"
+        )));
+    };
+    let mut xml = std::str::from_utf8(&entry.bytes)
+        .map_err(|error| ExcelError::Format(error.to_string()))?
+        .to_owned();
+    let mut cursors: BTreeMap<Option<String>, CollectionFillCursor> = BTreeMap::new();
+
+    for fill in fills {
+        let key = fill.wrapper.name.clone();
+        if !cursors.contains_key(&key) {
+            let templates = collection_template_cells(&xml, &fill.wrapper, &shared_strings);
+            let last_indices = vec![None; templates.len()];
+            cursors.insert(
+                key.clone(),
+                CollectionFillCursor {
+                    templates,
+                    last_indices,
+                    initialized: false,
+                },
+            );
+        }
+        if fill.config.get_direction() == FillDirection::Vertical
+            && fill.config.get_force_new_row()
+        {
+            let cursor = cursors
+                .get(&key)
+                .expect("collection cursor was initialized");
+            if !cursor.templates.is_empty() {
+                let max_row = cursor
+                    .templates
+                    .iter()
+                    .zip(&cursor.last_indices)
+                    .map(|(template, last)| last.unwrap_or(template.row))
+                    .max()
+                    .unwrap_or(0);
+                let shift = fill
+                    .wrapper
+                    .rows()
+                    .len()
+                    .saturating_sub(usize::from(!cursor.initialized));
+                if shift > 0 && max_row < last_worksheet_row(&xml).unwrap_or(max_row) {
+                    xml = shift_worksheet_rows_after(&xml, max_row, shift);
+                    for cached in cursors.values_mut() {
+                        for template in &mut cached.templates {
+                            if template.row > max_row {
+                                template.row = template.row.saturating_add(shift);
+                                template.row_tag = replace_attribute(
+                                    &template.row_tag,
+                                    "r",
+                                    &(template.row + 1).to_string(),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let cursor = cursors
+            .get_mut(&key)
+            .expect("collection cursor was initialized");
+        for data in fill.wrapper.rows() {
+            for index in 0..cursor.templates.len() {
+                let template = cursor.templates[index].clone();
+                let (target_row, target_column, last_index) =
+                    match fill.config.get_direction() {
+                        FillDirection::Vertical => {
+                            let row = cursor.last_indices[index]
+                                .map_or(template.row, |last| last.saturating_add(1));
+                            (row, template.column, row)
+                        }
+                        FillDirection::Horizontal => {
+                            let column = cursor.last_indices[index]
+                                .map_or(template.column, |last| last.saturating_add(1));
+                            (template.row, column, column)
+                        }
+                    };
+                validate_collection_target(target_row, target_column)?;
+                let cell = positioned_collection_cell(
+                    &template.cell,
+                    data,
+                    fill.wrapper.name(),
+                    &shared_strings,
+                    fill.config.get_auto_style(),
+                    target_row,
+                    target_column,
+                );
+                let row_tag =
+                    replace_attribute(&template.row_tag, "r", &(target_row + 1).to_string());
+                let row = format!("{row_tag}{cell}</row>");
+                xml = upsert_collection_row(&xml, &row, target_row + 1);
+                cursor.last_indices[index] = Some(last_index);
+            }
+            cursor.initialized = true;
+        }
+    }
+    entry.bytes = update_worksheet_dimension(&xml).into_bytes();
+    Ok(())
+}
+
+fn collection_template_cells(
+    xml: &str,
+    wrapper: &FillWrapper,
+    shared_strings: &[String],
+) -> Vec<CollectionTemplateCell> {
+    let mut templates = Vec::new();
+    let mut offset = 0;
+    while let Some(relative_start) = xml[offset..].find("<row") {
+        let start = offset + relative_start;
+        let Some(relative_end) = xml[start..].find("</row>") else {
+            break;
+        };
+        let end = start + relative_end + 6;
+        let row_xml = &xml[start..end];
+        let tag_end = row_xml
+            .find('>')
+            .expect("a row with a closing tag contains a tag terminator");
+        for (_, _, cell) in collection_cells(row_xml, wrapper, shared_strings) {
+            let Some(reference) = attribute_value(cell, "r") else {
+                continue;
+            };
+            let Some((column, row)) = parse_cell_reference(reference) else {
+                continue;
+            };
+            templates.push(CollectionTemplateCell {
+                row: row - 1,
+                column: column - 1,
+                row_tag: row_tag_with_reference(&row_xml[..=tag_end], row),
+                cell: cell.to_owned(),
+            });
+        }
+        offset = end;
+    }
+    templates
+}
+
+fn row_tag_with_reference(row_tag: &str, row: usize) -> String {
+    if attribute_value(row_tag, "r").is_some() {
+        row_tag.to_owned()
+    } else {
+        replace_attribute(row_tag, "r", &row.to_string())
+    }
+}
+
+fn positioned_collection_cell(
+    template_cell: &str,
+    data: &TemplateData,
+    prefix: Option<&str>,
+    shared_strings: &[String],
+    auto_style: bool,
+    row: usize,
+    column: usize,
+) -> String {
+    let cell = fill_cell(template_cell, data, prefix, shared_strings, auto_style);
+    replace_attribute(
+        &cell,
+        "r",
+        &format!("{}{}", column_name(column + 1), row + 1),
+    )
+}
+
+fn validate_collection_target(row: usize, column: usize) -> Result<()> {
+    if row >= 1_048_576 {
+        return Err(ExcelError::Format(
+            "collection fill row exceeds XLSX limit".to_owned(),
+        ));
+    }
+    if column >= 16_384 {
+        return Err(ExcelError::Format(
+            "collection fill column exceeds XLSX limit".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn last_worksheet_row(xml: &str) -> Option<usize> {
+    let mut last = None;
+    let mut offset = 0;
+    while let Some(relative_start) = xml[offset..].find("<row") {
+        let start = offset + relative_start;
+        let Some(relative_end) = xml[start..].find("</row>") else {
+            break;
+        };
+        let end = start + relative_end + 6;
+        if let Some(row) = row_index(&xml[start..end]) {
+            last = Some(last.map_or(row, |current: usize| current.max(row)));
+        }
+        offset = end;
+    }
+    last.map(|row| row - 1)
+}
+
+fn shift_worksheet_rows_after(xml: &str, row: usize, delta: usize) -> String {
+    let threshold = row + 2;
+    let mut offset = 0;
+    while let Some(relative_start) = xml[offset..].find("<row") {
+        let start = offset + relative_start;
+        let Some(relative_end) = xml[start..].find("</row>") else {
+            break;
+        };
+        let end = start + relative_end + 6;
+        if row_index(&xml[start..end]).is_some_and(|candidate| candidate >= threshold) {
+            let shifted = format!("{}{}", &xml[..start], shift_rows(&xml[start..], delta));
+            return shift_worksheet_metadata(&shifted, threshold, delta);
+        }
+        offset = end;
+    }
+    xml.to_owned()
+}
+
 #[cfg(test)]
 fn replace_collection_placeholders(
     entries: &mut [TemplateEntry],
@@ -909,15 +1132,7 @@ fn replace_collection_placeholders(
     replace_collection_placeholders_matching(entries, None, wrapper, config);
 }
 
-fn replace_collection_placeholders_in_sheet(
-    entries: &mut [TemplateEntry],
-    worksheet: &str,
-    wrapper: &FillWrapper,
-    config: FillConfig,
-) {
-    replace_collection_placeholders_matching(entries, Some(worksheet), wrapper, config);
-}
-
+#[cfg(test)]
 fn replace_collection_placeholders_matching(
     entries: &mut [TemplateEntry],
     worksheet: Option<&str>,
@@ -989,6 +1204,7 @@ fn text_node_values(xml: &str) -> String {
     value
 }
 
+#[cfg(test)]
 fn expand_vertical_rows(
     xml: &str,
     wrapper: &FillWrapper,
@@ -1038,6 +1254,7 @@ fn expand_vertical_rows(
     Some(format!("{}{}{}", &xml[..start], first, suffix))
 }
 
+#[cfg(test)]
 fn collection_only_row(
     template_row: &str,
     data: &TemplateData,
@@ -1393,6 +1610,7 @@ fn replace_tag_attribute(xml: &str, tag: &str, attribute: &str, value: &str) -> 
     format!("{}{}{}", &xml[..start], replaced, &xml[end..])
 }
 
+#[cfg(test)]
 fn expand_horizontal_cells(
     xml: &str,
     wrapper: &FillWrapper,
@@ -1431,6 +1649,7 @@ fn expand_horizontal_cells(
     changed.then_some(output)
 }
 
+#[cfg(test)]
 fn find_collection_row<'a>(
     xml: &'a str,
     wrapper: &FillWrapper,
@@ -1451,6 +1670,7 @@ fn find_collection_row<'a>(
     None
 }
 
+#[cfg(test)]
 fn find_collection_cell<'a>(
     row: &'a str,
     wrapper: &FillWrapper,
@@ -1469,6 +1689,7 @@ fn find_collection_cell<'a>(
     None
 }
 
+#[cfg(test)]
 fn fill_row_cells(
     row: &str,
     data: &TemplateData,
