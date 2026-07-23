@@ -244,3 +244,17 @@ continues row and content-style indexes across batches, and emits the head only
 once. XLSX supports repeated writes to the same sheet and multiple sheets; CSV
 supports repeated writes to one logical sheet, matching Java's `CsvWorkbook`
 single-sheet constraint.
+
+## Web / JSON 框架映射（2026-07-23）
+
+| Java 生态 | Rust 生态 | Crate |
+|---|---|---|
+| Jackson / Fastjson2 JSON 错误体 | `serde` + `serde_json` | `easyexcel_core::ExcelDownloadErrorBody` |
+| Spring Boot `WebTest` 上传/下载 | **axum** | `easyexcel-web-axum` + `easyexcel-demo-axum` |
+| Quarkus REST（对称） | **actix-web** | `easyexcel-web-actix` + `easyexcel-demo-actix` |
+
+契约要点：
+
+- Content-Type：`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+- 失败 JSON 键：`status` / `message`（与 Java `WebTest.downloadFailedUsingJson` 一致）
+- 核心 crate **不**依赖 axum/actix（依赖方向同 sa-token-rs）

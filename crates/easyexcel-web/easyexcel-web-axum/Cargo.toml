@@ -1,0 +1,29 @@
+[package]
+name = "easyexcel-web-axum"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Axum (Spring Boot) integration for easyexcel-rs"
+repository.workspace = true
+
+[dependencies]
+easyexcel = { workspace = true }
+easyexcel-core = { workspace = true }
+axum = { workspace = true }
+bytes = { workspace = true }
+http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "rt", "macros"] }
+tower = { workspace = true }
+urlencoding = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true, features = ["multipart"] }
+tower = { workspace = true, features = ["util"] }
+http-body-util = { workspace = true }
+
+[lints]
+workspace = true

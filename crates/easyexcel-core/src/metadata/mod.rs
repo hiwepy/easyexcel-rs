@@ -10,6 +10,9 @@ pub mod configuration_holder;
 pub mod field_cache;
 pub mod field_wrapper;
 pub mod fill;
+pub mod font;
+pub mod holder;
+pub mod data;
 pub mod global_configuration;
 pub mod head;
 pub mod null_object;
@@ -39,3 +42,7 @@ pub use property::{
     ExcelReadHeadProperty, FontProperty, LoopMergeProperty, NumberFormatProperty,
     OnceAbsoluteMergeProperty, RowHeightProperty, StyleProperty,
 };
+
+pub use font::Font;
+pub use holder::{ExcelHolder, HolderEnum};
+pub use data::{CellData, DataFormatData};

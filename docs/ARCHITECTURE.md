@@ -5,6 +5,11 @@
 
 ## Crate Layout
 
+> Target layout aligns with `sa-token-rs` (`crates/` monorepo + nested web/demo).
+> See `docs/IMPLEMENTATION_PLAN.md` §六 / §十 for the full migration plan.
+> Framework mapping: **Spring Boot → axum**, **Quarkus → actix-web**;
+> JSON mapping: **Jackson / Fastjson2 → serde + serde_json**.
+
 ```
 easyexcel-rs/                        (workspace root)
 ├── crates/
@@ -13,7 +18,17 @@ easyexcel-rs/                        (workspace root)
 │   ├── easyexcel-derive/            ← proc-macro (`#[derive(ExcelRow)]`)
 │   ├── easyexcel-reader/            ← XLSX/XLS/CSV reading
 │   ├── easyexcel-template/          ← template fill (`{key}` placeholders)
-│   └── easyexcel-writer/            ← XLSX/XLS/CSV writing + BIFF8 encoder
+│   ├── easyexcel-writer/            ← XLSX/XLS/CSV writing + BIFF8 encoder
+│   ├── easyexcel-web/               ← 【planned】web adapters (sa-token-web style)
+│   │   ├── easyexcel-web-axum/      ← Spring Boot → axum
+│   │   └── easyexcel-web-actix/     ← Quarkus → actix-web
+│   └── easyexcel-demo/              ← 【planned】scenario demos
+│       ├── easyexcel-demo-axum/
+│       ├── easyexcel-demo-actix/
+│       ├── easyexcel-demo-read/
+│       ├── easyexcel-demo-write/
+│       └── easyexcel-demo-fill/
+├── xtask/                           ← 【planned】migration-audit
 ├── docs/
 ├── scripts/
 └── tests/                           (integration tests in crate easyexcel)

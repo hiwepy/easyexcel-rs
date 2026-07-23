@@ -27,6 +27,8 @@ pub mod analysis;
 pub mod cache;
 pub mod context;
 pub mod metadata;
+/// Java `com.alibaba.excel.read` 包路径镜像（含 `ReadBasicParameter`）。
+pub mod read;
 
 pub mod holder;
 pub mod builder;

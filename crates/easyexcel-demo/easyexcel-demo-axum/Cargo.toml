@@ -1,0 +1,26 @@
+[package]
+name = "easyexcel-demo-axum"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Axum demo mirroring Java WebTest"
+repository.workspace = true
+
+[[bin]]
+name = "easyexcel-demo-axum"
+path = "src/main.rs"
+
+[dependencies]
+easyexcel = { workspace = true }
+easyexcel-core = { workspace = true }
+easyexcel-web-axum = { path = "../../easyexcel-web/easyexcel-web-axum" }
+axum = { workspace = true, features = ["multipart"] }
+chrono = { workspace = true, default-features = false, features = ["std", "clock"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+urlencoding = { workspace = true }
+
+[lints]
+workspace = true

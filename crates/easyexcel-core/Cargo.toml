@@ -11,6 +11,8 @@ repository.workspace = true
 bigdecimal.workspace = true
 chrono.workspace = true
 num-bigint.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 ureq.workspace = true

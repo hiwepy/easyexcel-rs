@@ -1,5 +1,10 @@
 //! Public facade for typed, event-driven Excel reading and writing.
+//!
+//! Java 对应：`com.alibaba.excel.EasyExcel` / `EasyExcelFactory`。
+//! `easy_excel.rs` / `easy_excel_factory.rs` 为 1:1 路径镜像模块（不删减本文件实现）。
 
+mod easy_excel;
+mod easy_excel_factory;
 mod excel_builder;
 
 use std::io::{Read, Write};

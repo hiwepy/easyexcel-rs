@@ -1,0 +1,18 @@
+[package]
+name = "easyexcel-demo-fill"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Template fill demo for easyexcel-rs"
+repository.workspace = true
+
+[[bin]]
+name = "easyexcel-demo-fill"
+path = "src/main.rs"
+
+[dependencies]
+easyexcel = { workspace = true }
+
+[lints]
+workspace = true

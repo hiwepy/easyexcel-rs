@@ -247,6 +247,16 @@ pub use enums::poi;
 pub mod exception;
 
 // ---------------------------------------------------------------------------
+// Web JSON helpers (Java `WebTest.downloadFailedUsingJson` Fastjson body)
+// ---------------------------------------------------------------------------
+mod excel_download_error_body;
+mod empty;
+pub mod converters;
+
+pub use excel_download_error_body::*;
+pub use empty::Empty;
+
+// ---------------------------------------------------------------------------
 // Support (Java `com.alibaba.excel.support.*`)
 // ---------------------------------------------------------------------------
 pub mod support;

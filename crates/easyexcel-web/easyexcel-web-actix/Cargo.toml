@@ -1,0 +1,24 @@
+[package]
+name = "easyexcel-web-actix"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Actix-web (Quarkus) integration for easyexcel-rs"
+repository.workspace = true
+
+[dependencies]
+easyexcel = { workspace = true }
+easyexcel-core = { workspace = true }
+actix-web = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+urlencoding = { workspace = true }
+
+[dev-dependencies]
+actix-web = { workspace = true, features = ["macros"] }
+
+[lints]
+workspace = true

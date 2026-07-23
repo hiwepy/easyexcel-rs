@@ -1,0 +1,19 @@
+[package]
+name = "easyexcel-demo-read"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Simple XLSX/CSV read demo for easyexcel-rs"
+repository.workspace = true
+
+[[bin]]
+name = "easyexcel-demo-read"
+path = "src/main.rs"
+
+[dependencies]
+easyexcel = { workspace = true }
+chrono = { workspace = true, default-features = false, features = ["std", "clock"] }
+
+[lints]
+workspace = true
