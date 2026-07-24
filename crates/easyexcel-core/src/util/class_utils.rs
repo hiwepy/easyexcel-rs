@@ -2,7 +2,7 @@
 //!
 //! Java relies on reflection (`java.lang.Class.getDeclaredFields`,
 //! `Field.setAccessible`) to map POJO fields to Excel columns. The Rust
-//! port replaces reflection with the `easyexcel_derive::ExcelRow` macro,
+//! port replaces reflection with the `easyexcel_macro::ExcelRow` macro,
 //! which generates the equivalent metadata at compile time. These
 //! functions are kept as 1:1 placeholders so that callers ported from the
 //! Java codebase have an obvious anchor to migrate to.

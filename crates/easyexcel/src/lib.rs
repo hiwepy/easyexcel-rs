@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 pub use easyexcel_core::metadata::GlobalConfiguration;
 pub use easyexcel_core::*;
-pub use easyexcel_derive::ExcelRow;
+pub use easyexcel_macro::ExcelRow;
 pub use easyexcel_reader::{
     CompatibleExcelReaderBuilder, CompatibleExcelReaderSheetBuilder, Ehcache,
     EternalReadCacheSelector, ExcelLocale, ExcelReader, MapCache, ReadCache, ReadCacheMode,

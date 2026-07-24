@@ -9,7 +9,7 @@ repository.workspace = true
 
 [dependencies]
 easyexcel-core = { path = "../easyexcel-core" }
-easyexcel-derive = { path = "../easyexcel-derive" }
+easyexcel-macro = { path = "../easyexcel-macro" }
 easyexcel-reader = { path = "../easyexcel-reader" }
 easyexcel-template = { path = "../easyexcel-template" }
 easyexcel-writer = { path = "../easyexcel-writer" }
@@ -22,6 +22,7 @@ num-bigint.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+easyexcel-macro = { path = "../easyexcel-macro" }
 zip.workspace = true
 
 [lints]

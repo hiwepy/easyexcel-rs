@@ -7,7 +7,7 @@ is stable; none of their implementations belong in this workspace.
 | Future project | Scope | Likely Rust foundation | Relationship to `easyexcel-rust` |
 |---|---|---|---|
 | `easydoc-rs` | DOCX creation, typed document models, templates, tables, and images | `docx-rs`, `quick-xml`, `zip` | Reuse common design conventions only |
-| `easyofd-rs` | OFD generation, reading, signing-oriented metadata, and validation | `ofd-rs` plus format-specific XML tooling | Independent format engine and API |
+| `easyofd-rust` | OFD generation, reading, signing-oriented metadata, and validation | `ofd-rs` plus format-specific XML tooling | Independent format engine and API |
 | `easypdf-rs` | PDF generation, merge/split, extraction, forms, and rendering adapters | `lopdf`, `printpdf`, PDFium adapters | Independent format engine and API |
 
 ## Sequencing

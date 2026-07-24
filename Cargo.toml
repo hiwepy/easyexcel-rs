@@ -3,7 +3,7 @@ members = [
     "xtask",
     "crates/easyexcel",
     "crates/easyexcel-core",
-    "crates/easyexcel-derive",
+    "crates/easyexcel-macro",
     "crates/easyexcel-reader",
     "crates/easyexcel-template",
     "crates/easyexcel-writer",

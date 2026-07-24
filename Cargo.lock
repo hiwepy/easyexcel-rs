@@ -823,7 +823,7 @@ dependencies = [
  "calamine",
  "chrono",
  "easyexcel-core",
- "easyexcel-derive",
+ "easyexcel-macro",
  "easyexcel-reader",
  "easyexcel-template",
  "easyexcel-writer",
@@ -904,7 +904,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "easyexcel-derive"
+name = "easyexcel-macro"
 version = "0.1.0"
 dependencies = [
  "easyexcel-core",

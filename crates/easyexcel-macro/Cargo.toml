@@ -1,6 +1,6 @@
 [package]
-name = "easyexcel-derive"
-description = "Derive macros for easyexcel-rust"
+name = "easyexcel-macro"
+description = "Procedural macros for the easyexcel-rust crate (mirrors cn.hutool.core.annotation)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

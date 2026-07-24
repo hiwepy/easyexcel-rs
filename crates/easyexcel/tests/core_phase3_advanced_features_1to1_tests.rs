@@ -14,7 +14,7 @@
 
 use easyexcel::CellValue;
 use easyexcel_core::{CellExtra, CellExtraType, WriteCellData};
-use easyexcel_derive::ExcelRow as DeriveExcelRow;
+use easyexcel_macro::ExcelRow as DeriveExcelRow;
 
 // ---------------------------------------------------------------------------
 // FormulaCellValue — Java `CellDataDataTest#t01ReadFormula07` / write-back

@@ -7,7 +7,7 @@
 
 use easyexcel::EasyExcel;
 use easyexcel_core::{CellExtraType, CellValue, WriteCellData};
-use easyexcel_derive::ExcelRow;
+use easyexcel_macro::ExcelRow;
 
 // ---------------------------------------------------------------------------
 // XLS encryption — Java EncryptDataTest#t02..t04
@@ -51,7 +51,7 @@ mod encrypt_data_test_xls {
 
 mod converter_data_test_xls_image {
     use super::*;
-    use easyexcel_derive::ExcelRow;
+    use easyexcel_macro::ExcelRow;
     use easyexcel_writer::ExcelWriter;
 
     #[derive(Debug, Clone, ExcelRow)]
