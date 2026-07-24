@@ -12,30 +12,21 @@ fn map_cache_stores_and_retrieves_values() {
     cache.put("alpha".to_owned()).expect("put");
     cache.put("beta".to_owned()).expect("put");
     cache.put_finished().expect("put finished");
-    assert_eq!(
-        cache.get(Some(1)).expect("get"),
-        Some("beta".to_owned())
-    );
+    assert_eq!(cache.get(Some(1)).expect("get"), Some("beta".to_owned()));
 }
 
 #[test]
 fn xls_cache_reads_preloaded_sst_values() {
     let cache = XlsCache::new(vec!["one".to_owned(), "two".to_owned()]);
     assert_eq!(cache.len(), 2);
-    assert_eq!(
-        cache.get(Some(0)).expect("get"),
-        Some("one".to_owned())
-    );
+    assert_eq!(cache.get(Some(0)).expect("get"), Some("one".to_owned()));
     assert!(cache.get(Some(99)).expect("get").is_none());
 }
 
 #[test]
 fn simple_selector_matches_java_five_megabyte_threshold() {
     let selector = SimpleReadCacheSelector::new();
-    assert_eq!(
-        selector.select_mode(4_999_999),
-        ReadCacheMode::Memory
-    );
+    assert_eq!(selector.select_mode(4_999_999), ReadCacheMode::Memory);
     assert_eq!(selector.select_mode(5_000_000), ReadCacheMode::Disk);
 }
 

@@ -95,7 +95,11 @@ fn count_demo_rows(path: &std::path::Path) -> usize {
 #[test]
 fn demo_read_simple_read() {
     let path = fixture("demo/demo.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
 
     let total = Arc::new(Mutex::new(0usize));
     let total_cb = Arc::clone(&total);
@@ -121,20 +125,34 @@ fn demo_read_simple_read() {
 #[test]
 fn demo_read_index_or_name_read() {
     let path = fixture("demo/demo.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = EasyExcel::read_sync::<IndexOrNameData>(&path)
         .sheet(0usize)
         .do_read_sync()
         .unwrap();
     assert!(!rows.is_empty());
-    assert!(rows[0].string.as_ref().map(|s| !s.is_empty()).unwrap_or(false));
+    assert!(
+        rows[0]
+            .string
+            .as_ref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    );
 }
 
 /// Java `ReadTest.repeatedRead` — all sheets + selected sheets.
 #[test]
 fn demo_read_repeated_read() {
     let path = fixture("demo/demo.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
 
     let all = EasyExcel::read_sync::<DemoData>(&path)
         .all_sheets()
@@ -153,7 +171,11 @@ fn demo_read_repeated_read() {
 #[test]
 fn demo_read_converter_read() {
     let path = fixture("demo/demo.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = EasyExcel::read_sync::<DemoData>(&path)
         .sheet(0usize)
         .do_read_sync()
@@ -166,7 +188,11 @@ fn demo_read_converter_read() {
 #[test]
 fn demo_read_complex_header_read() {
     let path = fixture("demo/demo.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = EasyExcel::read_sync::<DemoData>(&path)
         .sheet(0usize)
         .head_row_number(1)
@@ -180,7 +206,11 @@ fn demo_read_complex_header_read() {
 #[test]
 fn demo_read_header_read() {
     let path = fixture("demo/demo.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let saw_head = Arc::new(Mutex::new(false));
     let saw = Arc::clone(&saw_head);
     struct HeadListener {
@@ -202,16 +232,10 @@ fn demo_read_header_read() {
             Ok(())
         }
     }
-    EasyExcel::read::<DemoData, _>(
-        &path,
-        HeadListener {
-            saw,
-            rows: 0,
-        },
-    )
-    .sheet(0usize)
-    .do_read()
-    .unwrap();
+    EasyExcel::read::<DemoData, _>(&path, HeadListener { saw, rows: 0 })
+        .sheet(0usize)
+        .do_read()
+        .unwrap();
     assert!(*saw_head.lock().unwrap(), "invokeHead must be called");
 }
 
@@ -219,7 +243,11 @@ fn demo_read_header_read() {
 #[test]
 fn demo_read_extra_read() {
     let path = fixture("demo/extra.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
         .do_read_sync()
@@ -231,7 +259,11 @@ fn demo_read_extra_read() {
 #[test]
 fn demo_read_cell_data_read() {
     let path = fixture("demo/cellDataDemo.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
         .do_read_sync()
@@ -243,7 +275,11 @@ fn demo_read_cell_data_read() {
 #[test]
 fn demo_read_synchronous_read() {
     let path = fixture("demo/demo.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let n = count_demo_rows(&path);
     assert!(n > 0);
 }
@@ -252,7 +288,11 @@ fn demo_read_synchronous_read() {
 #[test]
 fn demo_read_no_model_read() {
     let path = fixture("demo/demo.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = EasyExcel::read_dynamic_sync(&path)
         .sheet(0usize)
         .head_row_number(1)
@@ -270,10 +310,12 @@ fn demo_read_no_model_read() {
 #[test]
 fn demo_read_csv_format() {
     let path = fixture("demo/demo.csv");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
-    let rows = EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap();
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
+    let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
     assert!(!rows.is_empty());
 }
 
@@ -364,9 +406,7 @@ fn demo_write_no_model_write() {
         .sheet("模板")
         .do_write(rows)
         .unwrap();
-    let back = EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap();
+    let back = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
     assert!(!back.is_empty());
 }
 
@@ -474,7 +514,10 @@ fn demo_fill_simple_fill() {
         .unwrap();
     assert!(!rows.is_empty());
     let text = format!("{rows:?}");
-    assert!(text.contains("张三") || text.contains("5"), "filled values must appear: {text}");
+    assert!(
+        text.contains("张三") || text.contains("5"),
+        "filled values must appear: {text}"
+    );
 }
 
 /// Java `FillTest.listFill`.

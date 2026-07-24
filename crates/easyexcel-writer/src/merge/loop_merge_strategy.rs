@@ -1,6 +1,8 @@
 //! Mirrors Java `com.alibaba.excel.write.merge.LoopMergeStrategy`.
 
-use easyexcel_core::{CellExtra, ExcelError, Result, WriteCellContext, WriteHandler};
+use easyexcel_core::{
+    CellExtra, ExcelError, LoopMergeProperty, Result, WriteCellContext, WriteHandler,
+};
 
 use crate::merge::abstract_merge_strategy::AbstractMergeStrategy;
 
@@ -68,8 +70,15 @@ impl LoopMergeStrategy {
 
 impl WriteHandler for LoopMergeStrategy {
     fn order(&self) -> i32 {
-        // Matches `OrderConstant.FILL_STYLE` — fill-style strategies run last.
-        50_000
+        // Java `LoopMergeStrategy` does not override `order()`.
+        easyexcel_core::constant::order_constant::DEFAULT_ORDER
+    }
+
+    fn style_loop_merge(&self) -> Option<(LoopMergeProperty, usize)> {
+        Some((
+            LoopMergeProperty::new(self.each_rows, self.column_extend),
+            usize::from(self.column_index),
+        ))
     }
 }
 

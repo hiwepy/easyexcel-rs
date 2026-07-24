@@ -14,7 +14,7 @@ use std::str::FromStr;
 
 use bigdecimal::BigDecimal;
 use bigdecimal::ToPrimitive;
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{Duration, NaiveDate, NaiveDateTime};
 use num_bigint::BigInt;
 
 use crate::cell_value::CellValue;
@@ -140,6 +140,7 @@ where
 {
     let value = value.unwrap_or(&CellValue::Empty);
     let text = match value {
+        CellValue::Bool(inner) => u8::from(*inner).to_string(),
         CellValue::Int(inner) => inner.to_string(),
         CellValue::Float(inner) if inner.fract() == 0.0 => inner.to_string(),
         CellValue::Decimal(inner) if inner == &inner.with_scale(0) => inner.to_string(),
@@ -192,6 +193,7 @@ where
 {
     let value = value.unwrap_or(&CellValue::Empty);
     let text = match value {
+        CellValue::Bool(inner) => u8::from(*inner).to_string(),
         CellValue::Int(inner) => inner.to_string(),
         CellValue::Float(inner) => inner.to_string(),
         CellValue::Decimal(inner) => inner.to_string(),
@@ -209,6 +211,7 @@ impl FromExcelCell for BigDecimal {
     ) -> Result<Self, ExcelError> {
         let value = value.unwrap_or(&CellValue::Empty);
         match value {
+            CellValue::Bool(inner) => Ok(Self::from(u8::from(*inner))),
             CellValue::Decimal(inner) => Ok(inner.clone()),
             CellValue::Int(inner) => Ok(Self::from(*inner)),
             CellValue::Float(inner) => {
@@ -237,6 +240,9 @@ impl FromExcelCell for NaiveDate {
         match value {
             CellValue::Date(value) => Ok(*value),
             CellValue::DateTime(value) => Ok(value.date()),
+            CellValue::Int(_) | CellValue::Float(_) | CellValue::Decimal(_) => {
+                excel_serial_to_datetime(value, context).map(|value| value.date())
+            }
             CellValue::String(inner) => {
                 NaiveDate::parse_from_str(inner, context.format.unwrap_or("%Y-%m-%d"))
                     .map_err(|_| context.invalid(value, "NaiveDate"))
@@ -261,6 +267,9 @@ impl FromExcelCell for NaiveDateTime {
         match value {
             CellValue::DateTime(value) => Ok(*value),
             CellValue::Date(value) => Ok(value.and_hms_opt(0, 0, 0).expect("midnight is valid")),
+            CellValue::Int(_) | CellValue::Float(_) | CellValue::Decimal(_) => {
+                excel_serial_to_datetime(value, context)
+            }
             CellValue::String(inner) => {
                 NaiveDateTime::parse_from_str(inner, context.format.unwrap_or("%Y-%m-%d %H:%M:%S"))
                     .map_err(|_| context.invalid(value, "NaiveDateTime"))
@@ -268,6 +277,41 @@ impl FromExcelCell for NaiveDateTime {
             other => Err(context.invalid(other, "NaiveDateTime")),
         }
     }
+}
+
+fn excel_serial_to_datetime(
+    value: &CellValue,
+    context: &ConvertContext,
+) -> Result<NaiveDateTime, ExcelError> {
+    let serial = match value {
+        CellValue::Int(value) => *value as f64,
+        CellValue::Float(value) => *value,
+        CellValue::Decimal(decimal) => decimal
+            .to_f64()
+            .ok_or_else(|| context.invalid(value, "Excel date"))?,
+        other => return Err(context.invalid(other, "Excel date")),
+    };
+    if !serial.is_finite() || serial < 0.0 {
+        return Err(context.invalid(value, "Excel date"));
+    }
+
+    let whole_days = serial.floor() as i64;
+    // POI preserves Excel's fictitious 1900-02-29 by mapping serials 60 and
+    // 61 to 1900-03-01. Before 61 the effective epoch is 1899-12-31; from
+    // 61 onward it is 1899-12-30.
+    let epoch = if context.use_1904_windowing {
+        NaiveDate::from_ymd_opt(1904, 1, 1).expect("valid Excel epoch")
+    } else if whole_days < 61 {
+        NaiveDate::from_ymd_opt(1899, 12, 31).expect("valid Excel epoch")
+    } else {
+        NaiveDate::from_ymd_opt(1899, 12, 30).expect("valid Excel epoch")
+    };
+    let milliseconds = ((serial - serial.floor()) * 86_400_000.0 + 0.5).floor() as i64;
+    epoch
+        .and_hms_opt(0, 0, 0)
+        .and_then(|value| value.checked_add_signed(Duration::days(whole_days)))
+        .and_then(|value| value.checked_add_signed(Duration::milliseconds(milliseconds)))
+        .ok_or_else(|| context.invalid(value, "Excel date"))
 }
 
 impl IntoExcelCell for NaiveDateTime {

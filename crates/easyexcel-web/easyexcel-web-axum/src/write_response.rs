@@ -107,8 +107,11 @@ where
     I: IntoIterator<Item = T>,
 {
     match write_rows_to_bytes::<T, _>(sheet_name, rows) {
-        Ok(bytes) => excel_download_response_from_bytes(file_name, bytes)
-            .unwrap_or_else(|error| excel_download_error_response(ExcelDownloadErrorBody::download_failed(&error))),
-        Err(error) => excel_download_error_response(ExcelDownloadErrorBody::download_failed(&error)),
+        Ok(bytes) => excel_download_response_from_bytes(file_name, bytes).unwrap_or_else(|error| {
+            excel_download_error_response(ExcelDownloadErrorBody::download_failed(&error))
+        }),
+        Err(error) => {
+            excel_download_error_response(ExcelDownloadErrorBody::download_failed(&error))
+        }
     }
 }

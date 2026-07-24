@@ -2,9 +2,9 @@
 
 use easyexcel_core::metadata::GlobalConfiguration;
 
-use crate::locale::ExcelLocale;
-use crate::ScientificFormatMode;
 use crate::ReadOptions;
+use crate::ScientificFormatMode;
+use crate::locale::ExcelLocale;
 
 /// Builds a global configuration snapshot from read options.
 ///

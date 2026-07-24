@@ -66,9 +66,30 @@ impl ExcelHeadProperty {
     ) -> Self {
         let mut property = Self::new(configuration_holder, head);
         property.head_clazz = Some(head_clazz.into());
-        if property.head_kind == HeadKind::None {
-            property.head_kind = HeadKind::Class;
-        }
+        // Java always changes the kind to CLASS after class-field metadata is
+        // applied, even when an explicit string head was also supplied.
+        property.head_kind = HeadKind::Class;
+        property
+    }
+
+    /// Creates a fully resolved property from an indexed head map.
+    ///
+    /// This is the Rust equivalent of Java constructing the inherited
+    /// `headMap` through `initColumnProperties`. Uneven paths are normalized by
+    /// repeating their final label, exactly like `initHeadRowNumber()`.
+    #[must_use]
+    pub fn from_head_map(
+        head_clazz: Option<String>,
+        head_kind: HeadKind,
+        head_map: BTreeMap<i32, Head>,
+    ) -> Self {
+        let mut property = Self {
+            head_clazz,
+            head_kind,
+            head_row_number: 0,
+            head_map,
+        };
+        property.init_head_row_number();
         property
     }
 
@@ -87,8 +108,7 @@ impl ExcelHeadProperty {
             }
             let last = head.head_name_list.len() - 1;
             while head.head_name_list.len() < self.head_row_number as usize {
-                head.head_name_list
-                    .push(head.head_name_list[last].clone());
+                head.head_name_list.push(head.head_name_list[last].clone());
             }
         }
     }

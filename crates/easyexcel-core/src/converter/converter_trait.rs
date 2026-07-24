@@ -12,10 +12,10 @@
 //! with `TypeId`) and the two conversion methods. `supportJavaTypeKey` is
 //! implicit in the generic parameter `T`.
 
-use crate::cell_value::CellValue;
 use crate::enum_cell_data_type::CellDataType;
 use crate::excel_error::ExcelError;
 use crate::read_converter_context::ReadConverterContext;
+use crate::write_cell_data::WriteCellData;
 use crate::write_converter_context::WriteConverterContext;
 
 /// Custom bidirectional converter selected by `#[excel(converter = Type)]`.
@@ -48,7 +48,7 @@ pub trait Converter<T> {
     fn convert_to_excel_data(
         &self,
         _context: &WriteConverterContext<'_, T>,
-    ) -> Result<CellValue, ExcelError> {
+    ) -> Result<WriteCellData, ExcelError> {
         Err(ExcelError::Unsupported(
             "custom converter does not support writing".to_owned(),
         ))

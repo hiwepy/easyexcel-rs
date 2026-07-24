@@ -8,15 +8,15 @@
 use std::net::SocketAddr;
 
 use axum::{
+    Router,
     extract::Multipart,
     routing::{get, post},
-    Router,
 };
 use chrono::NaiveDateTime;
 use easyexcel::{AnalysisContext, EasyExcel, ExcelRow, ReadListener, Result as ExcelResult};
 use easyexcel_web_axum::{
-    excel_download_error_response, excel_download_or_json_response, excel_download_response,
-    extension_from_path, read_upload_with_listener, ExcelDownloadErrorBody,
+    ExcelDownloadErrorBody, excel_download_error_response, excel_download_or_json_response,
+    excel_download_response, extension_from_path, read_upload_with_listener,
 };
 use tracing::info;
 
@@ -104,10 +104,9 @@ fn encoded_file_name() -> String {
 
 /// `GET /download` — 直接返回 XLSX 附件。
 async fn download() -> axum::response::Response {
-    excel_download_response(&encoded_file_name(), "模板", sample_download_rows())
-        .unwrap_or_else(|error| {
-            excel_download_error_response(ExcelDownloadErrorBody::download_failed(&error))
-        })
+    excel_download_response(&encoded_file_name(), "模板", sample_download_rows()).unwrap_or_else(
+        |error| excel_download_error_response(ExcelDownloadErrorBody::download_failed(&error)),
+    )
 }
 
 /// `GET /downloadFailedUsingJson` — 失败时返回 JSON。
@@ -152,10 +151,6 @@ async fn main() {
     info!("GET  /downloadFailedUsingJson");
     info!("POST /upload");
 
-    let listener = tokio::net::TcpListener::bind(address)
-        .await
-        .expect("bind");
-    axum::serve(listener, app)
-        .await
-        .expect("serve");
+    let listener = tokio::net::TcpListener::bind(address).await.expect("bind");
+    axum::serve(listener, app).await.expect("serve");
 }

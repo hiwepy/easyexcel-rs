@@ -79,10 +79,7 @@ impl ReadWorkbook {
     }
 
     /// Sets the custom object. (Java `setCustomObject(Object)`)
-    pub fn set_custom_object(
-        &mut self,
-        custom_object: crate::CustomReadObject,
-    ) -> &mut Self {
+    pub fn set_custom_object(&mut self, custom_object: crate::CustomReadObject) -> &mut Self {
         self.options.custom_object = Some(custom_object);
         self
     }
@@ -143,10 +140,7 @@ impl ReadWorkbook {
     }
 
     /// Sets the read cache selector. (Java `setReadCacheSelector(ReadCacheSelector)`)
-    pub fn set_read_cache_selector(
-        &mut self,
-        value: crate::StoredReadCacheSelector,
-    ) -> &mut Self {
+    pub fn set_read_cache_selector(&mut self, value: crate::StoredReadCacheSelector) -> &mut Self {
         self.options.read_cache_selector = Some(value);
         self
     }

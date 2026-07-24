@@ -4,8 +4,8 @@ use easyexcel_core::Result;
 
 use crate::cache::selector::ReadCacheSelector;
 use crate::read_cache::{
-    create_cache, ReadCacheMode, SharedStringCache, SharedStringCacheReader,
-    SharedStringCacheWriter, DEFAULT_MAX_MEMORY_SHARED_STRINGS_BYTES,
+    DEFAULT_MAX_MEMORY_SHARED_STRINGS_BYTES, ReadCacheMode, SharedStringCache,
+    SharedStringCacheReader, SharedStringCacheWriter, create_cache,
 };
 
 /// Shared-string cache contract matching Java `ReadCache`.
@@ -82,7 +82,9 @@ pub fn resolve_read_cache_mode(
     selector: Option<&dyn ReadCacheSelector>,
     shared_strings_xml_size: u64,
 ) -> ReadCacheMode {
-    selector.map_or(mode, |selector| selector.select_mode(shared_strings_xml_size))
+    selector.map_or(mode, |selector| {
+        selector.select_mode(shared_strings_xml_size)
+    })
 }
 
 /// Adapts the internal SAX cache writer to the Java `ReadCache` surface.
@@ -132,10 +134,7 @@ impl ReadCache for SharedStringCacheAdapter {
         if self.reader.is_some() {
             return Ok(());
         }
-        let writer = std::mem::replace(
-            &mut self.inner,
-            create_cache(ReadCacheMode::Memory, 0)?,
-        );
+        let writer = std::mem::replace(&mut self.inner, create_cache(ReadCacheMode::Memory, 0)?);
         self.reader = Some(writer.finish()?);
         Ok(())
     }

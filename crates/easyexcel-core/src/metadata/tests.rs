@@ -2,15 +2,17 @@
 
 use std::collections::BTreeMap;
 
-use bigdecimal::RoundingMode;
-
+use crate::NumberRoundingMode;
 use crate::metadata::{
     AbstractCell, AbstractHolder, AbstractParameterBuilder, AnalysisCell, BasicParameter,
     BasicParameterBuilder, Cell, CellRange, ConfigurationHolder, DateTimeFormatProperty,
-    ExcelHeadProperty, ExcelReadHeadProperty, FieldCache, FieldWrapper, GlobalConfiguration,
-    Head, MetadataHolder, NullObject, NumberFormatProperty,
+    ExcelHeadProperty, ExcelReadHeadProperty, FieldCache, FieldWrapper, GlobalConfiguration, Head,
+    MetadataHolder, NullObject, NumberFormatProperty,
 };
-use crate::{CacheLocation, HeadKind, Holder, WriteLastRow, WriteLastRowTypeEnum, WriteTemplateAnalysisCellType};
+use crate::{
+    CacheLocation, HeadKind, Holder, WriteLastRow, WriteLastRowTypeEnum,
+    WriteTemplateAnalysisCellType,
+};
 
 #[test]
 fn null_object_is_zero_sized_marker() {
@@ -43,9 +45,9 @@ fn field_cache_stores_sorted_and_index_maps() {
 }
 
 #[test]
-fn head_rejects_empty_header_name() {
-    let result = Head::new(0, None, vec!["".to_owned()], false, true);
-    assert!(result.is_err());
+fn head_permits_empty_but_non_null_rust_header_name() {
+    let head = Head::new(0, None, vec![String::new()], false, true).expect("empty label");
+    assert_eq!(head.head_name_list(), [String::new()]);
 }
 
 #[test]
@@ -88,15 +90,14 @@ fn basic_parameter_builder_supports_java_setters() {
 
 #[test]
 fn date_time_and_number_format_properties_build_from_annotations() {
-    let date = DateTimeFormatProperty::build(Some("yyyy-MM-dd"), Some(true))
-        .expect("date format");
+    let date = DateTimeFormatProperty::build(Some("yyyy-MM-dd"), Some(true)).expect("date format");
     assert_eq!(date.format(), "yyyy-MM-dd");
     assert!(date.use1904windowing());
 
-    let number = NumberFormatProperty::build(Some("0.00"), Some(RoundingMode::HalfUp))
+    let number = NumberFormatProperty::build(Some("0.00"), Some(NumberRoundingMode::HalfUp))
         .expect("number format");
     assert_eq!(number.format(), "0.00");
-    assert_eq!(number.rounding_mode(), RoundingMode::HalfUp);
+    assert_eq!(number.rounding_mode(), NumberRoundingMode::HalfUp);
 }
 
 #[test]
@@ -113,9 +114,11 @@ fn excel_read_head_property_wraps_string_head() {
 
 #[test]
 fn excel_head_property_for_class_marks_class_kind() {
-    let head = ExcelHeadProperty::for_class(None, "DemoData", None);
+    let head =
+        ExcelHeadProperty::for_class(None, "DemoData", Some(vec![vec!["显式表头".to_owned()]]));
     assert_eq!(head.head_kind(), HeadKind::Class);
     assert_eq!(head.head_clazz(), Some("DemoData"));
+    assert_eq!(head.head_map()[&0].head_name_list(), ["显式表头"]);
 }
 
 #[test]

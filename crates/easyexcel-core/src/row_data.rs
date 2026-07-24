@@ -30,6 +30,7 @@ pub struct RowData {
     decimal_values: HashMap<usize, BigDecimal>,
     present_columns: HashSet<usize>,
     read_default_return: ReadDefaultReturn,
+    use_1904_windowing: bool,
 }
 
 impl RowData {
@@ -52,6 +53,7 @@ impl RowData {
             decimal_values: HashMap::new(),
             present_columns,
             read_default_return: ReadDefaultReturn::default(),
+            use_1904_windowing: false,
         }
     }
 
@@ -90,6 +92,13 @@ impl RowData {
         self
     }
 
+    /// Selects Excel's 1904 numeric date system for field conversion.
+    #[must_use]
+    pub const fn with_use_1904_windowing(mut self, enabled: bool) -> Self {
+        self.use_1904_windowing = enabled;
+        self
+    }
+
     /// Returns the physical zero-based row index. (Java `ReadRowHolder.getRowIndex()`)
     #[must_use]
     pub const fn row_index(&self) -> u32 {
@@ -121,6 +130,24 @@ impl RowData {
             .index
             .or_else(|| self.headers.get(column.name).copied())?;
         self.formulas.get(&index)
+    }
+
+    /// Returns POI-compatible display text retained for a numeric source cell.
+    #[must_use]
+    pub fn display_value(&self, column: &ExcelColumn) -> Option<&str> {
+        let index = column
+            .index
+            .or_else(|| self.headers.get(column.name).copied())?;
+        self.display_values.get(&index).map(String::as_str)
+    }
+
+    /// Returns the exact decimal token retained from OOXML for a numeric cell.
+    #[must_use]
+    pub fn decimal_value(&self, column: &ExcelColumn) -> Option<&BigDecimal> {
+        let index = column
+            .index
+            .or_else(|| self.headers.get(column.name).copied())?;
+        self.decimal_values.get(&index)
     }
 
     /// Dynamic-row support: maximum physical column touched by either headers or cells.
@@ -186,6 +213,7 @@ impl RowData {
             column_index,
             field: column.field,
             format: column.format,
+            use_1904_windowing: column.use_1904_windowing.unwrap_or(self.use_1904_windowing),
         }
     }
 }

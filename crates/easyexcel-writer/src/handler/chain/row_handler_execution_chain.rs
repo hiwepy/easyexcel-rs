@@ -18,6 +18,15 @@ impl RowHandlerExecutionChain {
         }
     }
 
+    /// Creates a chain whose head contains `handler`. (Java constructor)
+    #[must_use]
+    pub fn with_handler(handler: Box<dyn easyexcel_core::WriteHandler>) -> Self {
+        Self {
+            handler: Some(handler),
+            next: None,
+        }
+    }
+
     /// Appends a handler. (Java `addLast`)
     pub fn add_last(&mut self, handler: Box<dyn easyexcel_core::WriteHandler>) {
         match self.next.as_mut() {
@@ -31,10 +40,32 @@ impl RowHandlerExecutionChain {
         }
     }
 
-    /// Runs the row lifecycle. (Java `afterRowDispose`)
+    /// Runs Java `beforeRowCreate` in chain order.
+    pub fn before_row_create(&mut self, context: &WriteRowContext) -> easyexcel_core::Result<()> {
+        if let Some(handler) = self.handler.as_mut() {
+            handler.before_row_create(context)?;
+        }
+        if let Some(next) = self.next.as_mut() {
+            next.before_row_create(context)?;
+        }
+        Ok(())
+    }
+
+    /// Runs Java `afterRowCreate` in chain order.
+    pub fn after_row_create(&mut self, context: &WriteRowContext) -> easyexcel_core::Result<()> {
+        if let Some(handler) = self.handler.as_mut() {
+            handler.after_row_create(context)?;
+        }
+        if let Some(next) = self.next.as_mut() {
+            next.after_row_create(context)?;
+        }
+        Ok(())
+    }
+
+    /// Runs Java `afterRowDispose` in chain order.
     pub fn after_row_dispose(&mut self, context: &WriteRowContext) -> easyexcel_core::Result<()> {
         if let Some(handler) = self.handler.as_mut() {
-            handler.after_row(context)?;
+            handler.after_row_dispose(context)?;
         }
         if let Some(next) = self.next.as_mut() {
             next.after_row_dispose(context)?;

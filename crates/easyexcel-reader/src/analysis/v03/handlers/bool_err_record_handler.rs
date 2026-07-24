@@ -18,23 +18,22 @@ pub struct BoolCell {
 
 /// Mirrors Java `BoolErrRecordHandler`.
 #[derive(Debug, Default)]
-pub struct BoolErrRecordHandler;
+pub struct BoolErrRecordHandler {
+    /// Most recently decoded boolean cell.
+    pub last_cell: Option<BoolCell>,
+}
 
 impl BoolErrRecordHandler {
     /// Creates an idle handler.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
     /// Java `BoolErrRecordHandler.processRecord`.
     #[must_use]
     pub fn process_bool(row: u32, column: usize, value: bool) -> BoolCell {
-        BoolCell {
-            row,
-            column,
-            value,
-        }
+        BoolCell { row, column, value }
     }
 }
 
@@ -55,7 +54,7 @@ impl XlsRecordHandler for BoolErrRecordHandler {
         let row = u16::from_le_bytes([data[0], data[1]]) as u32;
         let column = u16::from_le_bytes([data[2], data[3]]) as usize;
         let value = data[6] != 0;
-        let _ = Self::process_bool(row, column, value);
+        self.last_cell = Some(Self::process_bool(row, column, value));
     }
 }
 

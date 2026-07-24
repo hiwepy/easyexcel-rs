@@ -8,7 +8,7 @@ use std::time::Instant;
 use easyexcel::{
     AnalysisContext, CellValue, ConvertContext, ConverterRegistry, EasyExcel, ExcelColumn,
     ExcelRow, ExcelWriteMetadata, FromExcelCell, IntoExcelCell, ReadConverterContext, ReadListener,
-    Result, RowData,
+    Result, RowData, WriteCellData,
 };
 
 const DEFAULT_ROWS: u32 = 1_000_000;

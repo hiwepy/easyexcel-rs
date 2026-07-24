@@ -10,5 +10,5 @@ pub mod count_tag_handler;
 pub mod hyperlink_tag_handler;
 pub mod merge_cell_tag_handler;
 pub mod row_tag_handler;
-pub mod xlsx_tag_handler;
 pub mod sax;
+pub mod xlsx_tag_handler;

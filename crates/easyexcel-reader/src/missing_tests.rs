@@ -72,7 +72,10 @@ fn multiple_sheets_all_selector() {
 
 #[test]
 fn multiple_sheets_distinct_types() {
-    assert_ne!(SheetSelector::Index(0), SheetSelector::Name("Test".to_owned()));
+    assert_ne!(
+        SheetSelector::Index(0),
+        SheetSelector::Name("Test".to_owned())
+    );
     assert_ne!(SheetSelector::All, SheetSelector::First);
 }
 
@@ -170,5 +173,8 @@ fn cell_data_type_read_cell_data_mode() {
 fn cell_data_type_all_modes() {
     assert_ne!(ReadDefaultReturn::String, ReadDefaultReturn::ActualData);
     assert_ne!(ReadDefaultReturn::String, ReadDefaultReturn::ReadCellData);
-    assert_ne!(ReadDefaultReturn::ActualData, ReadDefaultReturn::ReadCellData);
+    assert_ne!(
+        ReadDefaultReturn::ActualData,
+        ReadDefaultReturn::ReadCellData
+    );
 }

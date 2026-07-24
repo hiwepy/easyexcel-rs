@@ -18,6 +18,15 @@ impl CellHandlerExecutionChain {
         }
     }
 
+    /// Creates a chain whose head contains `handler`. (Java constructor)
+    #[must_use]
+    pub fn with_handler(handler: Box<dyn easyexcel_core::WriteHandler>) -> Self {
+        Self {
+            handler: Some(handler),
+            next: None,
+        }
+    }
+
     /// Appends a handler. (Java `addLast(WriteHandler)`)
     pub fn add_last(&mut self, handler: Box<dyn easyexcel_core::WriteHandler>) {
         match self.next.as_mut() {
@@ -32,12 +41,51 @@ impl CellHandlerExecutionChain {
     }
 
     /// Runs the chain's cell lifecycle. (Java `beforeCellCreate`)
-    pub fn before_cell_create(&mut self, context: &mut WriteCellContext) -> easyexcel_core::Result<()> {
+    pub fn before_cell_create(
+        &mut self,
+        context: &mut WriteCellContext,
+    ) -> easyexcel_core::Result<()> {
         if let Some(handler) = self.handler.as_mut() {
-            handler.before_cell(context)?;
+            handler.before_cell_create(context)?;
         }
         if let Some(next) = self.next.as_mut() {
             next.before_cell_create(context)?;
+        }
+        Ok(())
+    }
+
+    /// Runs Java `afterCellCreate` in chain order.
+    pub fn after_cell_create(&mut self, context: &WriteCellContext) -> easyexcel_core::Result<()> {
+        if let Some(handler) = self.handler.as_mut() {
+            handler.after_cell_create(context)?;
+        }
+        if let Some(next) = self.next.as_mut() {
+            next.after_cell_create(context)?;
+        }
+        Ok(())
+    }
+
+    /// Runs Java `afterCellDataConverted` in chain order.
+    pub fn after_cell_data_converted(
+        &mut self,
+        context: &WriteCellContext,
+    ) -> easyexcel_core::Result<()> {
+        if let Some(handler) = self.handler.as_mut() {
+            handler.after_cell_data_converted(context)?;
+        }
+        if let Some(next) = self.next.as_mut() {
+            next.after_cell_data_converted(context)?;
+        }
+        Ok(())
+    }
+
+    /// Runs Java `afterCellDispose` in chain order.
+    pub fn after_cell_dispose(&mut self, context: &WriteCellContext) -> easyexcel_core::Result<()> {
+        if let Some(handler) = self.handler.as_mut() {
+            handler.after_cell_dispose(context)?;
+        }
+        if let Some(next) = self.next.as_mut() {
+            next.after_cell_dispose(context)?;
         }
         Ok(())
     }

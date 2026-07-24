@@ -12,22 +12,32 @@ use crate::{ExcelError, Result, WriteDirection};
 ///
 /// Mirrors Java `com.alibaba.excel.write.metadata.fill.FillConfig` fields used by
 /// `ExcelBuilderImpl.fill`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WriteFillConfig {
     /// Whether collection fill forces a new row. (Java `FillConfig.forceNewRow`)
     pub force_new_row: bool,
     /// Collection expansion direction when supplied by the caller.
     pub direction: Option<WriteDirection>,
+    /// Whether newly created cells inherit the template style.
+    /// (Java `FillConfig.autoStyle`, default `true`)
+    pub auto_style: bool,
 }
 
 impl WriteFillConfig {
-    /// Creates Java-compatible defaults (`forceNewRow = false`, vertical fill).
+    /// Creates Java-compatible defaults (`vertical`, no forced row, auto style).
     #[must_use]
     pub const fn new() -> Self {
         Self {
             force_new_row: false,
             direction: None,
+            auto_style: true,
         }
+    }
+}
+
+impl Default for WriteFillConfig {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -84,9 +94,7 @@ pub trait WriteFillExecutor {
 /// Mirrors Java `ExcelGenerateException("Calling the 'fill' method must use a template.")`.
 #[must_use]
 pub fn fill_requires_template_error() -> ExcelError {
-    ExcelError::Unsupported(
-        "Calling the 'fill' method must use a template.".to_owned(),
-    )
+    ExcelError::Unsupported("Calling the 'fill' method must use a template.".to_owned())
 }
 
 /// Returns a descriptive error when CSV fill is requested.

@@ -17,9 +17,7 @@ impl DefaultWriteWorkbookHandler {
     /// Creates the handler. (Java `DefaultWriteWorkbookHandler()`)
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            initialized: false,
-        }
+        Self { initialized: false }
     }
 
     /// Returns whether the workbook has been initialized.

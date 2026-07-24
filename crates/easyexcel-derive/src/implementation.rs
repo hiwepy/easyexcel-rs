@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use proc_macro_crate::{FoundCrate, crate_name};
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Fields, Lit, LitBool, LitInt, LitStr, Path, meta::ParseNestedMeta};
@@ -23,6 +25,8 @@ struct FieldOptions {
     index: Option<LitInt>,
     order: Option<LitInt>,
     format: Option<LitStr>,
+    rounding_mode: Option<LitStr>,
+    use_1904_windowing: Option<LitBool>,
     converter: Option<Path>,
     column_width: Option<LitInt>,
     head_style: Option<proc_macro2::TokenStream>,
@@ -57,7 +61,12 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
     let mut readers = Vec::new();
     let mut registered_readers = Vec::new();
     let mut writers = Vec::new();
+    let mut original_writers = Vec::new();
+    let mut selected_original_writers = Vec::new();
     let mut registered_writers = Vec::new();
+    let mut registered_write_cell_data = Vec::new();
+    let mut selected_registered_write_cell_data = Vec::new();
+    let mut forced_index_fields = BTreeMap::<usize, String>::new();
     let mut schema_position = 0usize;
 
     for field in fields {
@@ -71,6 +80,17 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
         }
 
         let field_name = ident.to_string();
+        if let Some(index) = options.index.as_ref() {
+            let index_value = index.base10_parse::<usize>()?;
+            if let Some(previous_field) =
+                forced_index_fields.insert(index_value, field_name.clone())
+            {
+                return Err(syn::Error::new_spanned(
+                    index,
+                    format!("the index of `{previous_field}` and `{field_name}` must be different"),
+                ));
+            }
+        }
         let converter = options.converter;
         let header_name = options
             .name
@@ -93,9 +113,9 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
                 #index,
                 #order,
                 #format,
-            )
+            ).with_field_type(::core::stringify!(#ty))
         );
-        let column = decorate_column(
+        let mut column = decorate_column(
             column,
             options.column_width,
             options.head_style,
@@ -111,6 +131,13 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
             options.conditional,
             options.filter,
         );
+        if let Some(use_1904_windowing) = options.use_1904_windowing {
+            column = quote!(#column.with_use_1904_windowing(#use_1904_windowing));
+        }
+        if let Some(rounding_mode) = options.rounding_mode {
+            let rounding_mode = number_rounding_mode_tokens(&rounding_mode, &crate_path)?;
+            column = quote!(#column.with_number_rounding_mode(#rounding_mode));
+        }
         columns.push(column);
         let position = syn::Index::from(schema_position);
         let read_conversion = field_read_conversion(&crate_path, &ty, converter.as_ref());
@@ -131,8 +158,16 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
             }
         });
         let write_conversion = field_write_conversion(&crate_path, &ty, &ident, converter.as_ref());
+        let original_write_conversion =
+            field_original_write_conversion(&crate_path, &ty, &ident, converter.as_ref());
         let registered_write_conversion =
             field_registered_write_conversion(&crate_path, &ty, &ident, converter.as_ref());
+        let registered_write_cell_data_conversion = field_registered_write_cell_data_conversion(
+            &crate_path,
+            &ty,
+            &ident,
+            converter.as_ref(),
+        );
         writers.push(quote! {
             {
                 let column = &Self::schema()[#position];
@@ -142,8 +177,37 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
                     column_index: column.index,
                     field: column.field,
                     format: column.format,
+                    use_1904_windowing: column.use_1904_windowing.unwrap_or(false),
                 };
-                #write_conversion
+                (|| -> #crate_path::Result<#crate_path::CellValue> {
+                    Ok(#write_conversion)
+                })().map_err(|error| context.write_error(error))?
+            }
+        });
+        let original_writer = quote! {
+            {
+                let column = &Self::schema()[#position];
+                let context = #crate_path::ConvertContext {
+                    sheet_name: ::std::string::String::new(),
+                    row_index: 0,
+                    column_index: column.index,
+                    field: column.field,
+                    format: column.format,
+                    use_1904_windowing: column.use_1904_windowing.unwrap_or(false),
+                };
+                (|| -> #crate_path::Result<#crate_path::CellValue> {
+                    Ok(#original_write_conversion)
+                })().map_err(|error| context.write_error(error))?
+            }
+        };
+        original_writers.push(original_writer.clone());
+        selected_original_writers.push(quote! {
+            if selected_schema_indexes
+                .is_none_or(|selected| selected.contains(&#position))
+            {
+                #original_writer
+            } else {
+                #crate_path::CellValue::Empty
             }
         });
         registered_writers.push(quote! {
@@ -155,8 +219,37 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
                     column_index: column.index,
                     field: column.field,
                     format: column.format,
+                    use_1904_windowing: column.use_1904_windowing.unwrap_or(false),
                 };
-                #registered_write_conversion
+                (|| -> #crate_path::Result<#crate_path::CellValue> {
+                    Ok(#registered_write_conversion)
+                })().map_err(|error| context.write_error(error))?
+            }
+        });
+        let registered_write_cell = quote! {
+            {
+                let column = &Self::schema()[#position];
+                let context = #crate_path::ConvertContext {
+                    sheet_name: ::std::string::String::new(),
+                    row_index: 0,
+                    column_index: column.index,
+                    field: column.field,
+                    format: column.format,
+                    use_1904_windowing: column.use_1904_windowing.unwrap_or(false),
+                };
+                (|| -> #crate_path::Result<#crate_path::WriteCellData> {
+                    Ok(#registered_write_cell_data_conversion)
+                })().map_err(|error| context.write_error(error))?
+            }
+        };
+        registered_write_cell_data.push(registered_write_cell.clone());
+        selected_registered_write_cell_data.push(quote! {
+            if selected_schema_indexes
+                .is_none_or(|selected| selected.contains(&#position))
+            {
+                #registered_write_cell
+            } else {
+                #crate_path::WriteCellData::new(#crate_path::CellValue::Empty)
             }
         });
         schema_position += 1;
@@ -196,6 +289,33 @@ fn expand_excel_row(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
                 converters: &#crate_path::ConverterRegistry,
             ) -> #crate_path::Result<::std::vec::Vec<#crate_path::CellValue>> {
                 Ok(::std::vec![#(#registered_writers),*])
+            }
+
+            fn to_excel_write_row(
+                &self,
+                converters: &#crate_path::ConverterRegistry,
+            ) -> #crate_path::Result<(
+                ::std::vec::Vec<#crate_path::CellValue>,
+                ::std::vec::Vec<#crate_path::WriteCellData>,
+            )> {
+                Ok((
+                    ::std::vec![#(#original_writers),*],
+                    ::std::vec![#(#registered_write_cell_data),*],
+                ))
+            }
+
+            fn to_excel_write_row_selected(
+                &self,
+                converters: &#crate_path::ConverterRegistry,
+                selected_schema_indexes: ::core::option::Option<&[usize]>,
+            ) -> #crate_path::Result<(
+                ::std::vec::Vec<#crate_path::CellValue>,
+                ::std::vec::Vec<#crate_path::WriteCellData>,
+            )> {
+                Ok((
+                    ::std::vec![#(#selected_original_writers),*],
+                    ::std::vec![#(#selected_registered_write_cell_data),*],
+                ))
             }
         }
     })
@@ -295,9 +415,11 @@ fn field_read_conversion(
             quote! {
                 #crate_path::Converter::<#ty>::convert_to_rust_data(
                     &<#converter as ::core::default::Default>::default(),
-                    &#crate_path::ReadConverterContext::with_formula(
+                    &#crate_path::ReadConverterContext::with_cell_metadata(
                         row.cell(column),
                         row.formula(column),
+                        row.display_value(column),
+                        row.decimal_value(column),
                         column,
                         &context,
                     ),
@@ -316,9 +438,11 @@ fn field_registered_read_conversion(
         || {
             quote! {
                 if let ::core::option::Option::Some(value) = converters.convert_to_rust_data::<#ty>(
-                    &#crate_path::ReadConverterContext::with_formula(
+                    &#crate_path::ReadConverterContext::with_cell_metadata(
                         row.cell(column),
                         row.formula(column),
+                        row.display_value(column),
+                        row.decimal_value(column),
                         column,
                         &context,
                     ),
@@ -336,9 +460,11 @@ fn field_registered_read_conversion(
             quote! {
                 #crate_path::Converter::<#ty>::convert_to_rust_data(
                     &<#converter as ::core::default::Default>::default(),
-                    &#crate_path::ReadConverterContext::with_formula(
+                    &#crate_path::ReadConverterContext::with_cell_metadata(
                         row.cell(column),
                         row.formula(column),
+                        row.display_value(column),
+                        row.decimal_value(column),
                         column,
                         &context,
                     ),
@@ -362,13 +488,16 @@ fn field_write_conversion(
         },
         |converter| {
             quote! {
-                #crate_path::Converter::<#ty>::convert_to_excel_data(
+                #crate_path::IntoExcelCell::to_excel_cell(
+                    &#crate_path::Converter::<#ty>::convert_to_excel_data(
                     &<#converter as ::core::default::Default>::default(),
                     &#crate_path::WriteConverterContext::new(
                         &self.#ident,
                         column,
                         &context,
                     ),
+                    )?,
+                    &context,
                 )?
             }
         },
@@ -381,17 +510,61 @@ fn field_registered_write_conversion(
     ident: &syn::Ident,
     converter: Option<&Path>,
 ) -> proc_macro2::TokenStream {
+    let value_is_null = option_null_expression(ty, ident);
     converter.map_or_else(
         || {
             quote! {
-                if let ::core::option::Option::Some(value) = converters.convert_to_excel_data::<#ty>(
+                if let ::core::option::Option::Some(value) = converters.convert_to_excel_data_with_null_state::<#ty>(
                     &self.#ident,
                     column,
                     &context,
+                    #value_is_null,
+                )? {
+                    #crate_path::IntoExcelCell::to_excel_cell(&value, &context)?
+                } else {
+                    #crate_path::IntoExcelCell::to_excel_cell(&self.#ident, &context)?
+                }
+            }
+        },
+        |converter| {
+            quote! {
+                #crate_path::IntoExcelCell::to_excel_cell(
+                    &#crate_path::Converter::<#ty>::convert_to_excel_data(
+                        &<#converter as ::core::default::Default>::default(),
+                        &#crate_path::WriteConverterContext::new(
+                            &self.#ident,
+                            column,
+                            &context,
+                        ),
+                    )?,
+                    &context,
+                )?
+            }
+        },
+    )
+}
+
+fn field_registered_write_cell_data_conversion(
+    crate_path: &proc_macro2::TokenStream,
+    ty: &syn::Type,
+    ident: &syn::Ident,
+    converter: Option<&Path>,
+) -> proc_macro2::TokenStream {
+    let value_is_null = option_null_expression(ty, ident);
+    converter.map_or_else(
+        || {
+            quote! {
+                if let ::core::option::Option::Some(value) = converters.convert_to_excel_data_with_null_state::<#ty>(
+                    &self.#ident,
+                    column,
+                    &context,
+                    #value_is_null,
                 )? {
                     value
                 } else {
-                    #crate_path::IntoExcelCell::to_excel_cell(&self.#ident, &context)?
+                    #crate_path::WriteCellData::new(
+                        #crate_path::IntoExcelCell::to_excel_cell(&self.#ident, &context)?
+                    )
                 }
             }
         },
@@ -407,6 +580,73 @@ fn field_registered_write_conversion(
                 )?
             }
         },
+    )
+}
+
+fn option_null_expression(ty: &syn::Type, ident: &syn::Ident) -> proc_macro2::TokenStream {
+    let is_option = match ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "Option"),
+        _ => false,
+    };
+    if is_option {
+        quote!(self.#ident.is_none())
+    } else {
+        quote!(false)
+    }
+}
+
+fn field_original_write_conversion(
+    crate_path: &proc_macro2::TokenStream,
+    ty: &syn::Type,
+    ident: &syn::Ident,
+    converter: Option<&Path>,
+) -> proc_macro2::TokenStream {
+    if converter.is_none() || is_side_effect_free_original_type(ty) {
+        quote! {
+            #crate_path::IntoExcelCell::to_excel_cell(&self.#ident, &context)?
+        }
+    } else {
+        // Java stores the original object reference without converting it.
+        // Rust's backend-neutral handler context stores CellValue, so resource
+        // types (URL, stream, file-like custom objects) must not be eagerly
+        // consumed merely to manufacture an "original" snapshot.
+        quote!(#crate_path::CellValue::Empty)
+    }
+}
+
+fn is_side_effect_free_original_type(ty: &syn::Type) -> bool {
+    let syn::Type::Path(path) = ty else {
+        return false;
+    };
+    let Some(segment) = path.path.segments.last() else {
+        return false;
+    };
+    matches!(
+        segment.ident.to_string().as_str(),
+        "String"
+            | "bool"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "BigDecimal"
+            | "BigInt"
+            | "NaiveDate"
+            | "NaiveDateTime"
     )
 }
 
@@ -487,6 +727,18 @@ fn parse_field_options(
                 options.format = Some(meta.value()?.parse()?);
                 return Ok(());
             }
+            if meta.path.is_ident("number_format") {
+                options.format = Some(meta.value()?.parse()?);
+                return Ok(());
+            }
+            if meta.path.is_ident("rounding_mode") {
+                options.rounding_mode = Some(meta.value()?.parse()?);
+                return Ok(());
+            }
+            if meta.path.is_ident("use_1904_windowing") {
+                options.use_1904_windowing = Some(meta.value()?.parse()?);
+                return Ok(());
+            }
             if meta.path.is_ident("converter") {
                 options.converter = Some(meta.value()?.parse()?);
                 return Ok(());
@@ -548,6 +800,34 @@ fn parse_field_options(
         })?;
     }
     Ok(options)
+}
+
+fn number_rounding_mode_tokens(
+    value: &LitStr,
+    crate_path: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let variant = match value
+        .value()
+        .replace(['_', '-'], "")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "up" => quote!(Up),
+        "down" => quote!(Down),
+        "ceiling" => quote!(Ceiling),
+        "floor" => quote!(Floor),
+        "halfup" => quote!(HalfUp),
+        "halfdown" => quote!(HalfDown),
+        "halfeven" => quote!(HalfEven),
+        "unnecessary" => quote!(Unnecessary),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                value,
+                "rounding_mode must be UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN, HALF_EVEN, or UNNECESSARY",
+            ));
+        }
+    };
+    Ok(quote!(#crate_path::NumberRoundingMode::#variant))
 }
 
 fn parse_dimension(meta: &ParseNestedMeta<'_>) -> syn::Result<LitInt> {

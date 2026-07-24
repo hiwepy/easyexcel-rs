@@ -22,10 +22,7 @@ fn cache_ehcache_facade_disk_put_get() {
     let mut cache = Ehcache::new(Some(20)).expect("ehcache");
     cache.put("test".to_owned()).expect("put");
     cache.put_finished().expect("put finished");
-    assert_eq!(
-        cache.get(Some(0)).expect("get"),
-        Some("test".to_owned())
-    );
+    assert_eq!(cache.get(Some(0)).expect("get"), Some("test".to_owned()));
     cache.destroy();
 }
 

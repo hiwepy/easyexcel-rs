@@ -11,11 +11,12 @@ use std::thread;
 use chrono::NaiveDate;
 use easyexcel::{
     AnalysisContext, AnchorType, BigInt, CellStyle, CellValue, ClientAnchorData, Converter,
-    CoordinateData, EasyExcel, ExcelColor, ExcelColumn, ExcelError, ExcelFontScript, ExcelRow,
-    ExcelUnderline, HorizontalAlignment, ImageData, ImageInputStream, InputStreamImageConverter,
-    IntoExcelCell, LoopMergeProperty, OnceAbsoluteMergeProperty, PageReadListener,
-    ReadConverterContext, ReadListener, Result, RichTextStringData, Url, UrlImageConverter,
-    VerticalAlignment, WriteCellData, WriteConverterContext, WriteFont,
+    CoordinateData, EasyExcel, ExcelCellStyle, ExcelColor, ExcelColumn, ExcelError,
+    ExcelFillPattern, ExcelFontScript, ExcelRow, ExcelUnderline, HorizontalAlignment, ImageData,
+    ImageInputStream, InputStreamImageConverter, IntoExcelCell, LoopMergeProperty,
+    OnceAbsoluteMergeProperty, PageReadListener, ReadConverterContext, ReadListener, Result,
+    RichTextStringData, Url, UrlImageConverter, VerticalAlignment, WriteCellData,
+    WriteConverterContext, WriteFont,
 };
 use tempfile::tempdir;
 use zip::ZipArchive;
@@ -63,6 +64,12 @@ struct StreamUrlImageRow {
     url: Url,
 }
 
+#[derive(Debug, ExcelRow)]
+struct DefaultInputStreamImageRow {
+    #[excel(name = "InputStream", index = 0)]
+    stream: ImageInputStream,
+}
+
 #[derive(Debug, Clone, PartialEq, ExcelRow)]
 struct MultiImageRow {
     #[excel(name = "Images", index = 0)]
@@ -91,8 +98,11 @@ impl Converter<String> for NameConverter {
     fn convert_to_excel_data(
         &self,
         context: &WriteConverterContext<'_, String>,
-    ) -> Result<CellValue> {
-        Ok(CellValue::String(format!("excel:{}", context.value())))
+    ) -> Result<WriteCellData> {
+        Ok(WriteCellData::from_string(format!(
+            "excel:{}",
+            context.value()
+        )))
     }
 }
 
@@ -109,9 +119,41 @@ impl Converter<String> for FormulaConverter {
     fn convert_to_excel_data(
         &self,
         context: &WriteConverterContext<'_, String>,
-    ) -> Result<CellValue> {
-        Ok(CellValue::Formula(context.value().clone()))
+    ) -> Result<WriteCellData> {
+        Ok(WriteCellData::from_formula(context.value().clone()))
     }
+}
+
+#[derive(Default)]
+struct RuntimeStyleConverter;
+
+impl Converter<f64> for RuntimeStyleConverter {
+    fn convert_to_excel_data(
+        &self,
+        context: &WriteConverterContext<'_, f64>,
+    ) -> Result<WriteCellData> {
+        let mut cell = WriteCellData::new(CellValue::Float(*context.value()));
+        cell.set_write_cell_style(Some(ExcelCellStyle {
+            fill_pattern: Some(ExcelFillPattern::Solid),
+            fill_foreground_color: Some(ExcelColor::Rgb(0x00ff00)),
+            ..ExcelCellStyle::new()
+        }));
+        cell.get_or_create_data_format()
+            .set_format(Some("0.0000".to_owned()));
+        Ok(cell)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, ExcelRow)]
+struct RuntimeStyledValue {
+    #[excel(name = "Value", index = 0, converter = RuntimeStyleConverter)]
+    value: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, ExcelRow)]
+struct RawStyledValue {
+    #[excel(name = "Value", index = 0)]
+    value: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
@@ -486,6 +528,7 @@ fn derive_uses_java_style_input_stream_and_url_image_converters() -> Result<()> 
         column_index: Some(1),
         field: "url",
         format: None,
+        use_1904_windowing: false,
     };
     let (url, server) = serve_image_once("404 Not Found", Vec::new(), 0)?;
     assert!(url.to_excel_cell(&conversion).is_err());
@@ -511,6 +554,45 @@ fn derive_uses_java_style_input_stream_and_url_image_converters() -> Result<()> 
         .map_err(|error| ExcelError::Format(error.to_string()))?
         .read_to_string(&mut drawing_xml)?;
     assert_eq!(drawing_xml.matches("<xdr:twoCellAnchor").count(), 2);
+    Ok(())
+}
+
+#[test]
+fn default_registry_writes_type_erased_input_stream_as_image() -> Result<()> {
+    let bytes = tiny_png();
+    let directory = tempdir()?;
+    let workbook_path = directory.path().join("default-input-stream-image.xlsx");
+
+    EasyExcel::write::<DefaultInputStreamImageRow>(&workbook_path).do_write([
+        DefaultInputStreamImageRow {
+            stream: ImageInputStream::boxed(Cursor::new(bytes.clone())),
+        },
+    ])?;
+
+    let mut archive = ZipArchive::new(File::open(&workbook_path)?)
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    let media_name = (0..archive.len())
+        .find_map(|index| {
+            let entry = archive.by_index(index).ok()?;
+            entry
+                .name()
+                .starts_with("xl/media/")
+                .then(|| entry.name().to_owned())
+        })
+        .expect("default InputStream converter writes an XLSX media part");
+    let mut embedded = Vec::new();
+    archive
+        .by_name(&media_name)
+        .map_err(|error| ExcelError::Format(error.to_string()))?
+        .read_to_end(&mut embedded)?;
+    assert_eq!(embedded, bytes);
+
+    let mut drawing_xml = String::new();
+    archive
+        .by_name("xl/drawings/drawing1.xml")
+        .map_err(|error| ExcelError::Format(error.to_string()))?
+        .read_to_string(&mut drawing_xml)?;
+    assert_eq!(drawing_xml.matches("<xdr:twoCellAnchor").count(), 1);
     Ok(())
 }
 
@@ -667,6 +749,80 @@ fn derive_selected_converter_transforms_read_and_write_values() -> Result<()> {
 }
 
 #[test]
+fn converter_write_cell_data_style_reaches_xlsx_xls_csv_and_template_backends() -> Result<()> {
+    let directory = tempdir()?;
+    let row = RuntimeStyledValue { value: 1.25 };
+    let (_, converted) = row.to_excel_write_row(&easyexcel::ConverterRegistry::default())?;
+    assert_eq!(converted[0].effective_value(), CellValue::Float(1.25));
+    assert_eq!(
+        converted[0]
+            .write_cell_style()
+            .and_then(|style| style.fill_foreground_color),
+        Some(ExcelColor::Rgb(0x00ff00))
+    );
+    assert_eq!(
+        converted[0]
+            .data_format_data()
+            .and_then(|data| data.format()),
+        Some("0.0000")
+    );
+
+    let xlsx = directory.path().join("runtime-style.xlsx");
+    EasyExcel::write::<RuntimeStyledValue>(&xlsx).do_write([row.clone()])?;
+    let mut archive = ZipArchive::new(File::open(&xlsx)?)
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    let mut styles = String::new();
+    archive
+        .by_name("xl/styles.xml")
+        .map_err(|error| ExcelError::Format(error.to_string()))?
+        .read_to_string(&mut styles)?;
+    assert!(
+        styles.contains("FF00FF00"),
+        "converter fill missing: {styles}"
+    );
+    assert!(
+        styles.contains("formatCode=\"0.0000\""),
+        "converter number format missing: {styles}"
+    );
+
+    let template = directory.path().join("runtime-style-template.xlsx");
+    EasyExcel::write::<RawName>(&template)
+        .sheet("Sheet1")
+        .do_write([RawName {
+            name: "seed".to_owned(),
+        }])?;
+    let template_output = directory.path().join("runtime-style-template-output.xlsx");
+    EasyExcel::write::<RuntimeStyledValue>(&template_output)
+        .with_template(&template)
+        .sheet("Sheet1")
+        .do_write([row.clone()])?;
+    let mut archive = ZipArchive::new(File::open(&template_output)?)
+        .map_err(|error| ExcelError::Format(error.to_string()))?;
+    let mut template_styles = String::new();
+    archive
+        .by_name("xl/styles.xml")
+        .map_err(|error| ExcelError::Format(error.to_string()))?
+        .read_to_string(&mut template_styles)?;
+    assert!(template_styles.contains("FF00FF00"));
+    assert!(template_styles.contains("formatCode=\"0.0000\""));
+
+    let xls = directory.path().join("runtime-style.xls");
+    EasyExcel::write::<RuntimeStyledValue>(&xls).do_write([row.clone()])?;
+    assert_eq!(
+        EasyExcel::read_sync::<RawStyledValue>(&xls)
+            .head_row_number(1)
+            .do_read_sync()?,
+        vec![RawStyledValue { value: 1.25 }]
+    );
+
+    let csv = directory.path().join("runtime-style.csv");
+    EasyExcel::write::<RuntimeStyledValue>(&csv).do_write([row])?;
+    let csv_text = std::fs::read_to_string(csv)?;
+    assert!(csv_text.contains("1.25"));
+    Ok(())
+}
+
+#[test]
 fn formula_converter_receives_expression_while_scalar_receives_cached_value() -> Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("formula.xlsx");
@@ -724,16 +880,18 @@ fn derive_writes_java_style_cell_and_font_annotations() -> Result<()> {
     );
 
     let directory = tempdir()?;
-    EasyExcel::write::<AnnotatedStyles>(directory.path().join("annotated-styles.xlsx")).do_write([
-        AnnotatedStyles {
-            name: "Alice".to_owned(),
-            age: 30,
-        },
-        AnnotatedStyles {
-            name: "Bob".to_owned(),
-            age: 31,
-        },
-    ])?;
+    EasyExcel::write::<AnnotatedStyles>(directory.path().join("annotated-styles.xlsx")).do_write(
+        [
+            AnnotatedStyles {
+                name: "Alice".to_owned(),
+                age: 30,
+            },
+            AnnotatedStyles {
+                name: "Bob".to_owned(),
+                age: 31,
+            },
+        ],
+    )?;
     Ok(())
 }
 

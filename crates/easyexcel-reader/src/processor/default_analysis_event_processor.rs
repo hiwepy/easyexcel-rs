@@ -1,7 +1,7 @@
 //! Mirrors Java `com.alibaba.excel.read.processor.DefaultAnalysisEventProcessor`.
 
-use easyexcel_core::AnalysisContext;
 use crate::processor::analysis_event_processor::AnalysisEventProcessor;
+use easyexcel_core::AnalysisContext;
 
 #[derive(Debug, Clone, Default)]
 pub struct DefaultAnalysisEventProcessor;

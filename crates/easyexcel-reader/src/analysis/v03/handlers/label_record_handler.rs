@@ -32,11 +32,7 @@ impl LabelRecordHandler {
         } else {
             value.to_owned()
         };
-        LabelCell {
-            row,
-            column,
-            value,
-        }
+        LabelCell { row, column, value }
     }
 }
 

@@ -63,6 +63,7 @@ mod formula_cell_test {
             column_index: None,
             field: "",
             format: None,
+            use_1904_windowing: false,
         };
         let cv = easyexcel_core::IntoExcelCell::to_excel_cell(&decorated, &ctx).unwrap();
         if let CellValue::Formula(s) = &cv {
@@ -119,6 +120,7 @@ mod hyperlink_cell_test {
             column_index: None,
             field: "",
             format: None,
+            use_1904_windowing: false,
         };
         let cv = easyexcel_core::IntoExcelCell::to_excel_cell(&decorated, &ctx).unwrap();
         if let CellValue::Hyperlink { url, text } = &cv {
@@ -175,6 +177,7 @@ mod comment_cell_test {
             column_index: None,
             field: "",
             format: None,
+            use_1904_windowing: false,
         };
         let cv = easyexcel_core::IntoExcelCell::to_excel_cell(&decorated, &ctx).unwrap();
         if let CellValue::Comment { value, text } = &cv {
@@ -206,14 +209,7 @@ mod cell_extra_test {
             0,
             0,
         );
-        let comment = CellExtra::new(
-            CellExtraType::Comment,
-            Some("note".to_owned()),
-            1,
-            1,
-            0,
-            0,
-        );
+        let comment = CellExtra::new(CellExtraType::Comment, Some("note".to_owned()), 1, 1, 0, 0);
 
         let extras = vec![merge, link, comment];
         assert_eq!(extras[0].extra_type(), CellExtraType::Merge);

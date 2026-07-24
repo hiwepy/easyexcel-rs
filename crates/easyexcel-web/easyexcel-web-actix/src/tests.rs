@@ -1,7 +1,7 @@
 //! Web JSON 与 Java WebTest 的 serde 键名对齐测试。
 
 use easyexcel_core::ExcelDownloadErrorBody;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[test]
 fn excel_download_error_body_serializes_java_keys() {

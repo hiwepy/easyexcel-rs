@@ -58,11 +58,29 @@ echo
 # ----------------------------------------------------------------------
 echo "[4/6] cargo test --workspace --all-features --no-fail-fast ..."
 # Allow up to 8 minutes for full test suite (incl. slow large-data tests)
-timeout 480 cargo test --workspace --all-features --no-fail-fast 2>&1 | grep -E "^test result" > /tmp/gap-check-results.txt || true
-cat /tmp/gap-check-results.txt
-PASS=$(awk -F'[ .;]' '/^test result/ {p+=$5} END {print p+0}' /tmp/gap-check-results.txt)
-FAIL=$(awk -F'[ .;]' '/^test result/ {f+=$8} END {print f+0}' /tmp/gap-check-results.txt)
-IGN=$(awk -F'[ .;]' '/^test result/ {i+=$11} END {print i+0}' /tmp/gap-check-results.txt)
+TEST_LOG=$(mktemp "${TMPDIR:-/tmp}/easyexcel-gap-check-log.XXXXXX")
+TEST_RESULTS=$(mktemp "${TMPDIR:-/tmp}/easyexcel-gap-check-results.XXXXXX")
+trap 'rm -f "$TEST_LOG" "$TEST_RESULTS"' EXIT
+set +e
+timeout 480 cargo test --workspace --all-features --no-fail-fast >"$TEST_LOG" 2>&1
+TEST_STATUS=$?
+set -e
+grep -E "^test result" "$TEST_LOG" >"$TEST_RESULTS" || true
+cat "$TEST_RESULTS"
+if [ "$TEST_STATUS" -ne 0 ]; then
+    echo
+    echo "FAIL: cargo test exited with status $TEST_STATUS"
+    tail -80 "$TEST_LOG"
+    exit "$TEST_STATUS"
+fi
+if [ ! -s "$TEST_RESULTS" ]; then
+    echo "FAIL: cargo test completed without any test-result records"
+    tail -80 "$TEST_LOG"
+    exit 1
+fi
+PASS=$(awk -F'[ .;]' '/^test result/ {p+=$5} END {print p+0}' "$TEST_RESULTS")
+FAIL=$(awk -F'[ .;]' '/^test result/ {f+=$8} END {print f+0}' "$TEST_RESULTS")
+IGN=$(awk -F'[ .;]' '/^test result/ {i+=$11} END {print i+0}' "$TEST_RESULTS")
 echo
 echo "  → tests: $PASS passed, $FAIL failed, $IGN ignored"
 if [ "$FAIL" -ne 0 ]; then

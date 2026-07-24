@@ -17,13 +17,16 @@ pub struct BlankCell {
 
 /// Mirrors Java `BlankRecordHandler`.
 #[derive(Debug, Default)]
-pub struct BlankRecordHandler;
+pub struct BlankRecordHandler {
+    /// Most recently decoded blank cell.
+    pub last_cell: Option<BlankCell>,
+}
 
 impl BlankRecordHandler {
     /// Creates an idle handler.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
     /// Java `BlankRecordHandler.processRecord` — emit an empty cell at `(row, column)`.
@@ -44,7 +47,7 @@ impl XlsRecordHandler for BlankRecordHandler {
         }
         let row = u16::from_le_bytes([data[0], data[1]]) as u32;
         let column = u16::from_le_bytes([data[2], data[3]]) as usize;
-        let _ = Self::process_blank(row, column);
+        self.last_cell = Some(Self::process_blank(row, column));
     }
 }
 

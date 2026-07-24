@@ -1,9 +1,14 @@
 //! Mirrors Java `com.alibaba.excel.converters.bytearray.ByteArrayImageConverter`.
 //!
-//! The actual conversion logic lives in
-//! `easyexcel-core/src/from_into_impls.rs`. This struct exists
-//! for 1:1 Java package parity.
-
 /// Mirrors Java `ByteArrayImageConverter`.
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ByteArrayImageConverter;
+
+impl crate::Converter<Vec<u8>> for ByteArrayImageConverter {
+    fn convert_to_excel_data(
+        &self,
+        context: &crate::WriteConverterContext<'_, Vec<u8>>,
+    ) -> Result<crate::WriteCellData, crate::ExcelError> {
+        Ok(crate::WriteCellData::from_image(context.value().clone()))
+    }
+}

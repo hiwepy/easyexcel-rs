@@ -14,7 +14,7 @@
 
 use easyexcel_core::Result;
 
-use super::read_cache::{new_disk_cache, ReadCache, SharedStringCacheAdapter};
+use super::read_cache::{ReadCache, SharedStringCacheAdapter, new_disk_cache};
 use crate::read_cache::SharedStringCache;
 
 /// Batch count used by Java `Ehcache.BATCH_COUNT`.
@@ -47,8 +47,7 @@ impl Ehcache {
     ///
     /// Returns an I/O error when the temporary cache file cannot be created.
     pub fn new(max_cache_activate_batch_count: Option<i32>) -> Result<Self> {
-        let _ = max_cache_activate_batch_count
-            .unwrap_or(DEFAULT_MAX_EHCACHE_ACTIVATE_BATCH_COUNT);
+        let _ = max_cache_activate_batch_count.unwrap_or(DEFAULT_MAX_EHCACHE_ACTIVATE_BATCH_COUNT);
         Ok(Self::from_backend(new_disk_cache()?))
     }
 
@@ -59,7 +58,9 @@ impl Ehcache {
     /// # Errors
     ///
     /// Returns an I/O error when the temporary cache file cannot be created.
-    pub fn with_max_cache_activate_size_mb(max_cache_activate_size_mb: Option<i32>) -> Result<Self> {
+    pub fn with_max_cache_activate_size_mb(
+        max_cache_activate_size_mb: Option<i32>,
+    ) -> Result<Self> {
         let _ = max_cache_activate_size_mb;
         Self::new(None)
     }

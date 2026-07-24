@@ -89,12 +89,13 @@ impl CellTagHandler {
             _ => DEFAULT_FORMAT_INDEX,
         };
         let cell_type = attrs.get(ATTRIBUTE_T).cloned();
-        let data_type = CellDataType::build_from_cell_type(cell_type.as_deref()).ok_or_else(|| {
-            ExcelError::Format(format!(
-                "unsupported XLSX cell type: {}",
-                cell_type.as_deref().unwrap_or_default()
-            ))
-        })?;
+        let data_type =
+            CellDataType::build_from_cell_type(cell_type.as_deref()).ok_or_else(|| {
+                ExcelError::Format(format!(
+                    "unsupported XLSX cell type: {}",
+                    cell_type.as_deref().unwrap_or_default()
+                ))
+            })?;
         Ok(CellStartAttrs {
             position,
             style_index,

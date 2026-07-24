@@ -112,7 +112,9 @@ fn audit(strict: bool) -> TaskResult {
     if strict {
         let unfinished = rows
             .iter()
-            .filter(|r| r[5] != "complete" && r[5] != "ignore" && r[5] != "handle" && r[5] != "excluded")
+            .filter(|r| {
+                r[5] != "complete" && r[5] != "ignore" && r[5] != "handle" && r[5] != "excluded"
+            })
             .count();
         if unfinished > 0 {
             return Err(format!(

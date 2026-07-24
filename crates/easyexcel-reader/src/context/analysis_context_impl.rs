@@ -5,12 +5,12 @@ use std::collections::HashSet;
 use easyexcel_core::support::ExcelTypeEnum;
 use easyexcel_core::{AnalysisContext, CustomReadObject, ExcelError, Result};
 
+use crate::ReadOptions;
 use crate::holder::read_row_holder::ReadRowHolder;
 use crate::holder::read_sheet_holder::ReadSheetHolder;
 use crate::holder::read_workbook_holder::ReadWorkbookHolder;
 use crate::processor::analysis_event_processor::AnalysisEventProcessor;
 use crate::processor::default_analysis_event_processor::DefaultAnalysisEventProcessor;
-use crate::ReadOptions;
 
 use super::read_sheet::ReadSheet;
 
@@ -43,15 +43,9 @@ impl AnalysisContextImpl {
     #[must_use]
     pub fn new(excel_type: ExcelTypeEnum, options: &ReadOptions) -> Self {
         Self {
-            inner: AnalysisContext::new("", 0, 0)
-                .with_custom_object(options.custom_object.clone()),
+            inner: AnalysisContext::new("", 0, 0).with_custom_object(options.custom_object.clone()),
             excel_type,
-            read_workbook_holder: ReadWorkbookHolder {
-                charset: options.charset.clone(),
-                auto_close_stream: true,
-                ignore_empty_row: options.ignore_empty_row,
-                password: options.password.clone(),
-            },
+            read_workbook_holder: ReadWorkbookHolder::from_options(options),
             read_sheet_holder: None,
             read_row_holder: None,
             read_sheet_list: None,
@@ -79,19 +73,15 @@ impl AnalysisContextImpl {
     /// Returns when the same sheet is read twice, matching Java
     /// `ExcelAnalysisException("Cannot read sheet repeatedly.")`.
     pub fn current_sheet(&mut self, read_sheet: &ReadSheet) -> Result<()> {
-        let sheet_no = i32::try_from(read_sheet.sheet_no()).map_err(|_| {
-            ExcelError::Format("sheet index exceeds i32 range".to_owned())
-        })?;
+        let sheet_no = i32::try_from(read_sheet.sheet_no())
+            .map_err(|_| ExcelError::Format("sheet index exceeds i32 range".to_owned()))?;
         if self.has_read_sheet.contains(&sheet_no) {
             return Err(ExcelError::Format(
                 "Cannot read sheet repeatedly.".to_owned(),
             ));
         }
         self.has_read_sheet.insert(sheet_no);
-        self.read_sheet_holder = Some(ReadSheetHolder::new(
-            sheet_no,
-            read_sheet.sheet_name(),
-        ));
+        self.read_sheet_holder = Some(ReadSheetHolder::new(sheet_no, read_sheet.sheet_name()));
         self.inner = AnalysisContext::new(
             read_sheet.sheet_name(),
             read_sheet.sheet_no(),
@@ -155,9 +145,7 @@ impl AnalysisContextImpl {
     /// Mirrors Java `@Deprecated getCurrentRowNum()`.
     #[must_use]
     pub fn current_row_num(&self) -> Option<i32> {
-        self.read_row_holder
-            .as_ref()
-            .map(|holder| holder.row_index)
+        self.read_row_holder.as_ref().map(|holder| holder.row_index)
     }
 
     /// Mirrors Java `@Deprecated interrupt()`.

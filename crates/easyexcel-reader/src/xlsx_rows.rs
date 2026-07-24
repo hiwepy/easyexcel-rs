@@ -14,6 +14,7 @@ use quick_xml::{Decoder, Reader as XmlReader, XmlVersion};
 use ssfmt::{DateSystem, FormatOptions, Locale, NumberFormat, format, format_code_from_id};
 use zip::ZipArchive;
 
+use crate::ReadOptions;
 use crate::analysis::v07::handlers::cell_formula_tag_handler::CellFormulaTagHandler;
 use crate::analysis::v07::handlers::cell_inline_string_value_tag_handler::CellInlineStringValueTagHandler;
 use crate::analysis::v07::handlers::cell_tag_handler::CellTagHandler;
@@ -23,16 +24,14 @@ use crate::analysis::v07::handlers::hyperlink_tag_handler::HyperlinkTagHandler;
 use crate::analysis::v07::handlers::merge_cell_tag_handler::MergeCellTagHandler;
 use crate::analysis::v07::handlers::row_tag_handler::RowTagHandler;
 use crate::analysis::v07::handlers::sax::shared_strings_table_handler::{
-    local_tag, utf_decode, SharedStringsTableHandler,
+    SharedStringsTableHandler, local_tag, utf_decode,
 };
 use crate::analysis::v07::handlers::xlsx_tag_handler::XlsxTagHandler;
 use crate::cache::resolve_read_cache_mode;
 use crate::read_cache::{
-    create_cache, memory_cache, ReadCacheMode, SharedStringCache, SharedStringCacheReader,
-    SharedStringCacheWriter,
+    ReadCacheMode, SharedStringCache, SharedStringCacheReader, SharedStringCacheWriter,
+    create_cache, memory_cache,
 };
-use crate::ReadOptions;
-
 
 /// Prefer EasyExcel BuiltinFormats over ssfmt ECMA table (Java locale-aware codes).
 fn easyexcel_builtin_format_code(id: u32) -> Option<&'static str> {
@@ -107,7 +106,9 @@ impl XlsxNumberFormat {
 
     fn is_date_format(&self) -> bool {
         let code = match self {
-            Self::Builtin(id) => easyexcel_builtin_format_code(*id).or_else(|| format_code_from_id(*id)),
+            Self::Builtin(id) => {
+                easyexcel_builtin_format_code(*id).or_else(|| format_code_from_id(*id))
+            }
             Self::Custom(code) => Some(code.as_str()),
         };
         code.and_then(|code| NumberFormat::parse(code).ok())
@@ -536,7 +537,8 @@ impl<'a> XlsxDisplayCellReader<'a> {
                 }))
             }
             Some("b") => CellValue::Bool(matches!(raw_value, "1" | "true")),
-            Some("e" | "d") => CellValue::String(raw_value.to_owned()),
+            Some("e") => CellValue::Error(raw_value.to_owned()),
+            Some("d") => CellValue::String(raw_value.to_owned()),
             Some("n") | None => {
                 if raw_value.is_empty() {
                     CellValue::Empty
@@ -582,7 +584,6 @@ impl<'a> XlsxDisplayCellReader<'a> {
         CellValue::Float(number)
     }
 }
-
 
 /// Format a numeric cell with an Excel format code (BuiltinFormats / custom).
 pub(crate) fn format_with_code(
@@ -800,9 +801,7 @@ fn parse_worksheet_extras(
                         })
                         .map(|(target, _, _)| target.clone())
                         .ok_or_else(|| {
-                            ExcelError::Format(format!(
-                                "hyperlink relationship not found: {r_id}"
-                            ))
+                            ExcelError::Format(format!("hyperlink relationship not found: {r_id}"))
                         })
                 })?;
                 if let Some(extra) = hyperlink_handler.last_extra.take() {
@@ -833,7 +832,10 @@ fn read_comments<R: Read + Seek>(
     parse_comments(&mut input, comments_path)
 }
 
-fn parse_comments(input: &mut dyn BufRead, comments_path: &str) -> Result<Vec<easyexcel_core::CellExtra>> {
+fn parse_comments(
+    input: &mut dyn BufRead,
+    comments_path: &str,
+) -> Result<Vec<easyexcel_core::CellExtra>> {
     let mut reader = XmlReader::from_reader(input);
     let config = reader.config_mut();
     config.check_end_names = false;
@@ -1053,7 +1055,10 @@ where
     cache.finish()
 }
 
-fn parse_shared_strings(input: &mut dyn BufRead, cache: &mut dyn SharedStringCacheWriter) -> Result<()> {
+fn parse_shared_strings(
+    input: &mut dyn BufRead,
+    cache: &mut dyn SharedStringCacheWriter,
+) -> Result<()> {
     let mut reader = XmlReader::from_reader(input);
     reader.config_mut().expand_empty_elements = true;
     let mut buffer = Vec::with_capacity(256);

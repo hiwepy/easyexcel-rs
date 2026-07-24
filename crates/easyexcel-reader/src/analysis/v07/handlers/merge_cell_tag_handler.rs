@@ -47,9 +47,10 @@ impl MergeCellTagHandler {
         if !self.enabled {
             return Ok(());
         }
-        let reference = attrs.get(ATTRIBUTE_REF).filter(|value| !value.is_empty()).ok_or_else(|| {
-            ExcelError::Format("merge cell ref is missing".to_owned())
-        })?;
+        let reference = attrs
+            .get(ATTRIBUTE_REF)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| ExcelError::Format("merge cell ref is missing".to_owned()))?;
         self.last_extra = Some(cell_extra_from_ref(CellExtraType::Merge, None, reference)?);
         Ok(())
     }

@@ -25,7 +25,7 @@ pub trait AbstractExcelWriterParameterBuilder {
     where
         Self: Sized,
     {
-        self.parameter().need_head = need_head;
+        self.parameter().need_head = Some(need_head);
         self
     }
 
@@ -34,7 +34,7 @@ pub trait AbstractExcelWriterParameterBuilder {
     where
         Self: Sized,
     {
-        self.parameter().use_default_style = use_default_style;
+        self.parameter().use_default_style = Some(use_default_style);
         self
     }
 
@@ -43,7 +43,7 @@ pub trait AbstractExcelWriterParameterBuilder {
     where
         Self: Sized,
     {
-        self.parameter().automatic_merge_head = automatic_merge_head;
+        self.parameter().automatic_merge_head = Some(automatic_merge_head);
         self
     }
 
@@ -52,7 +52,7 @@ pub trait AbstractExcelWriterParameterBuilder {
     where
         Self: Sized,
     {
-        self.parameter().relative_head_row_index = index;
+        self.parameter().relative_head_row_index = Some(index);
         self
     }
 
@@ -61,8 +61,64 @@ pub trait AbstractExcelWriterParameterBuilder {
     where
         Self: Sized,
     {
-        self.parameter().order_by_include_column = enabled;
+        self.parameter().order_by_include_column = Some(enabled);
         self
+    }
+
+    /// Replaces inherited excluded physical columns.
+    /// (Java `excludeColumnIndexes(Collection<Integer>)`)
+    fn exclude_column_indexes(&mut self, indexes: Vec<usize>) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.parameter().exclude_column_indexes = Some(indexes);
+        self
+    }
+
+    /// Replaces inherited excluded field names.
+    /// (Java `excludeColumnFieldNames(Collection<String>)`)
+    fn exclude_column_field_names(&mut self, names: Vec<String>) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.parameter().exclude_column_field_names = Some(names);
+        self
+    }
+
+    /// Deprecated Java spelling retained for migration compatibility.
+    fn exclude_column_filed_names(&mut self, names: Vec<String>) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.exclude_column_field_names(names)
+    }
+
+    /// Replaces inherited included physical columns.
+    /// (Java `includeColumnIndexes(Collection<Integer>)`)
+    fn include_column_indexes(&mut self, indexes: Vec<usize>) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.parameter().include_column_indexes = Some(indexes);
+        self
+    }
+
+    /// Replaces inherited included field names.
+    /// (Java `includeColumnFieldNames(Collection<String>)`)
+    fn include_column_field_names(&mut self, names: Vec<String>) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.parameter().include_column_field_names = Some(names);
+        self
+    }
+
+    /// Deprecated Java spelling retained for migration compatibility.
+    fn include_column_filed_names(&mut self, names: Vec<String>) -> &mut Self
+    where
+        Self: Sized,
+    {
+        self.include_column_field_names(names)
     }
 
     /// Appends a write handler. (Java `registerWriteHandler(WriteHandler)`)

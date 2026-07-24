@@ -38,7 +38,10 @@ impl WriteHandler for DefaultStyle {
     fn order(&self) -> i32 {
         0
     }
-    fn after_workbook(&mut self, _context: &easyexcel_core::WriteWorkbookContext) -> easyexcel_core::Result<()> {
+    fn after_workbook(
+        &mut self,
+        _context: &easyexcel_core::WriteWorkbookContext,
+    ) -> easyexcel_core::Result<()> {
         // `rust_xlsxwriter` applies default style on demand. This shim
         // exists for parity.
         Ok(())

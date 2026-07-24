@@ -132,11 +132,7 @@ mod row_write_handler_test {
     #[test]
     fn t03_row_create_order07() {
         let mut probe = RowProbe::default();
-        let ctx = WriteRowContext {
-            sheet_name: "Sheet1".to_owned(),
-            row_index: 0,
-            is_head: false,
-        };
+        let ctx = WriteRowContext::new("Sheet1", 0, Some(0), false);
         WriteHandler::before_row(&mut probe, &ctx).unwrap();
         assert_eq!(probe.before_count, 1);
         WriteHandler::after_row(&mut probe, &ctx).unwrap();
@@ -176,16 +172,7 @@ mod cell_write_handler_test {
     #[test]
     fn t04_cell_create_order07() {
         let mut probe = CellProbe::default();
-        let mut ctx = WriteCellContext {
-            sheet_name: "Sheet1".to_owned(),
-            row_index: 0,
-            column_index: 0,
-            field: None,
-            is_head: false,
-            relative_row_index: None,
-            value: easyexcel::CellValue::Empty,
-            skip: false,
-        };
+        let mut ctx = WriteCellContext::new("Sheet1", 0, 0, easyexcel::CellValue::Empty);
         WriteHandler::before_cell(&mut probe, &mut ctx).unwrap();
         assert_eq!(probe.before_count, 1);
         WriteHandler::after_cell(&mut probe, &ctx).unwrap();
@@ -201,12 +188,12 @@ mod default_write_handler_loader_test {
     //! Mirrors DefaultWriteHandlerLoaderTest#t01LoadDefaultHandler07
     use super::*;
 
-    /// Java: loadDefaultHandler returns the canonical handler set.
-    /// Order is preserved: workbook → row → sheet.
+    /// Java: default XLSX handlers are Dimension, DefaultRow, FillStyle,
+    /// and DefaultStyle when `useDefaultStyle=true`.
     #[test]
     fn t01_load_default_handler07() {
         let mut handlers = DefaultWriteHandlerLoader::load_default_handler();
-        assert_eq!(handlers.len(), 3, "must return 3 default handlers");
+        assert_eq!(handlers.len(), 4, "must return 4 XLSX default handlers");
         // Verify all handlers implement the unified WriteHandler trait
         // and can dispatch a no-op workbook lifecycle.
         let ctx = easyexcel_core::WriteWorkbookContext::new("out.xlsx");
@@ -225,5 +212,31 @@ mod default_write_handler_loader_test {
         assert_eq!(a.len(), b.len());
         // Distinct boxed trait objects (different vtable pointers)
         assert!(!std::ptr::eq(a.as_ptr(), b.as_ptr()));
+    }
+
+    #[test]
+    fn t03_load_default_handler_by_excel_type07() {
+        use easyexcel_core::support::ExcelTypeEnum;
+
+        assert_eq!(
+            DefaultWriteHandlerLoader::load_default_handler_for(true, ExcelTypeEnum::Xlsx).len(),
+            4
+        );
+        assert_eq!(
+            DefaultWriteHandlerLoader::load_default_handler_for(false, ExcelTypeEnum::Xlsx).len(),
+            3
+        );
+        assert_eq!(
+            DefaultWriteHandlerLoader::load_default_handler_for(true, ExcelTypeEnum::Xls).len(),
+            3
+        );
+        assert_eq!(
+            DefaultWriteHandlerLoader::load_default_handler_for(false, ExcelTypeEnum::Xls).len(),
+            2
+        );
+        assert_eq!(
+            DefaultWriteHandlerLoader::load_default_handler_for(true, ExcelTypeEnum::Csv).len(),
+            2
+        );
     }
 }

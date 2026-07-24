@@ -21,6 +21,7 @@ use zip::CompressionMethod;
 use zip::read::ZipArchive;
 use zip::write::{SimpleFileOptions, ZipWriter};
 
+use crate::MergeRange;
 use crate::format_error;
 
 /// One worksheet loaded from a template package (value snapshot for legacy seed).
@@ -87,7 +88,11 @@ impl TemplatePackage {
     ///
     /// Returns a format error when workbook metadata cannot be parsed.
     pub(crate) fn sheet_names(&self) -> Result<Vec<String>> {
-        Ok(self.workbook_sheets()?.into_iter().map(|(name, _)| name).collect())
+        Ok(self
+            .workbook_sheets()?
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect())
     }
 
     /// Returns the next zero-based append row for a worksheet name.
@@ -128,9 +133,9 @@ impl TemplatePackage {
     /// Returns [`ExcelError::SheetNotFound`] when the index is out of range.
     pub(crate) fn worksheet_path_by_index(&self, index: usize) -> Result<(String, String)> {
         let sheets = self.workbook_sheets()?;
-        let selected = sheets.get(index).ok_or_else(|| {
-            ExcelError::SheetNotFound(format!("sheet index {index}"))
-        })?;
+        let selected = sheets
+            .get(index)
+            .ok_or_else(|| ExcelError::SheetNotFound(format!("sheet index {index}")))?;
         let path = self.worksheet_part_for_relationship(&selected.1, &selected.0)?;
         Ok((selected.0.clone(), path))
     }
@@ -144,11 +149,7 @@ impl TemplatePackage {
     ///
     /// Returns a format error when workbook / relationship metadata cannot be updated.
     pub(crate) fn ensure_sheet(&mut self, sheet_name: &str) -> Result<()> {
-        if self
-            .sheet_names()?
-            .iter()
-            .any(|name| name == sheet_name)
-        {
+        if self.sheet_names()?.iter().any(|name| name == sheet_name) {
             return Ok(());
         }
         self.create_sheet(sheet_name)
@@ -212,8 +213,7 @@ impl TemplatePackage {
         let override_tag = format!(
             "<Override PartName=\"/{sheet_part}\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
         );
-        let updated_types =
-            insert_before_close_tag(&content_types_xml, "</Types>", &override_tag)?;
+        let updated_types = insert_before_close_tag(&content_types_xml, "</Types>", &override_tag)?;
 
         self.entries[workbook_index].bytes = updated_workbook.into_bytes();
         self.entries[rels_index].bytes = updated_rels.into_bytes();
@@ -231,10 +231,7 @@ impl TemplatePackage {
         Ok(())
     }
 
-    /// Appends typed rows into a worksheet's `sheetData` without rewriting styles/merges.
-    ///
-    /// New cells are written as inline values and do not receive template `s=` indexes.
-    /// Existing `xl/styles.xml` and `mergeCells` parts are left untouched.
+    /// Appends typed rows into a worksheet's `sheetData`.
     ///
     /// # Errors
     ///
@@ -244,8 +241,64 @@ impl TemplatePackage {
         sheet_name: &str,
         rows: &[Vec<(usize, CellValue)>],
     ) -> Result<u32> {
+        self.append_rows_with_heights(sheet_name, rows, &[])
+    }
+
+    /// Appends rows and applies optional per-row heights to the newly created
+    /// row elements.
+    pub(crate) fn append_rows_with_heights(
+        &mut self,
+        sheet_name: &str,
+        rows: &[Vec<(usize, CellValue)>],
+        row_heights: &[Option<u16>],
+    ) -> Result<u32> {
+        self.append_rows_with_layout(sheet_name, rows, row_heights, &[])
+    }
+
+    /// Appends rows with optional row heights and per-cell workbook style indexes.
+    pub(crate) fn append_rows_with_layout(
+        &mut self,
+        sheet_name: &str,
+        rows: &[Vec<(usize, CellValue)>],
+        row_heights: &[Option<u16>],
+        cell_styles: &[Vec<Option<u32>>],
+    ) -> Result<u32> {
+        self.append_rows_with_layout_and_absent(sheet_name, rows, row_heights, cell_styles, &[])
+    }
+
+    /// Appends rows while preserving Java `null` row gaps without creating
+    /// empty OOXML `<row>` elements for those positions.
+    pub(crate) fn append_rows_with_layout_and_absent(
+        &mut self,
+        sheet_name: &str,
+        rows: &[Vec<(usize, CellValue)>],
+        row_heights: &[Option<u16>],
+        cell_styles: &[Vec<Option<u32>>],
+        absent_rows: &[bool],
+    ) -> Result<u32> {
         if rows.is_empty() {
             return self.next_row_for_sheet(sheet_name);
+        }
+        if !absent_rows.is_empty() && absent_rows.len() != rows.len() {
+            return Err(ExcelError::Format(
+                "template absent-row count does not match appended row count".to_owned(),
+            ));
+        }
+        if !row_heights.is_empty() && row_heights.len() != rows.len() {
+            return Err(ExcelError::Format(
+                "template row-height count does not match appended row count".to_owned(),
+            ));
+        }
+        if !cell_styles.is_empty()
+            && (cell_styles.len() != rows.len()
+                || cell_styles
+                    .iter()
+                    .zip(rows)
+                    .any(|(styles, row)| styles.len() != row.len()))
+        {
+            return Err(ExcelError::Format(
+                "template cell-style shape does not match appended rows".to_owned(),
+            ));
         }
         let path = self.worksheet_path_by_name(sheet_name)?;
         let entry = self
@@ -255,9 +308,82 @@ impl TemplatePackage {
             .ok_or_else(|| ExcelError::Format(format!("template does not contain {path}")))?;
         let xml = String::from_utf8(std::mem::take(&mut entry.bytes))
             .map_err(|error| ExcelError::Format(error.to_string()))?;
-        let (updated, next_row) = append_sparse_rows_to_xml(&xml, rows)?;
+        let (updated, next_row) =
+            append_sparse_rows_to_xml(&xml, rows, row_heights, cell_styles, absent_rows)?;
         entry.bytes = updated.into_bytes();
         Ok(next_row)
+    }
+
+    /// Applies column widths and absolute merged regions to one preserved
+    /// worksheet part.
+    ///
+    /// This is the OOXML equivalent of Java annotation-generated
+    /// `AbstractHeadColumnWidthStyleStrategy` and
+    /// `OnceAbsoluteMergeStrategy` callbacks. Existing package entries and
+    /// style indexes remain untouched.
+    pub(crate) fn apply_sheet_layout(
+        &mut self,
+        sheet_name: &str,
+        column_widths: &[(u16, u16)],
+        merge_ranges: &[MergeRange],
+    ) -> Result<()> {
+        if column_widths.is_empty() && merge_ranges.is_empty() {
+            return Ok(());
+        }
+        let path = self.worksheet_path_by_name(sheet_name)?;
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.name.eq_ignore_ascii_case(&path))
+            .ok_or_else(|| ExcelError::Format(format!("template does not contain {path}")))?;
+        let mut xml = String::from_utf8(std::mem::take(&mut entry.bytes))
+            .map_err(|error| ExcelError::Format(error.to_string()))?;
+        if !column_widths.is_empty() {
+            xml = apply_column_widths_to_xml(&xml, column_widths)?;
+        }
+        if !merge_ranges.is_empty() {
+            xml = apply_merge_ranges_to_xml(&xml, merge_ranges)?;
+        }
+        entry.bytes = xml.into_bytes();
+        Ok(())
+    }
+
+    /// Imports styles compiled by `rust_xlsxwriter` into the preserved
+    /// template style table and returns the destination style index for each
+    /// compiler worksheet row.
+    pub(crate) fn import_compiled_styles(
+        &mut self,
+        compiled_xlsx: &[u8],
+        style_count: usize,
+    ) -> Result<Vec<u32>> {
+        if style_count == 0 {
+            return Ok(Vec::new());
+        }
+        let compiled = Self::from_bytes(compiled_xlsx)?;
+        let source_styles = compiled.entry_xml("xl/styles.xml")?;
+        let (_, source_sheet_path) = compiled.worksheet_path_by_index(0)?;
+        let source_sheet = compiled.entry_xml(&source_sheet_path)?;
+        let source_indexes = (1..=style_count)
+            .map(|row| {
+                cell_style_index(&source_sheet, &format!("A{row}")).ok_or_else(|| {
+                    ExcelError::Format(format!(
+                        "compiled template style cell A{row} has no style index"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let destination = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.name.eq_ignore_ascii_case("xl/styles.xml"))
+            .ok_or_else(|| ExcelError::Format("template missing xl/styles.xml".to_owned()))?;
+        let destination_styles = String::from_utf8(std::mem::take(&mut destination.bytes))
+            .map_err(|error| ExcelError::Format(error.to_string()))?;
+        let (updated, mapped) =
+            merge_compiled_styles(&destination_styles, &source_styles, &source_indexes)?;
+        destination.bytes = updated.into_bytes();
+        Ok(mapped)
     }
 
     /// Serializes the package to owned XLSX bytes.
@@ -357,7 +483,8 @@ impl TemplatePackage {
             .iter()
             .find(|entry| entry.name.eq_ignore_ascii_case(path))
             .ok_or_else(|| ExcelError::Format(format!("template does not contain {path}")))?;
-        String::from_utf8(entry.bytes.clone()).map_err(|error| ExcelError::Format(error.to_string()))
+        String::from_utf8(entry.bytes.clone())
+            .map_err(|error| ExcelError::Format(error.to_string()))
     }
 }
 
@@ -366,10 +493,7 @@ impl TemplatePackage {
 /// Corresponds to Java `WriteWorkbook.templateFile` / `templateInputStream`
 /// being non-null.
 #[must_use]
-pub(crate) fn has_template(
-    template_file: Option<&Path>,
-    template_bytes: Option<&[u8]>,
-) -> bool {
+pub(crate) fn has_template(template_file: Option<&Path>, template_bytes: Option<&[u8]>) -> bool {
     template_file.is_some() || template_bytes.is_some()
 }
 
@@ -443,10 +567,9 @@ pub(crate) fn validate_template_source(
 ///
 /// Returns [`ExcelError::Format`] when the package is not a readable XLSX workbook.
 pub(crate) fn load_template_sheets(bytes: &[u8]) -> Result<Vec<TemplateSheetData>> {
-    let mut workbook: Xlsx<_> =
-        open_workbook_from_rs(Cursor::new(bytes)).map_err(|error| {
-            ExcelError::Format(format!("failed to open withTemplate workbook: {error}"))
-        })?;
+    let mut workbook: Xlsx<_> = open_workbook_from_rs(Cursor::new(bytes)).map_err(|error| {
+        ExcelError::Format(format!("failed to open withTemplate workbook: {error}"))
+    })?;
     let names = workbook.sheet_names().to_vec();
     if names.is_empty() {
         return Err(ExcelError::Format(
@@ -620,6 +743,9 @@ pub(crate) fn write_template_cell(
 fn append_sparse_rows_to_xml(
     xml: &str,
     rows: &[Vec<(usize, CellValue)>],
+    row_heights: &[Option<u16>],
+    cell_styles: &[Vec<Option<u32>>],
+    absent_rows: &[bool],
 ) -> Result<(String, u32)> {
     // Brand-new worksheets (and some Excel empties) use self-closing
     // `<sheetData/>`; expand so row append can splice before `</sheetData>`.
@@ -638,10 +764,26 @@ fn append_sparse_rows_to_xml(
     let mut appended = String::new();
     for (row_offset, values) in rows.iter().enumerate() {
         let row_index = next_row + row_offset;
-        write!(appended, "<row r=\"{row_index}\">").expect("writing to String cannot fail");
-        for (physical_index, value) in values {
+        if absent_rows.get(row_offset).copied().unwrap_or(false) {
+            continue;
+        }
+        if let Some(height) = row_heights.get(row_offset).copied().flatten() {
+            write!(
+                appended,
+                "<row r=\"{row_index}\" ht=\"{height}\" customHeight=\"1\">"
+            )
+            .expect("writing to String cannot fail");
+        } else {
+            write!(appended, "<row r=\"{row_index}\">").expect("writing to String cannot fail");
+        }
+        for (cell_offset, (physical_index, value)) in values.iter().enumerate() {
             let reference = format!("{}{row_index}", column_name(physical_index + 1));
-            appended.push_str(&render_cell_xml(&reference, value));
+            let style = cell_styles
+                .get(row_offset)
+                .and_then(|styles| styles.get(cell_offset))
+                .copied()
+                .flatten();
+            appended.push_str(&render_cell_xml(&reference, value, style));
         }
         appended.push_str("</row>");
     }
@@ -653,6 +795,109 @@ fn append_sparse_rows_to_xml(
     );
     let next = u32::try_from(next_row + rows.len()).unwrap_or(u32::MAX);
     Ok((update_worksheet_dimension(&expanded), next))
+}
+
+fn apply_column_widths_to_xml(xml: &str, widths: &[(u16, u16)]) -> Result<String> {
+    let mut tags = String::new();
+    for (column, width) in widths {
+        let one_based = u32::from(*column) + 1;
+        write!(
+            tags,
+            "<col min=\"{one_based}\" max=\"{one_based}\" width=\"{width}\" customWidth=\"1\"/>"
+        )
+        .expect("writing to String cannot fail");
+    }
+    if let Some(end) = xml.find("</cols>") {
+        return Ok(format!("{}{}{}", &xml[..end], tags, &xml[end..]));
+    }
+    if let Some(start) = xml.find("<cols") {
+        let Some(relative_end) = xml[start..].find("/>") else {
+            return Err(ExcelError::Format(
+                "worksheet contains malformed cols element".to_owned(),
+            ));
+        };
+        let end = start + relative_end + 2;
+        return Ok(format!(
+            "{}<cols>{}</cols>{}",
+            &xml[..start],
+            tags,
+            &xml[end..]
+        ));
+    }
+    let insertion = xml
+        .find("<sheetData")
+        .ok_or_else(|| ExcelError::Format("worksheet does not contain sheetData".to_owned()))?;
+    Ok(format!(
+        "{}<cols>{}</cols>{}",
+        &xml[..insertion],
+        tags,
+        &xml[insertion..]
+    ))
+}
+
+fn apply_merge_ranges_to_xml(xml: &str, ranges: &[MergeRange]) -> Result<String> {
+    let mut refs = Vec::new();
+    for range in ranges {
+        let reference = format!(
+            "{}{}:{}{}",
+            column_name(usize::from(range.first_column) + 1),
+            range.first_row + 1,
+            column_name(usize::from(range.last_column) + 1),
+            range.last_row + 1
+        );
+        if !xml.contains(&format!("ref=\"{reference}\"")) {
+            refs.push(reference);
+        }
+    }
+    if refs.is_empty() {
+        return Ok(xml.to_owned());
+    }
+    let tags = refs
+        .iter()
+        .map(|reference| format!("<mergeCell ref=\"{reference}\"/>"))
+        .collect::<String>();
+    if let Some(start) = xml.find("<mergeCells") {
+        let tag_end = start
+            + xml[start..]
+                .find('>')
+                .ok_or_else(|| ExcelError::Format("malformed mergeCells element".to_owned()))?;
+        let close = xml[tag_end + 1..]
+            .find("</mergeCells>")
+            .map(|offset| tag_end + 1 + offset)
+            .ok_or_else(|| ExcelError::Format("malformed mergeCells element".to_owned()))?;
+        let current_count = attribute_value(&xml[start..=tag_end], "count")
+            .and_then(|count| count.parse::<usize>().ok())
+            .unwrap_or_else(|| xml[tag_end + 1..close].matches("<mergeCell").count());
+        let new_count = current_count.saturating_add(refs.len());
+        let mut updated = xml.to_owned();
+        if let Some(count) = attribute_value(&xml[start..=tag_end], "count") {
+            updated = updated.replacen(
+                &format!(" count=\"{count}\""),
+                &format!(" count=\"{new_count}\""),
+                1,
+            );
+        }
+        let close = updated
+            .find("</mergeCells>")
+            .ok_or_else(|| ExcelError::Format("malformed mergeCells element".to_owned()))?;
+        return Ok(format!(
+            "{}{}{}",
+            &updated[..close],
+            tags,
+            &updated[close..]
+        ));
+    }
+    let insertion = xml
+        .find("</sheetData>")
+        .map(|index| index + "</sheetData>".len())
+        .ok_or_else(|| ExcelError::Format("worksheet does not contain sheetData".to_owned()))?;
+    Ok(format!(
+        "{}<mergeCells count=\"{}\">{}</mergeCells>{}",
+        &xml[..insertion],
+        refs.len(),
+        tags,
+        &xml[insertion..]
+    ))
 }
 
 /// Expands empty self-closing `<sheetData…/>` into an open/close pair.
@@ -691,41 +936,338 @@ fn expand_self_closing_sheet_data(xml: &str) -> Result<String> {
     ))
 }
 
-fn render_cell_xml(reference: &str, value: &CellValue) -> String {
-    let start = format!("<c r=\"{reference}\">");
+fn render_cell_xml(reference: &str, value: &CellValue, style: Option<u32>) -> String {
+    let style_attribute = style
+        .map(|index| format!(" s=\"{index}\""))
+        .unwrap_or_default();
+    let start = format!("<c r=\"{reference}\"{style_attribute}>");
     match value {
         CellValue::Empty | CellValue::Image(_) => format!("{start}</c>"),
-        CellValue::String(text)
-        | CellValue::Error(text)
-        | CellValue::Hyperlink { text, .. } => format!(
-            "<c r=\"{reference}\" t=\"inlineStr\"><is><t>{}</t></is></c>",
-            escape_xml(text)
-        ),
+        CellValue::String(text) | CellValue::Error(text) | CellValue::Hyperlink { text, .. } => {
+            format!(
+                "<c r=\"{reference}\"{style_attribute} t=\"inlineStr\"><is><t>{}</t></is></c>",
+                escape_xml(text)
+            )
+        }
         CellValue::RichText(rich) => format!(
-            "<c r=\"{reference}\" t=\"inlineStr\"><is><t>{}</t></is></c>",
+            "<c r=\"{reference}\"{style_attribute} t=\"inlineStr\"><is><t>{}</t></is></c>",
             escape_xml(rich.text_string())
         ),
         CellValue::Bool(flag) => {
-            format!("<c r=\"{reference}\" t=\"b\"><v>{}</v></c>", u8::from(*flag))
+            format!(
+                "<c r=\"{reference}\"{style_attribute} t=\"b\"><v>{}</v></c>",
+                u8::from(*flag)
+            )
         }
-        CellValue::Int(number) => format!("<c r=\"{reference}\"><v>{number}</v></c>"),
-        CellValue::Float(number) => format!("<c r=\"{reference}\"><v>{number}</v></c>"),
-        CellValue::Decimal(number) => format!("<c r=\"{reference}\"><v>{number}</v></c>"),
+        CellValue::Int(number) => format!("{start}<v>{number}</v></c>"),
+        CellValue::Float(number) => format!("{start}<v>{number}</v></c>"),
+        CellValue::Decimal(number) => {
+            if crate::decimal_integer_requires_text(number).unwrap_or(false) {
+                format!(
+                    "<c r=\"{reference}\"{style_attribute} t=\"inlineStr\"><is><t>{}</t></is></c>",
+                    escape_xml(&number.to_plain_string())
+                )
+            } else {
+                format!("{start}<v>{number}</v></c>")
+            }
+        }
         CellValue::Date(date) => format!(
-            "<c r=\"{reference}\" t=\"d\"><v>{}</v></c>",
+            "<c r=\"{reference}\"{style_attribute} t=\"d\"><v>{}</v></c>",
             date.format("%Y-%m-%d")
         ),
         CellValue::DateTime(datetime) => format!(
-            "<c r=\"{reference}\" t=\"d\"><v>{}</v></c>",
+            "<c r=\"{reference}\"{style_attribute} t=\"d\"><v>{}</v></c>",
             datetime.format("%Y-%m-%dT%H:%M:%S")
         ),
         CellValue::Formula(formula) => {
-            format!("<c r=\"{reference}\"><f>{}</f></c>", escape_xml(formula))
+            format!("{start}<f>{}</f></c>", escape_xml(formula))
         }
         CellValue::Comment { value, .. } | CellValue::Images { value, .. } => {
-            render_cell_xml(reference, value)
+            render_cell_xml(reference, value, style)
         }
     }
+}
+
+fn cell_style_index(sheet_xml: &str, reference: &str) -> Option<usize> {
+    let marker = format!("<c r=\"{reference}\"");
+    let (_, cell) = sheet_xml.split_once(&marker)?;
+    let tag = cell.split_once('>')?.0;
+    attribute_value(tag, "s")?.parse().ok()
+}
+
+fn merge_compiled_styles(
+    destination: &str,
+    source: &str,
+    source_indexes: &[usize],
+) -> Result<(String, Vec<u32>)> {
+    let source_fonts = collection_elements(source, "fonts", "font")?;
+    let source_fills = collection_elements(source, "fills", "fill")?;
+    let source_borders = collection_elements(source, "borders", "border")?;
+    let source_xfs = collection_elements(source, "cellXfs", "xf")?;
+    let (mut updated, font_indexes) =
+        merge_component_collection(destination, "fonts", "font", &source_fonts)?;
+    let (next, fill_indexes) =
+        merge_component_collection(&updated, "fills", "fill", &source_fills)?;
+    updated = next;
+    let (next, border_indexes) =
+        merge_component_collection(&updated, "borders", "border", &source_borders)?;
+    updated = next;
+
+    let mut imported = std::collections::HashMap::new();
+    let mut appended_xfs = Vec::new();
+    let destination_xfs = collection_elements(&updated, "cellXfs", "xf")?;
+    let mut mapped = Vec::with_capacity(source_indexes.len());
+    for source_index in source_indexes {
+        if let Some(destination_index) = imported.get(source_index).copied() {
+            mapped.push(destination_index);
+            continue;
+        }
+        let source_xf = source_xfs.get(*source_index).ok_or_else(|| {
+            ExcelError::Format(format!(
+                "compiled style index {source_index} is out of range"
+            ))
+        })?;
+        let mut xf = source_xf.clone();
+        remap_index_attribute(&mut xf, "fontId", &font_indexes)?;
+        remap_index_attribute(&mut xf, "fillId", &fill_indexes)?;
+        remap_index_attribute(&mut xf, "borderId", &border_indexes)?;
+        remap_number_format(&mut updated, source, &mut xf)?;
+        let destination_index = destination_xfs
+            .iter()
+            .chain(appended_xfs.iter())
+            .position(|existing| existing == &xf)
+            .map(|index| u32::try_from(index).unwrap_or(u32::MAX))
+            .unwrap_or_else(|| {
+                let index =
+                    u32::try_from(destination_xfs.len() + appended_xfs.len()).unwrap_or(u32::MAX);
+                appended_xfs.push(xf);
+                index
+            });
+        if destination_index == u32::MAX {
+            return Err(ExcelError::Format(
+                "template cell style index overflow".to_owned(),
+            ));
+        }
+        imported.insert(*source_index, destination_index);
+        mapped.push(destination_index);
+    }
+    updated = append_collection(&updated, "cellXfs", "xf", &appended_xfs)?;
+    Ok((updated, mapped))
+}
+
+fn remap_index_attribute(xml: &mut String, name: &str, indexes: &[usize]) -> Result<()> {
+    let Some(value) = attribute_value(xml, name) else {
+        return Ok(());
+    };
+    let index = value
+        .parse::<usize>()
+        .map_err(|_| ExcelError::Format(format!("invalid {name} in compiled style")))?;
+    let mapped = indexes.get(index).ok_or_else(|| {
+        ExcelError::Format(format!(
+            "compiled style {name} index {index} is out of range"
+        ))
+    })?;
+    replace_attribute(xml, name, &mapped.to_string())
+}
+
+fn merge_component_collection(
+    xml: &str,
+    collection: &str,
+    child: &str,
+    source: &[String],
+) -> Result<(String, Vec<usize>)> {
+    let destination = collection_elements(xml, collection, child)?;
+    let mut appended = Vec::new();
+    let mut indexes = Vec::with_capacity(source.len());
+    for component in source {
+        let index = destination
+            .iter()
+            .chain(appended.iter())
+            .position(|existing| existing == component)
+            .unwrap_or_else(|| {
+                let index = destination.len() + appended.len();
+                appended.push(component.clone());
+                index
+            });
+        indexes.push(index);
+    }
+    Ok((
+        append_collection(xml, collection, child, &appended)?,
+        indexes,
+    ))
+}
+
+fn remap_number_format(destination: &mut String, source: &str, xf: &mut String) -> Result<()> {
+    let Some(value) = attribute_value(xf, "numFmtId") else {
+        return Ok(());
+    };
+    let source_id = value
+        .parse::<u32>()
+        .map_err(|_| ExcelError::Format("invalid numFmtId in compiled style".to_owned()))?;
+    if source_id < 164 {
+        return Ok(());
+    }
+    let source_formats = optional_collection_elements(source, "numFmts", "numFmt")?;
+    let source_format = source_formats
+        .iter()
+        .find(|format| attribute_value(format, "numFmtId") == Some(value))
+        .ok_or_else(|| {
+            ExcelError::Format(format!("compiled style is missing numFmtId {source_id}"))
+        })?;
+    let code = attribute_value(source_format, "formatCode")
+        .ok_or_else(|| ExcelError::Format("compiled numFmt has no formatCode".to_owned()))?;
+    let destination_formats = optional_collection_elements(destination, "numFmts", "numFmt")?;
+    if let Some(existing) = destination_formats
+        .iter()
+        .find(|format| attribute_value(format, "formatCode") == Some(code))
+    {
+        let id = attribute_value(existing, "numFmtId")
+            .ok_or_else(|| ExcelError::Format("template numFmt has no id".to_owned()))?;
+        return replace_attribute(xf, "numFmtId", id);
+    }
+    let next_id = destination_formats
+        .iter()
+        .filter_map(|format| attribute_value(format, "numFmtId")?.parse::<u32>().ok())
+        .max()
+        .unwrap_or(163)
+        .saturating_add(1)
+        .max(164);
+    let mut imported = source_format.clone();
+    replace_attribute(&mut imported, "numFmtId", &next_id.to_string())?;
+    *destination =
+        append_optional_collection(destination, "numFmts", "numFmt", &[imported], "<fonts")?;
+    replace_attribute(xf, "numFmtId", &next_id.to_string())
+}
+
+fn collection_elements(xml: &str, collection: &str, child: &str) -> Result<Vec<String>> {
+    let (inner, _) = collection_inner(xml, collection)?
+        .ok_or_else(|| ExcelError::Format(format!("styles.xml is missing {collection}")))?;
+    Ok(extract_elements(inner, child))
+}
+
+fn optional_collection_elements(xml: &str, collection: &str, child: &str) -> Result<Vec<String>> {
+    Ok(collection_inner(xml, collection)?
+        .map(|(inner, _)| extract_elements(inner, child))
+        .unwrap_or_default())
+}
+
+fn collection_inner<'a>(
+    xml: &'a str,
+    collection: &str,
+) -> Result<Option<(&'a str, (usize, usize, usize))>> {
+    let marker = format!("<{collection}");
+    let Some(start) = xml.find(&marker) else {
+        return Ok(None);
+    };
+    let open_end = start
+        + xml[start..]
+            .find('>')
+            .ok_or_else(|| ExcelError::Format(format!("malformed {collection} element")))?;
+    let close_marker = format!("</{collection}>");
+    let close = open_end
+        + 1
+        + xml[open_end + 1..]
+            .find(&close_marker)
+            .ok_or_else(|| ExcelError::Format(format!("malformed {collection} element")))?;
+    Ok(Some((&xml[open_end + 1..close], (start, open_end, close))))
+}
+
+fn extract_elements(xml: &str, child: &str) -> Vec<String> {
+    let marker = format!("<{child}");
+    let close_marker = format!("</{child}>");
+    let mut elements = Vec::new();
+    let mut offset = 0;
+    while let Some(relative_start) = xml[offset..].find(&marker) {
+        let start = offset + relative_start;
+        let Some(relative_open_end) = xml[start..].find('>') else {
+            break;
+        };
+        let open_end = start + relative_open_end;
+        let end = if xml[..=open_end].ends_with("/>") {
+            open_end + 1
+        } else if let Some(relative_close) = xml[open_end + 1..].find(&close_marker) {
+            open_end + 1 + relative_close + close_marker.len()
+        } else {
+            break;
+        };
+        elements.push(xml[start..end].to_owned());
+        offset = end;
+    }
+    elements
+}
+
+fn append_collection(
+    xml: &str,
+    collection: &str,
+    child: &str,
+    elements: &[String],
+) -> Result<String> {
+    if elements.is_empty() {
+        return Ok(xml.to_owned());
+    }
+    let (_, (start, open_end, close)) = collection_inner(xml, collection)?
+        .ok_or_else(|| ExcelError::Format(format!("styles.xml is missing {collection}")))?;
+    let current = extract_elements(&xml[open_end + 1..close], child).len();
+    let mut opening = xml[start..=open_end].to_owned();
+    set_count_attribute(&mut opening, current + elements.len())?;
+    Ok(format!(
+        "{}{}{}{}{}",
+        &xml[..start],
+        opening,
+        &xml[open_end + 1..close],
+        elements.concat(),
+        &xml[close..]
+    ))
+}
+
+fn append_optional_collection(
+    xml: &str,
+    collection: &str,
+    child: &str,
+    elements: &[String],
+    before: &str,
+) -> Result<String> {
+    if collection_inner(xml, collection)?.is_some() {
+        return append_collection(xml, collection, child, elements);
+    }
+    let insertion = xml
+        .find(before)
+        .ok_or_else(|| ExcelError::Format(format!("styles.xml is missing {before}")))?;
+    Ok(format!(
+        "{}<{} count=\"{}\">{}</{}>{}",
+        &xml[..insertion],
+        collection,
+        elements.len(),
+        elements.concat(),
+        collection,
+        &xml[insertion..]
+    ))
+}
+
+fn set_count_attribute(opening: &mut String, count: usize) -> Result<()> {
+    if attribute_value(opening, "count").is_some() {
+        replace_attribute(opening, "count", &count.to_string())
+    } else {
+        let insertion = opening
+            .find('>')
+            .ok_or_else(|| ExcelError::Format("malformed style collection".to_owned()))?;
+        opening.insert_str(insertion, &format!(" count=\"{count}\""));
+        Ok(())
+    }
+}
+
+fn replace_attribute(xml: &mut String, name: &str, replacement: &str) -> Result<()> {
+    let marker = format!("{name}=\"");
+    let start = xml
+        .find(&marker)
+        .ok_or_else(|| ExcelError::Format(format!("missing {name} attribute")))?
+        + marker.len();
+    let end = start
+        + xml[start..]
+            .find('"')
+            .ok_or_else(|| ExcelError::Format(format!("unterminated {name} attribute")))?;
+    xml.replace_range(start..end, replacement);
+    Ok(())
 }
 
 fn worksheet_max_row(xml: &str) -> usize {
@@ -767,7 +1309,13 @@ fn update_worksheet_dimension(xml: &str) -> String {
         }
         offset = start + tag_end + 1;
     }
-    let reference = format!("{}{}:{}{}", column_name(1), 1, column_name(last_col), last_row);
+    let reference = format!(
+        "{}{}:{}{}",
+        column_name(1),
+        1,
+        column_name(last_col),
+        last_row
+    );
     if let Some(current) = attribute_value_in_tag(xml, "dimension", "ref") {
         return xml.replacen(
             &format!(" ref=\"{current}\""),
@@ -981,7 +1529,8 @@ fn write_entries_to(
             options = options.unix_permissions(mode);
         }
         if entry.is_dir {
-            zip.add_directory(&entry.name, options).map_err(format_error)?;
+            zip.add_directory(&entry.name, options)
+                .map_err(format_error)?;
         } else {
             zip.start_file(&entry.name, options).map_err(format_error)?;
             zip.write_all(&entry.bytes)?;
@@ -1067,7 +1616,8 @@ mod tests {
         let xls = Path::new("demo.xls");
         let err = validate_template_source(Some(xls), None).expect_err("xls");
         assert!(
-            err.to_string().contains("legacy XLS template cannot seed an XLSX"),
+            err.to_string()
+                .contains("legacy XLS template cannot seed an XLSX"),
             "unexpected: {err}"
         );
 
@@ -1084,7 +1634,7 @@ mod tests {
             "</worksheet>"
         );
         let rows = vec![vec![(0usize, CellValue::String("appended".to_owned()))]];
-        let (updated, next) = append_sparse_rows_to_xml(xml, &rows).expect("append");
+        let (updated, next) = append_sparse_rows_to_xml(xml, &rows, &[], &[], &[]).expect("append");
         assert_eq!(next, 3);
         assert!(updated.contains("s=\"1\""));
         assert!(updated.contains("<mergeCell ref=\"A1:B1\"/>"));
@@ -1100,7 +1650,7 @@ mod tests {
             "</worksheet>"
         );
         let rows = vec![vec![(0usize, CellValue::String("fresh".to_owned()))]];
-        let (updated, next) = append_sparse_rows_to_xml(xml, &rows).expect("append");
+        let (updated, next) = append_sparse_rows_to_xml(xml, &rows, &[], &[], &[]).expect("append");
         assert_eq!(next, 2);
         assert!(updated.contains("<sheetData><row r=\"1\">"));
         assert!(updated.contains("fresh"));
@@ -1214,5 +1764,47 @@ mod tests {
             !new_sheet.contains("mergeCell"),
             "new sheet must not copy merges from the template sheet"
         );
+    }
+
+    #[test]
+    fn importing_same_compiled_style_reuses_workbook_components_and_xf() {
+        let mut template = Workbook::new();
+        template
+            .add_worksheet()
+            .write_string_with_format(
+                0,
+                0,
+                "seed",
+                &Format::new().set_bold().set_font_color(0x0000_00ff),
+            )
+            .expect("template seed");
+        let template_bytes = template.save_to_buffer().expect("template bytes");
+        let mut package = TemplatePackage::from_bytes(&template_bytes).expect("template package");
+
+        let mut compiler = Workbook::new();
+        compiler
+            .add_worksheet()
+            .write_blank(
+                0,
+                0,
+                &Format::new()
+                    .set_italic()
+                    .set_font_color(0x00ff_0000)
+                    .set_num_format("0.000"),
+            )
+            .expect("compiled style");
+        let compiled = compiler.save_to_buffer().expect("compiled bytes");
+
+        let first = package
+            .import_compiled_styles(&compiled, 1)
+            .expect("first import");
+        let after_first = package.entry_xml("xl/styles.xml").expect("styles");
+        let second = package
+            .import_compiled_styles(&compiled, 1)
+            .expect("second import");
+        let after_second = package.entry_xml("xl/styles.xml").expect("styles");
+
+        assert_eq!(first, second);
+        assert_eq!(after_first, after_second);
     }
 }

@@ -15,7 +15,10 @@ use std::time::Duration;
 use chrono::{NaiveDate, NaiveDateTime};
 
 use super::*;
-use crate::constant::{get_builtin_format, EXCEL_MATH_CONTEXT_PRECISION, ROW_TAG, CELL_TAG, CELL_VALUE_TAG, CELL_FORMULA_TAG};
+use crate::constant::{
+    CELL_FORMULA_TAG, CELL_TAG, CELL_VALUE_TAG, EXCEL_MATH_CONTEXT_PRECISION, ROW_TAG,
+    get_builtin_format,
+};
 use crate::support::ExcelTypeEnum;
 
 // ============================================================================
@@ -52,6 +55,7 @@ fn context(format: Option<&'static str>) -> ConvertContext {
         column_index: Some(1),
         field: "value",
         format,
+        use_1904_windowing: false,
     }
 }
 
@@ -106,7 +110,10 @@ fn cell_values_expose_converter_dispatch_types() {
         (CellValue::Bool(true), CellDataType::Boolean),
         (CellValue::Int(1), CellDataType::Number),
         (CellValue::Float(1.0), CellDataType::Number),
-        (CellValue::Decimal(BigDecimal::from(1)), CellDataType::Number),
+        (
+            CellValue::Decimal(BigDecimal::from(1)),
+            CellDataType::Number,
+        ),
         (CellValue::Date(date), CellDataType::Date),
         (CellValue::DateTime(datetime), CellDataType::Date),
         (CellValue::Error("#N/A".to_owned()), CellDataType::Error),
@@ -126,7 +133,10 @@ fn cell_values_expose_converter_dispatch_types() {
             CellDataType::String,
         ),
         (CellValue::Image(vec![]), CellDataType::Image),
-        (CellValue::RichText(RichTextStringData::new("rt")), CellDataType::RichTextString),
+        (
+            CellValue::RichText(RichTextStringData::new("rt")),
+            CellDataType::RichTextString,
+        ),
         (
             CellValue::Images {
                 value: Box::new(CellValue::Empty),
@@ -166,24 +176,54 @@ fn string_round_trip() {
 #[test]
 fn bool_from_string() {
     let ctx = context(None);
-    assert!(<bool as FromExcelCell>::from_excel_cell(Some(&CellValue::String("true".to_owned())), &ctx).unwrap());
-    assert!(!<bool as FromExcelCell>::from_excel_cell(Some(&CellValue::String("false".to_owned())), &ctx).unwrap());
-    assert!(!<bool as FromExcelCell>::from_excel_cell(Some(&CellValue::String("0".to_owned())), &ctx).unwrap());
-    assert!(<bool as FromExcelCell>::from_excel_cell(Some(&CellValue::String("1".to_owned())), &ctx).unwrap());
+    assert!(
+        <bool as FromExcelCell>::from_excel_cell(Some(&CellValue::String("true".to_owned())), &ctx)
+            .unwrap()
+    );
+    assert!(
+        !<bool as FromExcelCell>::from_excel_cell(
+            Some(&CellValue::String("false".to_owned())),
+            &ctx
+        )
+        .unwrap()
+    );
+    assert!(
+        !<bool as FromExcelCell>::from_excel_cell(Some(&CellValue::String("0".to_owned())), &ctx)
+            .unwrap()
+    );
+    assert!(
+        <bool as FromExcelCell>::from_excel_cell(Some(&CellValue::String("1".to_owned())), &ctx)
+            .unwrap()
+    );
 }
 
 #[test]
 fn integer_conversions() {
     let ctx = context(None);
-    assert_eq!(<i64 as FromExcelCell>::from_excel_cell(Some(&CellValue::Int(42)), &ctx).unwrap(), 42);
-    assert!(<i64 as FromExcelCell>::from_excel_cell(Some(&CellValue::Float(3.7)), &ctx).unwrap_err().to_string().contains("i64"));
-    assert_eq!(<i32 as FromExcelCell>::from_excel_cell(Some(&CellValue::String("100".to_owned())), &ctx).unwrap(), 100);
+    assert_eq!(
+        <i64 as FromExcelCell>::from_excel_cell(Some(&CellValue::Int(42)), &ctx).unwrap(),
+        42
+    );
+    assert!(
+        <i64 as FromExcelCell>::from_excel_cell(Some(&CellValue::Float(3.7)), &ctx)
+            .unwrap_err()
+            .to_string()
+            .contains("i64")
+    );
+    assert_eq!(
+        <i32 as FromExcelCell>::from_excel_cell(Some(&CellValue::String("100".to_owned())), &ctx)
+            .unwrap(),
+        100
+    );
 }
 
 #[test]
 fn float_from_integer_cell() {
     let ctx = context(None);
-    assert_eq!(<f64 as FromExcelCell>::from_excel_cell(Some(&CellValue::Int(42)), &ctx).unwrap(), 42.0);
+    assert_eq!(
+        <f64 as FromExcelCell>::from_excel_cell(Some(&CellValue::Int(42)), &ctx).unwrap(),
+        42.0
+    );
 }
 
 #[test]
@@ -208,16 +248,32 @@ fn naivedatetime_from_string_with_format() {
     let ctx = context(Some("%Y-%m-%d %H:%M:%S"));
     let cell = CellValue::String("2026-03-15 14:30:00".to_owned());
     let dt = <NaiveDateTime as FromExcelCell>::from_excel_cell(Some(&cell), &ctx).unwrap();
-    assert_eq!(dt, NaiveDateTime::new(NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(), chrono::NaiveTime::from_hms_opt(14, 30, 0).unwrap()));
+    assert_eq!(
+        dt,
+        NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+            chrono::NaiveTime::from_hms_opt(14, 30, 0).unwrap()
+        )
+    );
 }
 
 #[test]
 fn option_cell_handles_empty() {
     let ctx = context(None);
-    assert_eq!(<Option<String> as FromExcelCell>::from_excel_cell(None, &ctx).unwrap(), None);
-    assert_eq!(<Option<String> as FromExcelCell>::from_excel_cell(Some(&CellValue::Empty), &ctx).unwrap(), None);
     assert_eq!(
-        <Option<String> as FromExcelCell>::from_excel_cell(Some(&CellValue::String("x".to_owned())), &ctx).unwrap(),
+        <Option<String> as FromExcelCell>::from_excel_cell(None, &ctx).unwrap(),
+        None
+    );
+    assert_eq!(
+        <Option<String> as FromExcelCell>::from_excel_cell(Some(&CellValue::Empty), &ctx).unwrap(),
+        None
+    );
+    assert_eq!(
+        <Option<String> as FromExcelCell>::from_excel_cell(
+            Some(&CellValue::String("x".to_owned())),
+            &ctx
+        )
+        .unwrap(),
         Some("x".to_owned())
     );
 }
@@ -261,7 +317,9 @@ fn coordinate_data_builder_chain() {
 
 #[test]
 fn coordinate_data_clone_eq() {
-    let a = CoordinateData::new().first_row_index(1).first_column_index(2);
+    let a = CoordinateData::new()
+        .first_row_index(1)
+        .first_column_index(2);
     let b = a.clone();
     assert_eq!(a, b);
 }
@@ -296,8 +354,7 @@ fn anchor_type_variants() {
 
 #[test]
 fn image_data_builder_chain() {
-    let img = ImageData::new(vec![0x89, 0x50, 0x4E, 0x47])
-        .image_type(ImageType::Png);
+    let img = ImageData::new(vec![0x89, 0x50, 0x4E, 0x47]).image_type(ImageType::Png);
     assert_eq!(img.image(), &[0x89, 0x50, 0x4E, 0x47]);
     assert_eq!(img.get_image_type(), Some(ImageType::Png));
     assert_eq!(img.get_anchor(), ClientAnchorData::new());
@@ -305,7 +362,14 @@ fn image_data_builder_chain() {
 
 #[test]
 fn image_type_variants() {
-    let types = [ImageType::Emf, ImageType::Wmf, ImageType::Pict, ImageType::Jpeg, ImageType::Png, ImageType::Dib];
+    let types = [
+        ImageType::Emf,
+        ImageType::Wmf,
+        ImageType::Pict,
+        ImageType::Jpeg,
+        ImageType::Png,
+        ImageType::Dib,
+    ];
     assert_eq!(types.len(), 6);
 }
 
@@ -350,7 +414,8 @@ fn write_cell_data_constructors() {
 #[test]
 fn read_cell_data_fields() {
     let rd = ReadCellData::new(
-        5, 2,
+        5,
+        2,
         CellValue::Int(42),
         CellValue::Int(42),
         "42".to_owned(),
@@ -387,7 +452,10 @@ fn dynamic_row_get_by_column() {
     let row = DynamicRow::new(map);
     assert_eq!(row.get(0), Some(&DynamicValue::String("hello".to_owned())));
     assert_eq!(row.get(1), None);
-    assert_eq!(row.get(2), Some(&DynamicValue::ActualData(CellValue::Int(42))));
+    assert_eq!(
+        row.get(2),
+        Some(&DynamicValue::ActualData(CellValue::Int(42)))
+    );
     assert_eq!(row.values().len(), 2);
     assert_eq!(row.into_values().len(), 2);
 }
@@ -408,7 +476,10 @@ fn dynamic_row_clone_eq() {
 fn read_default_return_variants() {
     assert_eq!(ReadDefaultReturn::String, ReadDefaultReturn::String);
     assert_eq!(ReadDefaultReturn::ActualData, ReadDefaultReturn::ActualData);
-    assert_eq!(ReadDefaultReturn::ReadCellData, ReadDefaultReturn::ReadCellData);
+    assert_eq!(
+        ReadDefaultReturn::ReadCellData,
+        ReadDefaultReturn::ReadCellData
+    );
 }
 
 // ============================================================================
@@ -456,10 +527,22 @@ fn excel_error_from_io() {
 fn excel_column_builder_chain() {
     let col = ExcelColumn::new("age", "Age", Some(1), 10, None)
         .with_column_width(20)
-        .with_head_style(ExcelCellStyle { horizontal_alignment: Some(ExcelHorizontalAlignment::Center), ..ExcelCellStyle::new() })
-        .with_content_style(ExcelCellStyle { hidden: Some(true), ..ExcelCellStyle::new() })
-        .with_head_font_style(ExcelFontStyle { bold: Some(true), ..ExcelFontStyle::new() })
-        .with_content_font_style(ExcelFontStyle { font_name: Some("Arial"), ..ExcelFontStyle::new() });
+        .with_head_style(ExcelCellStyle {
+            horizontal_alignment: Some(ExcelHorizontalAlignment::Center),
+            ..ExcelCellStyle::new()
+        })
+        .with_content_style(ExcelCellStyle {
+            hidden: Some(true),
+            ..ExcelCellStyle::new()
+        })
+        .with_head_font_style(ExcelFontStyle {
+            bold: Some(true),
+            ..ExcelFontStyle::new()
+        })
+        .with_content_font_style(ExcelFontStyle {
+            font_name: Some("Arial"),
+            ..ExcelFontStyle::new()
+        });
     assert_eq!(col.field, "age");
     assert_eq!(col.name, "Age");
     assert_eq!(col.index, Some(1));
@@ -480,7 +563,10 @@ fn excel_cell_style_fields() {
         data_format: Some(ExcelDataFormat::Custom("0.00")),
         ..ExcelCellStyle::new()
     };
-    assert_eq!(style.horizontal_alignment, Some(ExcelHorizontalAlignment::Center));
+    assert_eq!(
+        style.horizontal_alignment,
+        Some(ExcelHorizontalAlignment::Center)
+    );
     assert_eq!(style.vertical_alignment, Some(ExcelVerticalAlignment::Top));
     assert_eq!(style.border_left, Some(ExcelBorderStyle::Thin));
     assert_eq!(style.fill_pattern, Some(ExcelFillPattern::Solid));
@@ -497,8 +583,14 @@ fn excel_write_metadata_builder_chain() {
         .column_width(25)
         .head_row_height(30)
         .content_row_height(20)
-        .head_style(ExcelCellStyle { horizontal_alignment: Some(ExcelHorizontalAlignment::Center), ..ExcelCellStyle::new() })
-        .head_font_style(ExcelFontStyle { bold: Some(true), ..ExcelFontStyle::new() });
+        .head_style(ExcelCellStyle {
+            horizontal_alignment: Some(ExcelHorizontalAlignment::Center),
+            ..ExcelCellStyle::new()
+        })
+        .head_font_style(ExcelFontStyle {
+            bold: Some(true),
+            ..ExcelFontStyle::new()
+        });
     assert_eq!(meta.column_width, Some(25));
     assert_eq!(meta.head_row_height, Some(30));
     assert_eq!(meta.content_row_height, Some(20));
@@ -513,7 +605,10 @@ fn cell_extra_fields() {
     let extra = CellExtra::new(
         CellExtraType::Comment,
         Some("this is a comment".to_owned()),
-        0, 0, 1, 1,
+        0,
+        0,
+        1,
+        1,
     );
     assert_eq!(extra.extra_type(), CellExtraType::Comment);
     assert_eq!(extra.text(), Some("this is a comment"));
@@ -537,16 +632,16 @@ fn row_data_cell_resolution() {
     let mut headers = HashMap::new();
     headers.insert("Name".to_owned(), 0);
     headers.insert("Age".to_owned(), 1);
-    let cells = vec![
-        CellValue::String("Alice".to_owned()),
-        CellValue::Int(30),
-    ];
+    let cells = vec![CellValue::String("Alice".to_owned()), CellValue::Int(30)];
     let row = RowData::new("Sheet1", 0, cells, Arc::new(headers));
 
     let name_col = ExcelColumn::new("name", "Name", None, 0, None);
     let age_col = ExcelColumn::new("age", "Age", Some(1), 10, None);
 
-    assert_eq!(row.cell(&name_col), Some(&CellValue::String("Alice".to_owned())));
+    assert_eq!(
+        row.cell(&name_col),
+        Some(&CellValue::String("Alice".to_owned()))
+    );
     assert_eq!(row.cell(&age_col), Some(&CellValue::Int(30)));
 }
 
@@ -587,7 +682,10 @@ struct TestListener {
 
 impl TestListener {
     fn new() -> Self {
-        Self { rows: Vec::new(), _batch_idx: 0 }
+        Self {
+            rows: Vec::new(),
+            _batch_idx: 0,
+        }
     }
 }
 
@@ -627,7 +725,9 @@ fn read_listener_can_stop() {
             }
             Ok(())
         }
-        fn do_after_all_analysed(&mut self, _context: &AnalysisContext) -> Result<()> { Ok(()) }
+        fn do_after_all_analysed(&mut self, _context: &AnalysisContext) -> Result<()> {
+            Ok(())
+        }
     }
     let mut listener = StopAfterOne { count: 0 };
     let ctx = AnalysisContext::new("S", 0, 0);
@@ -642,9 +742,16 @@ fn read_listener_has_next_can_stop() {
         count: usize,
     }
     impl ReadListener<String> for StopAfterTwo {
-        fn invoke(&mut self, _data: String, _context: &AnalysisContext) -> Result<()> { self.count += 1; Ok(()) }
-        fn has_next(&mut self, _context: &AnalysisContext) -> bool { self.count < 2 }
-        fn do_after_all_analysed(&mut self, _context: &AnalysisContext) -> Result<()> { Ok(()) }
+        fn invoke(&mut self, _data: String, _context: &AnalysisContext) -> Result<()> {
+            self.count += 1;
+            Ok(())
+        }
+        fn has_next(&mut self, _context: &AnalysisContext) -> bool {
+            self.count < 2
+        }
+        fn do_after_all_analysed(&mut self, _context: &AnalysisContext) -> Result<()> {
+            Ok(())
+        }
     }
     let mut listener = StopAfterTwo { count: 0 };
     let ctx = AnalysisContext::new("S", 0, 0);
@@ -737,8 +844,8 @@ fn analysis_context_construction() {
 
 #[test]
 fn analysis_context_with_custom_object() {
-    let ctx = AnalysisContext::new("S", 0, 0)
-        .with_custom_object(Some(CustomReadObject::new(42u32)));
+    let ctx =
+        AnalysisContext::new("S", 0, 0).with_custom_object(Some(CustomReadObject::new(42u32)));
     let val = ctx.custom::<u32>();
     assert_eq!(val, Some(&42u32));
 }
@@ -760,9 +867,12 @@ struct TestWriteHandler {
 }
 
 impl WriteHandler for TestWriteHandler {
-    fn order(&self) -> i32 { self.order }
+    fn order(&self) -> i32 {
+        self.order
+    }
     fn before_workbook(&mut self, _ctx: &WriteWorkbookContext) -> Result<()> {
-        self.before_workbook_called.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.before_workbook_called
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
     fn before_cell(&mut self, ctx: &mut WriteCellContext) -> Result<()> {
@@ -773,28 +883,33 @@ impl WriteHandler for TestWriteHandler {
 
 #[test]
 fn write_handler_order_and_before_workbook() {
-    let mut h = TestWriteHandler { order: -10, before_workbook_called: std::sync::atomic::AtomicBool::new(false), before_cell_value: None };
+    let mut h = TestWriteHandler {
+        order: -10,
+        before_workbook_called: std::sync::atomic::AtomicBool::new(false),
+        before_cell_value: None,
+    };
     assert_eq!(h.order(), -10);
     let ctx = WriteWorkbookContext::new("out.xlsx");
     h.before_workbook(&ctx).unwrap();
-    assert!(h.before_workbook_called.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(
+        h.before_workbook_called
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
 }
 
 #[test]
 fn write_handler_before_cell_receives_value() {
-    let mut h = TestWriteHandler { order: 0, before_workbook_called: std::sync::atomic::AtomicBool::new(false), before_cell_value: None };
-    let mut ctx = WriteCellContext {
-        sheet_name: "S".to_owned(),
-        row_index: 0,
-        column_index: 0,
-        field: None,
-        is_head: false,
-        relative_row_index: None,
-        value: CellValue::String("hello".to_owned()),
-        skip: false,
+    let mut h = TestWriteHandler {
+        order: 0,
+        before_workbook_called: std::sync::atomic::AtomicBool::new(false),
+        before_cell_value: None,
     };
+    let mut ctx = WriteCellContext::new("S", 0, 0, CellValue::String("hello".to_owned()));
     h.before_cell(&mut ctx).unwrap();
-    assert_eq!(h.before_cell_value, Some(CellValue::String("hello".to_owned())));
+    assert_eq!(
+        h.before_cell_value,
+        Some(CellValue::String("hello".to_owned()))
+    );
 }
 
 // ============================================================================
@@ -808,8 +923,14 @@ impl Converter<String> for PrefixConverter {
         let val = ctx.cell().map_or_else(String::new, CellValue::as_text);
         Ok(format!("custom:{val}"))
     }
-    fn convert_to_excel_data(&self, ctx: &WriteConverterContext<'_, String>) -> Result<CellValue> {
-        Ok(CellValue::String(format!("custom:{}", ctx.value())))
+    fn convert_to_excel_data(
+        &self,
+        ctx: &WriteConverterContext<'_, String>,
+    ) -> Result<WriteCellData> {
+        Ok(WriteCellData::from_string(format!(
+            "custom:{}",
+            ctx.value()
+        )))
     }
 }
 
@@ -825,11 +946,15 @@ fn converter_registry_register_and_read() {
         column_index: Some(0),
         field: "f",
         format: None,
+        use_1904_windowing: false,
     };
     let cell = CellValue::String("abc".to_owned());
-    let col = ExcelColumn::new("f","F", Some(0),0,None);
+    let col = ExcelColumn::new("f", "F", Some(0), 0, None);
     let rctx = ReadConverterContext::new(Some(&cell), &col, &ctx);
-    let result = registry.convert_to_rust_data::<String>(&rctx).unwrap().unwrap();
+    let result = registry
+        .convert_to_rust_data::<String>(&rctx)
+        .unwrap()
+        .unwrap();
     assert_eq!(result, "custom:abc");
 }
 
@@ -838,25 +963,49 @@ fn converter_registry_write() {
     let mut registry = ConverterRegistry::default();
     registry.register::<String, _>(PrefixConverter);
     let ctx = ConvertContext {
-        sheet_name: "S".to_owned(), row_index: 0, column_index: Some(0),
-        field: "f", format: None,
+        sheet_name: "S".to_owned(),
+        row_index: 0,
+        column_index: Some(0),
+        field: "f",
+        format: None,
+        use_1904_windowing: false,
     };
-    let col = ExcelColumn::new("f","F", Some(0),0,None);
-    let cell = registry.convert_to_excel_data(&"test".to_owned(), &col, &ctx).unwrap().unwrap();
-    assert_eq!(cell, CellValue::String("custom:test".to_owned()));
+    let col = ExcelColumn::new("f", "F", Some(0), 0, None);
+    let cell = registry
+        .convert_to_excel_data(&"test".to_owned(), &col, &ctx)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cell.effective_value(),
+        CellValue::String("custom:test".to_owned())
+    );
 }
 
 #[test]
 fn converter_registry_merged_with_takes_priority() {
     struct AConverter;
     impl Converter<String> for AConverter {
-        fn convert_to_rust_data(&self, _: &ReadConverterContext<'_>) -> Result<String> { Ok("A".to_owned()) }
-        fn convert_to_excel_data(&self, _: &WriteConverterContext<'_, String>) -> Result<CellValue> { Ok(CellValue::String("A".to_owned())) }
+        fn convert_to_rust_data(&self, _: &ReadConverterContext<'_>) -> Result<String> {
+            Ok("A".to_owned())
+        }
+        fn convert_to_excel_data(
+            &self,
+            _: &WriteConverterContext<'_, String>,
+        ) -> Result<WriteCellData> {
+            Ok(WriteCellData::from_string("A"))
+        }
     }
     struct BConverter;
     impl Converter<String> for BConverter {
-        fn convert_to_rust_data(&self, _: &ReadConverterContext<'_>) -> Result<String> { Ok("B".to_owned()) }
-        fn convert_to_excel_data(&self, _: &WriteConverterContext<'_, String>) -> Result<CellValue> { Ok(CellValue::String("B".to_owned())) }
+        fn convert_to_rust_data(&self, _: &ReadConverterContext<'_>) -> Result<String> {
+            Ok("B".to_owned())
+        }
+        fn convert_to_excel_data(
+            &self,
+            _: &WriteConverterContext<'_, String>,
+        ) -> Result<WriteCellData> {
+            Ok(WriteCellData::from_string("B"))
+        }
     }
 
     let mut base = ConverterRegistry::default();
@@ -865,11 +1014,21 @@ fn converter_registry_merged_with_takes_priority() {
     overrides.register::<String, _>(BConverter);
 
     let merged = base.merged_with(&overrides);
-    let ctx = ConvertContext { sheet_name: "S".to_owned(), row_index: 0, column_index: Some(0), field: "f", format: None };
-    let col = ExcelColumn::new("f","F", Some(0),0,None);
+    let ctx = ConvertContext {
+        sheet_name: "S".to_owned(),
+        row_index: 0,
+        column_index: Some(0),
+        field: "f",
+        format: None,
+        use_1904_windowing: false,
+    };
+    let col = ExcelColumn::new("f", "F", Some(0), 0, None);
     let empty_cell = CellValue::String("".to_owned());
     let rctx = ReadConverterContext::new(Some(&empty_cell), &col, &ctx);
-    let result = merged.convert_to_rust_data::<String>(&rctx).unwrap().unwrap();
+    let result = merged
+        .convert_to_rust_data::<String>(&rctx)
+        .unwrap()
+        .unwrap();
     assert_eq!(result, "B"); // overrides take priority
 }
 
@@ -880,9 +1039,16 @@ fn converter_registry_merged_with_takes_priority() {
 #[test]
 fn string_image_converter_read_error() {
     let converter = StringImageConverter;
-    let ctx = ConvertContext { sheet_name: "S".to_owned(), row_index: 0, column_index: Some(0), field: "img", format: None };
+    let ctx = ConvertContext {
+        sheet_name: "S".to_owned(),
+        row_index: 0,
+        column_index: Some(0),
+        field: "img",
+        format: None,
+        use_1904_windowing: false,
+    };
     let cell = CellValue::String("nonexistent.png".to_owned());
-    let col = ExcelColumn::new("img","Img", Some(0),0,None);
+    let col = ExcelColumn::new("img", "Img", Some(0), 0, None);
     let rctx = ReadConverterContext::new(Some(&cell), &col, &ctx);
     // convert_to_rust_data should return Unsupported error
     let err = Converter::<String>::convert_to_rust_data(&converter, &rctx);
@@ -917,9 +1083,18 @@ fn excel_type_enum_value() {
 
 #[test]
 fn excel_type_enum_from_extension() {
-    assert_eq!(ExcelTypeEnum::from_extension("csv"), Some(ExcelTypeEnum::Csv));
-    assert_eq!(ExcelTypeEnum::from_extension("xls"), Some(ExcelTypeEnum::Xls));
-    assert_eq!(ExcelTypeEnum::from_extension("xlsx"), Some(ExcelTypeEnum::Xlsx));
+    assert_eq!(
+        ExcelTypeEnum::from_extension("csv"),
+        Some(ExcelTypeEnum::Csv)
+    );
+    assert_eq!(
+        ExcelTypeEnum::from_extension("xls"),
+        Some(ExcelTypeEnum::Xls)
+    );
+    assert_eq!(
+        ExcelTypeEnum::from_extension("xlsx"),
+        Some(ExcelTypeEnum::Xlsx)
+    );
     assert_eq!(ExcelTypeEnum::from_extension("unknown"), None);
 }
 
@@ -979,27 +1154,15 @@ fn write_sheet_context() {
 
 #[test]
 fn write_row_context() {
-    let ctx = WriteRowContext {
-        sheet_name: "Sheet1".to_owned(),
-        row_index: 5,
-        is_head: false,
-    };
+    let ctx = WriteRowContext::new("Sheet1", 5, None, false);
     assert_eq!(ctx.row_index, 5);
     assert!(!ctx.is_head);
 }
 
 #[test]
 fn write_cell_context_skip_value() {
-    let ctx = WriteCellContext {
-        sheet_name: "Sheet1".to_owned(),
-        row_index: 0,
-        column_index: 0,
-        field: Some("name"),
-        is_head: false,
-        relative_row_index: None,
-        value: CellValue::String("Alice".to_owned()),
-        skip: false,
-    };
+    let mut ctx = WriteCellContext::new("Sheet1", 0, 0, CellValue::String("Alice".to_owned()));
+    ctx.field = Some("name");
     assert!(!ctx.skip);
 }
 
@@ -1020,9 +1183,18 @@ fn boolean_enum_tristate() {
 
 #[test]
 fn alignment_enums_variants() {
-    assert_eq!(ExcelHorizontalAlignment::Center, ExcelHorizontalAlignment::Center);
-    assert_ne!(ExcelHorizontalAlignment::Center, ExcelHorizontalAlignment::Left);
-    assert_eq!(ExcelVerticalAlignment::Bottom, ExcelVerticalAlignment::Bottom);
+    assert_eq!(
+        ExcelHorizontalAlignment::Center,
+        ExcelHorizontalAlignment::Center
+    );
+    assert_ne!(
+        ExcelHorizontalAlignment::Center,
+        ExcelHorizontalAlignment::Left
+    );
+    assert_eq!(
+        ExcelVerticalAlignment::Bottom,
+        ExcelVerticalAlignment::Bottom
+    );
 }
 
 #[test]
@@ -1035,7 +1207,10 @@ fn border_style_and_fill_pattern_enum_variants() {
 
     assert_ne!(ExcelUnderline::None, ExcelUnderline::Single);
     assert_ne!(ExcelUnderline::Single, ExcelUnderline::Double);
-    assert_ne!(ExcelUnderline::SingleAccounting, ExcelUnderline::DoubleAccounting);
+    assert_ne!(
+        ExcelUnderline::SingleAccounting,
+        ExcelUnderline::DoubleAccounting
+    );
 
     assert_ne!(ExcelFontScript::None, ExcelFontScript::Superscript);
     assert_ne!(ExcelFontScript::Superscript, ExcelFontScript::Subscript);
@@ -1080,8 +1255,8 @@ fn read_write_cell_data_round_trip() {
     assert_eq!(rd.raw_value(), &CellValue::Int(100));
     assert_eq!(rd.display_value(), "100");
 
-    let with_image = WriteCellData::new(CellValue::Int(100))
-        .image(ImageData::new(vec![0x89, 0x50, 0x4e, 0x47]));
+    let with_image =
+        WriteCellData::new(CellValue::Int(100)).image(ImageData::new(vec![0x89, 0x50, 0x4e, 0x47]));
     let imaged = with_image.to_excel_cell(&ctx).unwrap();
     match imaged {
         CellValue::Images { value, images } => {
@@ -1106,7 +1281,10 @@ fn dynamic_row_from_row_data() {
     ];
     let row_data = RowData::new("S", 0, cells, headers);
     let dynamic = DynamicRow::from_row(&row_data).unwrap();
-    assert_eq!(dynamic.get(0), Some(&DynamicValue::String("Alice".to_owned())));
+    assert_eq!(
+        dynamic.get(0),
+        Some(&DynamicValue::String("Alice".to_owned()))
+    );
     // Empty cells become empty strings in default ReadDefaultReturn::String mode
     assert_eq!(dynamic.get(2), Some(&DynamicValue::String("".to_owned())));
 }
@@ -1121,8 +1299,7 @@ fn row_data_display_values_override() {
     let cells = vec![CellValue::Float(12345678.1234567)];
     let mut display_values = HashMap::new();
     display_values.insert(0, "12345678.12".to_owned());
-    let row = RowData::new("S", 0, cells, headers)
-        .with_display_values(display_values);
+    let row = RowData::new("S", 0, cells, headers).with_display_values(display_values);
     let col = ExcelColumn::new("v", "V", Some(0), 0, None);
     // When ReadDefaultReturn::String (default), dynamic_cell uses display_value
     assert_eq!(*row.cell(&col).unwrap(), CellValue::Float(12345678.1234567));
@@ -1154,8 +1331,12 @@ fn excel_error_data_with_none_column() {
 fn read_listener_extra_is_noop_by_default() {
     struct NoopListener;
     impl ReadListener<String> for NoopListener {
-        fn invoke(&mut self, _data: String, _ctx: &AnalysisContext) -> Result<()> { Ok(()) }
-        fn do_after_all_analysed(&mut self, _ctx: &AnalysisContext) -> Result<()> { Ok(()) }
+        fn invoke(&mut self, _data: String, _ctx: &AnalysisContext) -> Result<()> {
+            Ok(())
+        }
+        fn do_after_all_analysed(&mut self, _ctx: &AnalysisContext) -> Result<()> {
+            Ok(())
+        }
     }
     let mut listener = NoopListener;
     let ctx = AnalysisContext::new("S", 0, 0);
@@ -1216,8 +1397,14 @@ fn font_style_builder() {
 
 #[test]
 fn excel_column_style_fields() {
-    let style = ExcelCellStyle { hidden: Some(true), ..ExcelCellStyle::new() };
-    let fs = ExcelFontStyle { bold: Some(false), ..ExcelFontStyle::new() };
+    let style = ExcelCellStyle {
+        hidden: Some(true),
+        ..ExcelCellStyle::new()
+    };
+    let fs = ExcelFontStyle {
+        bold: Some(false),
+        ..ExcelFontStyle::new()
+    };
     let col = ExcelColumn::new("c", "C", None, 0, None)
         .with_column_width(40)
         .with_head_style(style)
@@ -1232,7 +1419,9 @@ fn excel_column_style_fields() {
 
 #[test]
 fn write_metadata_merge_behavior() {
-    let base = ExcelWriteMetadata::new().column_width(10).head_row_height(20);
+    let base = ExcelWriteMetadata::new()
+        .column_width(10)
+        .head_row_height(20);
     // Simulate inheritance by copying fields
     let derived = ExcelWriteMetadata {
         column_width: base.column_width,
@@ -1268,11 +1457,20 @@ fn cell_value_clone_preserves_all_variants() {
         CellValue::DateTime(datetime),
         CellValue::Error("#N/A".to_owned()),
         CellValue::Formula("SUM(A1:A2)".to_owned()),
-        CellValue::Hyperlink { url: "u".to_owned(), text: "t".to_owned() },
-        CellValue::Comment { value: Box::new(CellValue::Empty), text: "c".to_owned() },
+        CellValue::Hyperlink {
+            url: "u".to_owned(),
+            text: "t".to_owned(),
+        },
+        CellValue::Comment {
+            value: Box::new(CellValue::Empty),
+            text: "c".to_owned(),
+        },
         CellValue::Image(vec![1]),
         CellValue::RichText(RichTextStringData::new("rt")),
-        CellValue::Images { value: Box::new(CellValue::Empty), images: vec![] },
+        CellValue::Images {
+            value: Box::new(CellValue::Empty),
+            images: vec![],
+        },
     ];
     for case in &cases {
         let cloned = case.clone();
@@ -1332,8 +1530,7 @@ fn row_data_dynamic_cell_uses_display_when_string_mode() {
     let cells = vec![CellValue::Float(123456789.123456789)];
     let mut display = HashMap::new();
     display.insert(0, "123456789.12".to_owned());
-    let row = RowData::new("S", 0, cells, Arc::new(HashMap::new()))
-        .with_display_values(display);
+    let row = RowData::new("S", 0, cells, Arc::new(HashMap::new())).with_display_values(display);
     let dynamic = DynamicRow::from_row(&row).unwrap();
     assert_eq!(
         dynamic.get(0),
@@ -1370,16 +1567,15 @@ fn row_data_dynamic_cell_formula_preserved() {
 fn write_handler_all_default_methods() {
     struct AllDefaults;
     impl WriteHandler for AllDefaults {
-        fn order(&self) -> i32 { 0 }
+        fn order(&self) -> i32 {
+            0
+        }
     }
     let mut h = AllDefaults;
     let wb_ctx = WriteWorkbookContext::new("x.xlsx");
     let sh_ctx = WriteSheetContext::new("S");
-    let rw_ctx = WriteRowContext { sheet_name: "S".to_owned(), row_index: 0, is_head: true };
-    let mut cl_ctx = WriteCellContext {
-        sheet_name: "S".to_owned(), row_index: 0, column_index: 0,
-        field: None, is_head: false, relative_row_index: None, value: CellValue::Empty, skip: false,
-    };
+    let rw_ctx = WriteRowContext::new("S", 0, Some(0), true);
+    let mut cl_ctx = WriteCellContext::new("S", 0, 0, CellValue::Empty);
     assert!(h.before_workbook(&wb_ctx).is_ok());
     assert!(h.after_workbook(&wb_ctx).is_ok());
     assert!(h.before_sheet(&sh_ctx).is_ok());
@@ -1396,7 +1592,14 @@ fn write_handler_all_default_methods() {
 
 #[test]
 fn read_cell_data_clone() {
-    let rd = ReadCellData::new(1, 2, CellValue::Int(3), CellValue::Int(3), "3".to_owned(), Some(FormulaData::new("f".to_owned())));
+    let rd = ReadCellData::new(
+        1,
+        2,
+        CellValue::Int(3),
+        CellValue::Int(3),
+        "3".to_owned(),
+        Some(FormulaData::new("f".to_owned())),
+    );
     let rd2 = rd.clone();
     assert_eq!(rd.row_index(), rd2.row_index());
     assert_eq!(rd.formula().unwrap().formula_value(), "f");
@@ -1412,7 +1615,14 @@ fn dynamic_value_variants() {
         DynamicValue::Null,
         DynamicValue::String("s".to_owned()),
         DynamicValue::ActualData(CellValue::Bool(true)),
-        DynamicValue::ReadCellData(ReadCellData::new(0, 0, CellValue::Empty, CellValue::Empty, String::new(), None)),
+        DynamicValue::ReadCellData(ReadCellData::new(
+            0,
+            0,
+            CellValue::Empty,
+            CellValue::Empty,
+            String::new(),
+            None,
+        )),
     ];
     for v in &vals {
         assert_eq!(*v, v.clone());
@@ -1429,10 +1639,22 @@ fn write_metadata_full_chain() {
         .column_width(100)
         .head_row_height(50)
         .content_row_height(30)
-        .head_style(ExcelCellStyle { horizontal_alignment: Some(ExcelHorizontalAlignment::Center), ..ExcelCellStyle::new() })
-        .content_style(ExcelCellStyle { hidden: Some(true), ..ExcelCellStyle::new() })
-        .head_font_style(ExcelFontStyle { bold: Some(true), ..ExcelFontStyle::new() })
-        .content_font_style(ExcelFontStyle { italic: Some(true), ..ExcelFontStyle::new() });
+        .head_style(ExcelCellStyle {
+            horizontal_alignment: Some(ExcelHorizontalAlignment::Center),
+            ..ExcelCellStyle::new()
+        })
+        .content_style(ExcelCellStyle {
+            hidden: Some(true),
+            ..ExcelCellStyle::new()
+        })
+        .head_font_style(ExcelFontStyle {
+            bold: Some(true),
+            ..ExcelFontStyle::new()
+        })
+        .content_font_style(ExcelFontStyle {
+            italic: Some(true),
+            ..ExcelFontStyle::new()
+        });
     assert_eq!(m.column_width, Some(100));
     assert_eq!(m.head_row_height, Some(50));
     assert_eq!(m.content_row_height, Some(30));
@@ -1646,8 +1868,7 @@ fn cell_style_all_fields() {
 
 #[test]
 fn excel_row_schema_has_field_metadata() {
-    let col = ExcelColumn::new("id", "ID", Some(0), 100, None)
-        .with_column_width(20);
+    let col = ExcelColumn::new("id", "ID", Some(0), 100, None).with_column_width(20);
     // Verify all public fields exist and are accessible
     assert_eq!(col.field, "id");
     assert_eq!(col.name, "ID");
@@ -1796,8 +2017,10 @@ fn coordinate_data_all_getters() {
 #[test]
 fn client_anchor_all_fields() {
     let coord = CoordinateData::new()
-        .first_row_index(1).first_column_index(2)
-        .last_row_index(3).last_column_index(4);
+        .first_row_index(1)
+        .first_column_index(2)
+        .last_row_index(3)
+        .last_column_index(4);
     let anchor = ClientAnchorData::new()
         .coordinates(coord)
         .top(10)
@@ -1809,7 +2032,10 @@ fn client_anchor_all_fields() {
     assert_eq!(anchor.get_right(), Some(20));
     assert_eq!(anchor.get_bottom(), Some(30));
     assert_eq!(anchor.get_left(), Some(40));
-    assert_eq!(anchor.get_anchor_type(), Some(AnchorType::DontMoveAndResize));
+    assert_eq!(
+        anchor.get_anchor_type(),
+        Some(AnchorType::DontMoveAndResize)
+    );
     assert_eq!(anchor.get_coordinates().get_first_row_index(), Some(1));
 }
 
@@ -1819,7 +2045,9 @@ fn client_anchor_all_fields() {
 
 #[test]
 fn image_data_full_builder() {
-    let coord = CoordinateData::new().first_row_index(5).first_column_index(6);
+    let coord = CoordinateData::new()
+        .first_row_index(5)
+        .first_column_index(6);
     let anchor = ClientAnchorData::new()
         .coordinates(coord)
         .top(100)
@@ -1941,7 +2169,9 @@ fn boxed_read_listener_dispatches() {
             }
             Ok(())
         }
-        fn do_after_all_analysed(&mut self, _ctx: &AnalysisContext) -> Result<()> { Ok(()) }
+        fn do_after_all_analysed(&mut self, _ctx: &AnalysisContext) -> Result<()> {
+            Ok(())
+        }
     }
 
     let mut boxed: Box<dyn ReadListener<String>> = Box::new(Impl);
@@ -2012,11 +2242,7 @@ fn write_sheet_context_various_names() {
 
 #[test]
 fn write_row_context_fields() {
-    let ctx = WriteRowContext {
-        sheet_name: "MySheet".to_owned(),
-        row_index: 123,
-        is_head: true,
-    };
+    let ctx = WriteRowContext::new("MySheet", 123, Some(123), true);
     assert_eq!(ctx.sheet_name, "MySheet");
     assert_eq!(ctx.row_index, 123);
     assert!(ctx.is_head);
@@ -2028,16 +2254,8 @@ fn write_row_context_fields() {
 
 #[test]
 fn write_cell_context_skip_and_value() {
-    let mut ctx = WriteCellContext {
-        sheet_name: "S".to_owned(),
-        row_index: 0,
-        column_index: 0,
-        field: Some("f"),
-        is_head: false,
-        relative_row_index: None,
-        value: CellValue::String("v".to_owned()),
-        skip: false,
-    };
+    let mut ctx = WriteCellContext::new("S", 0, 0, CellValue::String("v".to_owned()));
+    ctx.field = Some("f");
     ctx.skip = true;
     ctx.value = CellValue::Int(42);
     assert!(ctx.skip);
@@ -2119,7 +2337,10 @@ fn annotation_head_style() {
     };
     let col = ExcelColumn::new("f", "F", None, 0, None).with_head_style(style);
     assert!(col.head_style.is_some());
-    assert_eq!(col.head_style.unwrap().horizontal_alignment, Some(ExcelHorizontalAlignment::Center));
+    assert_eq!(
+        col.head_style.unwrap().horizontal_alignment,
+        Some(ExcelHorizontalAlignment::Center)
+    );
 }
 
 #[test]
@@ -2250,8 +2471,7 @@ fn annotation_content_font_style() {
         font_name: Some("Courier"),
         ..ExcelFontStyle::new()
     };
-    let col = ExcelColumn::new("f", "F", None, 0, None)
-        .with_content_font_style(fs);
+    let col = ExcelColumn::new("f", "F", None, 0, None).with_content_font_style(fs);
     assert!(col.content_font_style.is_some());
     let fs = col.content_font_style.unwrap();
     assert_eq!(fs.italic, Some(true));
@@ -2390,10 +2610,22 @@ fn no_head_data_column_width() {
 fn parameter_excel_column_all_fields() {
     let col = ExcelColumn::new("myField", "MyField", Some(5), 100, Some("yyyy-MM-dd"))
         .with_column_width(25)
-        .with_head_style(ExcelCellStyle { horizontal_alignment: Some(ExcelHorizontalAlignment::Center), ..ExcelCellStyle::new() })
-        .with_content_style(ExcelCellStyle { hidden: Some(true), ..ExcelCellStyle::new() })
-        .with_head_font_style(ExcelFontStyle { bold: Some(true), ..ExcelFontStyle::new() })
-        .with_content_font_style(ExcelFontStyle { italic: Some(true), ..ExcelFontStyle::new() });
+        .with_head_style(ExcelCellStyle {
+            horizontal_alignment: Some(ExcelHorizontalAlignment::Center),
+            ..ExcelCellStyle::new()
+        })
+        .with_content_style(ExcelCellStyle {
+            hidden: Some(true),
+            ..ExcelCellStyle::new()
+        })
+        .with_head_font_style(ExcelFontStyle {
+            bold: Some(true),
+            ..ExcelFontStyle::new()
+        })
+        .with_content_font_style(ExcelFontStyle {
+            italic: Some(true),
+            ..ExcelFontStyle::new()
+        });
     assert_eq!(col.field, "myField");
     assert_eq!(col.name, "MyField");
     assert_eq!(col.index, Some(5));
@@ -2412,7 +2644,11 @@ fn parameter_excel_column_all_fields() {
 // --- FillStyle tests ---
 #[test]
 fn fill_style_content_font() {
-    let fs = ExcelFontStyle { bold: Some(true), font_name: Some("Arial"), ..ExcelFontStyle::new() };
+    let fs = ExcelFontStyle {
+        bold: Some(true),
+        font_name: Some("Arial"),
+        ..ExcelFontStyle::new()
+    };
     let col = ExcelColumn::new("f", "F", None, 0, None).with_content_font_style(fs);
     let fs = col.content_font_style.unwrap();
     assert_eq!(fs.bold, Some(true));
@@ -2449,7 +2685,10 @@ fn annotation_excel_property_empty_format() {
 // --- ExcelCellStyle edge cases ---
 #[test]
 fn cell_style_fill_pattern_none() {
-    let style = ExcelCellStyle { fill_pattern: Some(ExcelFillPattern::None), ..ExcelCellStyle::new() };
+    let style = ExcelCellStyle {
+        fill_pattern: Some(ExcelFillPattern::None),
+        ..ExcelCellStyle::new()
+    };
     assert_eq!(style.fill_pattern, Some(ExcelFillPattern::None));
 }
 
@@ -2471,13 +2710,19 @@ fn cell_style_border_all_sides() {
 // --- ExcelFontStyle edge cases ---
 #[test]
 fn font_style_superscript() {
-    let fs = ExcelFontStyle { type_offset: Some(ExcelFontScript::Superscript), ..ExcelFontStyle::new() };
+    let fs = ExcelFontStyle {
+        type_offset: Some(ExcelFontScript::Superscript),
+        ..ExcelFontStyle::new()
+    };
     assert_eq!(fs.type_offset, Some(ExcelFontScript::Superscript));
 }
 
 #[test]
 fn font_style_double_underline() {
-    let fs = ExcelFontStyle { underline: Some(ExcelUnderline::Double), ..ExcelFontStyle::new() };
+    let fs = ExcelFontStyle {
+        underline: Some(ExcelUnderline::Double),
+        ..ExcelFontStyle::new()
+    };
     assert_eq!(fs.underline, Some(ExcelUnderline::Double));
 }
 
@@ -2573,7 +2818,10 @@ fn error_action_all_variants() {
 #[test]
 fn excel_error_io_kinds() {
     let not_found = ExcelError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"));
-    let perm_denied = ExcelError::Io(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "no access"));
+    let perm_denied = ExcelError::Io(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "no access",
+    ));
     assert!(not_found.to_string().contains("missing"));
     assert!(perm_denied.to_string().contains("no access"));
 }
@@ -2589,10 +2837,7 @@ fn write_handler_before_cell_can_skip() {
         }
     }
     let mut h = Skipper;
-    let mut cl = WriteCellContext {
-        sheet_name: "S".to_owned(), row_index: 0, column_index: 0,
-        field: None, is_head: false, relative_row_index: None, value: CellValue::Empty, skip: false,
-    };
+    let mut cl = WriteCellContext::new("S", 0, 0, CellValue::Empty);
     h.before_cell(&mut cl).unwrap();
     assert!(cl.skip);
 }
@@ -2607,10 +2852,7 @@ fn write_handler_before_cell_can_transform() {
         }
     }
     let mut h = Transformer;
-    let mut cl = WriteCellContext {
-        sheet_name: "S".to_owned(), row_index: 0, column_index: 0,
-        field: None, is_head: false, relative_row_index: None, value: CellValue::Int(42), skip: false,
-    };
+    let mut cl = WriteCellContext::new("S", 0, 0, CellValue::Int(42));
     h.before_cell(&mut cl).unwrap();
     assert_eq!(cl.value, CellValue::String("transformed".to_owned()));
 }

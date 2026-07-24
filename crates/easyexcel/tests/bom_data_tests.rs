@@ -57,7 +57,8 @@ impl ReadListener<BomData> for BomReadListener {
         _context: &AnalysisContext,
     ) -> Result<()> {
         // Rust head map is name → index; Java used index → ReadCellData.
-        let mut by_index: Vec<(usize, String)> = head.iter().map(|(k, v)| (*v, k.clone())).collect();
+        let mut by_index: Vec<(usize, String)> =
+            head.iter().map(|(k, v)| (*v, k.clone())).collect();
         by_index.sort_by_key(|(idx, _)| *idx);
         if let Some((_, name)) = by_index.first() {
             self.heads.push(name.clone());
@@ -105,7 +106,11 @@ fn bom_t01_read_csv() {
 }
 
 /// Java `BomDataTest.readAndWriteCsv` — charset + optional withBom.
-fn assert_read_and_write_csv(path: &std::path::Path, charset: Option<&str>, with_bom: Option<bool>) {
+fn assert_read_and_write_csv(
+    path: &std::path::Path,
+    charset: Option<&str>,
+    with_bom: Option<bool>,
+) {
     let mut writer = EasyExcel::write::<BomData>(path);
     if let Some(cs) = charset {
         writer = writer.charset(CsvCharset::new(cs));

@@ -1,6 +1,7 @@
 //! Mirrors Java `com.alibaba.excel.write.metadata.WriteSheet`.
 
 use crate::WriteOptions;
+use crate::metadata::WriteBasicParameter;
 
 /// Mirrors Java `WriteSheet extends WriteBasicParameter`.
 ///
@@ -14,6 +15,8 @@ pub struct WriteSheet {
     pub sheet_name: String,
     /// Mirrors the remaining `WriteBasicParameter` fields.
     pub options: WriteOptions,
+    /// Nullable sheet-level overrides before workbook inheritance.
+    pub parameter: WriteBasicParameter,
 }
 
 impl WriteSheet {
@@ -24,6 +27,7 @@ impl WriteSheet {
             sheet_no: 0,
             sheet_name: String::new(),
             options: WriteOptions::default(),
+            parameter: WriteBasicParameter::default(),
         }
     }
 
@@ -34,6 +38,7 @@ impl WriteSheet {
             sheet_no,
             sheet_name: String::new(),
             options: WriteOptions::default(),
+            parameter: WriteBasicParameter::default(),
         }
     }
 
@@ -44,6 +49,7 @@ impl WriteSheet {
             sheet_no,
             sheet_name: sheet_name.into(),
             options: WriteOptions::default(),
+            parameter: WriteBasicParameter::default(),
         }
     }
 
@@ -75,6 +81,12 @@ impl WriteSheet {
     #[must_use]
     pub const fn options(&self) -> &WriteOptions {
         &self.options
+    }
+
+    /// Returns nullable sheet-level overrides before workbook inheritance.
+    #[must_use]
+    pub const fn parameter(&self) -> &WriteBasicParameter {
+        &self.parameter
     }
 }
 

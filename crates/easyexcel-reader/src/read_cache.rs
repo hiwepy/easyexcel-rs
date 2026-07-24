@@ -2,6 +2,8 @@ use std::cell::RefCell;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+
+#[cfg(test)]
 use std::thread;
 
 use easyexcel_core::{ExcelError, Result};
@@ -36,7 +38,9 @@ pub(crate) trait SharedStringCacheReader: Send + Sync {
 }
 
 /// Unified trait for backward compatibility in tests.
-pub(crate) trait SharedStringCache: SharedStringCacheWriter + SharedStringCacheReader {
+pub(crate) trait SharedStringCache:
+    SharedStringCacheWriter + SharedStringCacheReader
+{
     fn put_and_finish(mut self: Box<Self>) -> Result<Box<dyn SharedStringCacheReader>>
     where
         Self: Sized,
@@ -57,9 +61,7 @@ pub(crate) fn create_cache(
         ReadCacheMode::Auto if xml_size < DEFAULT_MAX_MEMORY_SHARED_STRINGS_BYTES => {
             Ok(Box::new(MemorySharedStringCache::default()))
         }
-        ReadCacheMode::Auto | ReadCacheMode::Disk => {
-            box_disk_cache(ConcurrentDiskCache::new())
-        }
+        ReadCacheMode::Auto | ReadCacheMode::Disk => box_disk_cache(ConcurrentDiskCache::new()),
         ReadCacheMode::Memory => Ok(Box::new(MemorySharedStringCache::default())),
     }
 }
@@ -80,7 +82,9 @@ impl SharedStringCacheWriter for MemorySharedStringCache {
     }
 
     fn finish(self: Box<Self>) -> Result<Box<dyn SharedStringCacheReader>> {
-        Ok(Box::new(MemorySharedStringReader { values: self.values }))
+        Ok(Box::new(MemorySharedStringReader {
+            values: self.values,
+        }))
     }
 }
 
@@ -140,7 +144,48 @@ trait WriteSeek: Write + Seek + Send + Sync {}
 impl<T: Write + Seek + Send + Sync> WriteSeek for T {}
 
 thread_local! {
-    static TLS_READER: RefCell<Option<File>> = const { RefCell::new(None) };
+    static TLS_READER: RefCell<Option<ThreadLocalReader>> = const { RefCell::new(None) };
+}
+
+struct ThreadLocalReader {
+    path: PathBuf,
+    file: File,
+}
+
+/// Clears the current thread's disk-cache file handle.
+///
+/// Java performs this from `ExcelAnalyserImpl.finish()`. Rust cache objects
+/// delete their temporary file through RAII, while this explicit clear closes
+/// the per-thread read handle immediately (and is required on Windows before
+/// the file can be removed).
+pub(crate) fn remove_thread_local_cache() {
+    TLS_READER.with(|cell| {
+        cell.borrow_mut().take();
+    });
+}
+
+fn with_disk_cache_reader<T>(
+    path: &std::path::Path,
+    operation: impl FnOnce(&mut File) -> Result<T>,
+) -> Result<T> {
+    TLS_READER.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let needs_open = guard
+            .as_ref()
+            .is_none_or(|reader| reader.path.as_path() != path);
+        if needs_open {
+            *guard = Some(ThreadLocalReader {
+                path: path.to_path_buf(),
+                file: File::open(path)?,
+            });
+        }
+        operation(
+            &mut guard
+                .as_mut()
+                .expect("thread-local cache reader initialized")
+                .file,
+        )
+    })
 }
 
 impl ConcurrentDiskCache {
@@ -178,9 +223,10 @@ impl ConcurrentDiskCache {
 
 impl SharedStringCacheWriter for ConcurrentDiskCache {
     fn put(&mut self, value: String) -> Result<()> {
-        let writer = self.writer.as_mut().ok_or_else(|| {
-            ExcelError::Format("cache writer already finished".to_owned())
-        })?;
+        let writer = self
+            .writer
+            .as_mut()
+            .ok_or_else(|| ExcelError::Format("cache writer already finished".to_owned()))?;
         let offset = writer.seek(SeekFrom::End(0))?;
         let bytes = value.as_bytes();
         writer.write_all(bytes)?;
@@ -206,9 +252,7 @@ impl SharedStringCacheReader for ConcurrentDiskCache {
         let (offset, length) = self.entries.get(index).copied().ok_or_else(|| {
             ExcelError::Format(format!("shared string index is out of bounds: {index}"))
         })?;
-        TLS_READER.with(|cell| {
-            let mut guard = cell.borrow_mut();
-            let file = guard.get_or_insert_with(|| File::open(&self.path).unwrap());
+        with_disk_cache_reader(&self.path, |file| {
             file.seek(SeekFrom::Start(offset))?;
             let mut bytes = vec![0u8; length];
             file.read_exact(&mut bytes)?;
@@ -236,9 +280,7 @@ impl SharedStringCacheReader for ConcurrentDiskReader {
         let (offset, length) = self.entries.get(index).copied().ok_or_else(|| {
             ExcelError::Format(format!("shared string index is out of bounds: {index}"))
         })?;
-        TLS_READER.with(|cell| {
-            let mut guard = cell.borrow_mut();
-            let file = guard.get_or_insert_with(|| File::open(&self.path).unwrap());
+        with_disk_cache_reader(&self.path, |file| {
             file.seek(SeekFrom::Start(offset))?;
             let mut bytes = vec![0u8; length];
             file.read_exact(&mut bytes)?;
@@ -340,6 +382,23 @@ mod tests {
     }
 
     #[test]
+    fn disk_cache_reopens_the_tls_reader_when_the_cache_path_changes() {
+        remove_thread_local_cache();
+        let mut first = ConcurrentDiskCache::new().expect("first disk cache");
+        first.put("first".to_owned()).expect("first value");
+        assert_eq!(first.get(0).expect("read first cache"), "first");
+
+        let mut second = ConcurrentDiskCache::new().expect("second disk cache");
+        second.put("second".to_owned()).expect("second value");
+        assert_eq!(
+            second.get(0).expect("read second cache"),
+            "second",
+            "the thread-local handle must follow the active cache path"
+        );
+        remove_thread_local_cache();
+    }
+
+    #[test]
     fn disk_cache_concurrent_reads() {
         let mut cache = ConcurrentDiskCache::new().expect("disk cache");
         for i in 0..100 {
@@ -394,7 +453,11 @@ mod tests {
         let path = temporary_file.path().to_path_buf();
         let mut cache = ConcurrentDiskCache {
             _temporary_file: Some(temporary_file),
-            writer: Some(Box::new(FaultyIo { fail_seek: true, fail_read: false, fail_write: false })),
+            writer: Some(Box::new(FaultyIo {
+                fail_seek: true,
+                fail_read: false,
+                fail_write: false,
+            })),
             path,
             entries: Vec::new(),
         };
@@ -404,7 +467,11 @@ mod tests {
         let path = temporary_file.path().to_path_buf();
         let mut cache2 = ConcurrentDiskCache {
             _temporary_file: Some(temporary_file),
-            writer: Some(Box::new(FaultyIo { fail_seek: false, fail_read: false, fail_write: true })),
+            writer: Some(Box::new(FaultyIo {
+                fail_seek: false,
+                fail_read: false,
+                fail_write: true,
+            })),
             path,
             entries: Vec::new(),
         };

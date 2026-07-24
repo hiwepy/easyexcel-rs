@@ -28,6 +28,39 @@ fn token_entry_parses_valid_input_and_rejects_invalid_syntax() {
 }
 
 #[test]
+fn number_format_tokens_carry_java_rounding_mode_into_schema() {
+    let tokens = expand_excel_row_tokens(quote!(
+        struct Amount {
+            #[excel(number_format = "#.##%", rounding_mode = "UNNECESSARY")]
+            value: bigdecimal::BigDecimal,
+        }
+    ))
+    .expect("valid Java number format")
+    .to_string();
+    assert!(tokens.contains("Some (\"#.##%\")"));
+    assert!(tokens.contains("NumberRoundingMode :: Unnecessary"));
+
+    let invalid: DeriveInput = parse_quote! {
+        struct Amount {
+            #[excel(rounding_mode = "BANKERS")]
+            value: i32,
+        }
+    };
+    let Data::Struct(data) = invalid.data else {
+        panic!("expected struct");
+    };
+    let field = data.fields.iter().next().expect("field");
+    let options = parse_field_options(&field.attrs, &quote!(::easyexcel)).expect("parsed literal");
+    assert!(
+        number_rounding_mode_tokens(
+            options.rounding_mode.as_ref().expect("mode"),
+            &quote!(::easyexcel),
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn crate_paths_support_self_renames_and_fallback_lookup() {
     assert_eq!(found_crate_path(FoundCrate::Itself).to_string(), "crate");
     assert_eq!(
@@ -229,6 +262,8 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
                 index = 2,
                 order = 1,
                 format = "%Y-%m-%d",
+                rounding_mode = "HALF_EVEN",
+                use_1904_windowing = true,
                 converter = crate::NameConverter,
                 column_width = 30,
                 head_style(wrapped = true),
@@ -250,6 +285,10 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
     assert!(options.ignore);
     assert_eq!(options.name.expect("name").value(), "姓名");
     assert_eq!(
+        options.rounding_mode.expect("rounding mode").value(),
+        "HALF_EVEN"
+    );
+    assert_eq!(
         options
             .index
             .expect("index")
@@ -266,6 +305,7 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
         1
     );
     assert_eq!(options.format.expect("format").value(), "%Y-%m-%d");
+    assert!(options.use_1904_windowing.expect("windowing").value());
     assert_eq!(options.converter.expect("converter").segments.len(), 2);
     assert_eq!(
         options
@@ -308,6 +348,8 @@ fn field_options_parse_every_supported_value_and_reject_unknown_values() {
         "order = \"first\"",
         "format",
         "format = 1",
+        "use_1904_windowing",
+        "use_1904_windowing = 1",
         "converter",
         "converter = 1",
         "column_width",
@@ -383,6 +425,7 @@ fn expansion_generates_schema_readers_writers_defaults_and_generics() {
         "impl < T >",
         "ExcelRow for User < T >",
         "ExcelColumn :: new",
+        "with_field_type (:: core :: stringify ! (String))",
         "with_column_width (30)",
         "with_head_style",
         "with_content_style",
@@ -428,11 +471,15 @@ fn expansion_generates_schema_readers_writers_defaults_and_generics() {
         .to_string();
     for expected in [
         "Converter :: < String > :: convert_to_rust_data",
-        "ReadConverterContext :: with_formula",
+        "ReadConverterContext :: with_cell_metadata",
         "row . formula (column)",
+        "row . display_value (column)",
+        "row . decimal_value (column)",
         "NameConverter as :: core :: default :: Default",
         "Converter :: < String > :: convert_to_excel_data",
         "WriteConverterContext :: new",
+        "fn to_excel_write_row",
+        "IntoExcelCell :: to_excel_cell (& self . value",
     ] {
         assert!(
             expanded.contains(expected),
@@ -475,6 +522,23 @@ fn expansion_rejects_tuple_structs_and_non_struct_items() {
         struct User { #[excel(unknown)] value: String }
     };
     assert!(expand_excel_row(bad_field_option).is_err());
+}
+
+#[test]
+fn expansion_rejects_duplicate_forced_column_indexes() {
+    let input: DeriveInput = parse_quote! {
+        struct DuplicateIndex {
+            #[excel(index = 2)]
+            first: String,
+            #[excel(index = 2)]
+            second: String,
+        }
+    };
+    let error = expand_excel_row(input).expect_err("duplicate indexes must be rejected");
+    let message = error.to_string();
+    assert!(message.contains("first"));
+    assert!(message.contains("second"));
+    assert!(message.contains("must be different"));
 }
 
 #[test]

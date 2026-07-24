@@ -100,9 +100,7 @@ fn temp_csv_bom_fixtures_readable() {
     for name in ["bom/office_bom.csv", "bom/no_bom.csv", "demo/demo.csv"] {
         let path = fixture(name);
         assert_fixture(&path);
-        let rows = EasyExcel::read_dynamic_sync(&path)
-            .do_read_sync()
-            .unwrap();
+        let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
         assert!(!rows.is_empty(), "{name} must yield rows");
     }
 }
@@ -347,8 +345,6 @@ fn temp_repeat_multiplesheets_fixture() {
 fn temp_no_model_dynamic_row() {
     let path = fixture("demo/demo.csv");
     assert_fixture(&path);
-    let rows: Vec<DynamicRow> = EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap();
+    let rows: Vec<DynamicRow> = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
     assert!(!rows.is_empty());
 }

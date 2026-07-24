@@ -2,9 +2,10 @@
 
 use easyexcel_core::support::ExcelTypeEnum;
 
+use crate::ReadOptions;
+use crate::context::read_sheet::ReadSheet;
 use crate::holder::csv::csv_read_sheet_holder::CsvReadSheetHolder;
 use crate::holder::csv::csv_read_workbook_holder::CsvReadWorkbookHolder;
-use crate::ReadOptions;
 
 use super::analysis_context_impl::AnalysisContextImpl;
 
@@ -34,9 +35,20 @@ impl DefaultCsvReadContext {
     pub fn new(options: &ReadOptions) -> Self {
         Self {
             inner: AnalysisContextImpl::new(ExcelTypeEnum::Csv, options),
-            csv_read_workbook_holder: CsvReadWorkbookHolder::new(),
+            csv_read_workbook_holder: CsvReadWorkbookHolder::from_options(options),
             csv_read_sheet_holder: None,
         }
+    }
+
+    /// Selects the current sheet and materializes the typed CSV holder.
+    pub fn current_sheet(&mut self, read_sheet: &ReadSheet) -> easyexcel_core::Result<()> {
+        self.inner.current_sheet(read_sheet)?;
+        let sheet_no = i32::try_from(read_sheet.sheet_no()).map_err(|_| {
+            easyexcel_core::ExcelError::Format("sheet index exceeds i32 range".to_owned())
+        })?;
+        self.csv_read_sheet_holder =
+            Some(CsvReadSheetHolder::new(sheet_no, read_sheet.sheet_name()));
+        Ok(())
     }
 }
 

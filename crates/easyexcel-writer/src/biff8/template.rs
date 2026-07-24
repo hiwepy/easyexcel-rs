@@ -36,10 +36,11 @@ use cfb::CompoundFile;
 use easyexcel_core::{CellValue, ExcelError, Result};
 
 use super::encode::{
-    encode_rk, encode_unicode_string, BOOLERR, BOUNDSHEET, BOF, BLANK, DIMENSION, DT_WORKSHEET,
-    EOF, LABEL, LABELSST, MAX_RECORD_DATA, NUMBER, RK, SST, XF_GENERAL,
+    BLANK, BOF, BOOLERR, BOUNDSHEET, DIMENSION, DT_WORKSHEET, EOF, LABEL, LABELSST,
+    MAX_RECORD_DATA, MERGECELLS, NUMBER, RK, SST, XF_GENERAL, encode_rk, encode_unicode_string,
+    pack_merge_range,
 };
-use super::{Biff8Cell, Biff8Value};
+use super::{Biff8Cell, Biff8Merge, Biff8Value};
 
 /// One framed BIFF record (`type` + payload).
 #[derive(Debug, Clone)]
@@ -139,23 +140,24 @@ impl Biff8TemplatePackage {
     /// # Errors
     ///
     /// Returns format errors for out-of-range coordinates or unsupported values.
-    pub fn set_cell(&mut self, sheet_name: &str, row: u32, col: usize, cell: Biff8Cell) -> Result<()> {
-        let row = u16::try_from(row).map_err(|_| {
-            ExcelError::Format("BIFF8 supports at most 65536 rows".to_owned())
-        })?;
-        let col = u8::try_from(col).map_err(|_| {
-            ExcelError::Format("BIFF8 supports at most 256 columns".to_owned())
-        })?;
+    pub fn set_cell(
+        &mut self,
+        sheet_name: &str,
+        row: u32,
+        col: usize,
+        cell: Biff8Cell,
+    ) -> Result<()> {
+        let row = u16::try_from(row)
+            .map_err(|_| ExcelError::Format("BIFF8 supports at most 65536 rows".to_owned()))?;
+        let col = u8::try_from(col)
+            .map_err(|_| ExcelError::Format("BIFF8 supports at most 256 columns".to_owned()))?;
         let sheet_index = self.sheet_index(sheet_name)?;
         let sheet = self.sheets[sheet_index].clone();
         let existing = find_cell_record(&self.records, &sheet, row, col);
         let xf = if let Some(index) = existing {
             // Preserve the template cell's XF (styles) when overwriting a value.
             if self.records[index].data.len() >= 6 {
-                u16::from_le_bytes([
-                    self.records[index].data[4],
-                    self.records[index].data[5],
-                ])
+                u16::from_le_bytes([self.records[index].data[4], self.records[index].data[5]])
             } else {
                 cell.xf
             }
@@ -210,6 +212,33 @@ impl Biff8TemplatePackage {
         Ok(next)
     }
 
+    /// Adds one inclusive merge range while preserving all existing BIFF records.
+    ///
+    /// Java `HSSFSheet.addMergedRegionUnsafe` permits multiple MERGECELLS
+    /// records, so a one-range record can be inserted directly before the
+    /// target worksheet EOF without rewriting pre-existing merge tables.
+    pub fn add_merge_range(&mut self, sheet_name: &str, range: Biff8Merge) -> Result<()> {
+        let sheet_index = self.sheet_index(sheet_name)?;
+        let mut data = Vec::with_capacity(10);
+        data.extend_from_slice(&1u16.to_le_bytes());
+        data.extend_from_slice(&pack_merge_range(
+            range.first_row,
+            range.last_row,
+            u16::from(range.first_col),
+            u16::from(range.last_col),
+        ));
+        let insert_at = self.sheets[sheet_index].eof_index;
+        self.records.insert(
+            insert_at,
+            RawRecord {
+                typ: MERGECELLS,
+                data,
+            },
+        );
+        self.adjust_indices_after_insert(sheet_index, insert_at);
+        Ok(())
+    }
+
     /// Serializes the package back to OLE/CFB bytes.
     ///
     /// # Errors
@@ -238,8 +267,7 @@ impl Biff8TemplatePackage {
                     LABEL => decode_label_payload(&record.data),
                     LABELSST => {
                         let (row, col, sst_idx) = decode_labelsst_index(&record.data);
-                        let text = sst_idx
-                            .and_then(|i| sst_strings.get(i as usize).cloned());
+                        let text = sst_idx.and_then(|i| sst_strings.get(i as usize).cloned());
                         (row, col, text)
                     }
                     _ => continue,
@@ -405,7 +433,14 @@ fn cell_value_to_template_cell(value: &CellValue) -> Result<Biff8Cell> {
         CellValue::Bool(flag) => Biff8Value::Bool(*flag),
         CellValue::Int(number) => Biff8Value::Number(*number as f64),
         CellValue::Float(number) => Biff8Value::Number(*number),
-        CellValue::Decimal(number) => Biff8Value::Number(number.to_string().parse().unwrap_or(0.0)),
+        CellValue::Decimal(number) => {
+            let numeric = crate::finite_decimal_f64(number, "BIFF8")?;
+            if crate::decimal_integer_requires_text(number)? {
+                Biff8Value::Text(number.to_plain_string())
+            } else {
+                Biff8Value::Number(numeric)
+            }
+        }
         CellValue::Date(date) => {
             return Ok(Biff8Cell::date_serial(super::date_to_excel_serial(*date)));
         }
@@ -432,17 +467,11 @@ fn encode_cell_record(row: u16, col: u8, xf: u16, value: &Biff8Value) -> Result<
     data.extend_from_slice(&u16::from(col).to_le_bytes());
     data.extend_from_slice(&xf.to_le_bytes());
     match value {
-        Biff8Value::Blank => Ok(RawRecord {
-            typ: BLANK,
-            data,
-        }),
+        Biff8Value::Blank => Ok(RawRecord { typ: BLANK, data }),
         Biff8Value::Bool(flag) => {
             data.push(u8::from(*flag));
             data.push(0);
-            Ok(RawRecord {
-                typ: BOOLERR,
-                data,
-            })
+            Ok(RawRecord { typ: BOOLERR, data })
         }
         Biff8Value::Number(number) => {
             if let Some(rk) = encode_rk(*number) {
@@ -450,10 +479,7 @@ fn encode_cell_record(row: u16, col: u8, xf: u16, value: &Biff8Value) -> Result<
                 Ok(RawRecord { typ: RK, data })
             } else {
                 data.extend_from_slice(&number.to_le_bytes());
-                Ok(RawRecord {
-                    typ: NUMBER,
-                    data,
-                })
+                Ok(RawRecord { typ: NUMBER, data })
             }
         }
         Biff8Value::Text(text) => {
@@ -465,10 +491,7 @@ fn encode_cell_record(row: u16, col: u8, xf: u16, value: &Biff8Value) -> Result<
                 ));
             }
             data.extend_from_slice(&encoded);
-            Ok(RawRecord {
-                typ: LABEL,
-                data,
-            })
+            Ok(RawRecord { typ: LABEL, data })
         }
     }
 }
@@ -488,17 +511,13 @@ fn encode_label_record(row: u16, col: u8, xf: u16, text: &str) -> Result<RawReco
         ));
     }
     data.extend_from_slice(&encoded);
-    Ok(RawRecord {
-        typ: LABEL,
-        data,
-    })
+    Ok(RawRecord { typ: LABEL, data })
 }
 
 fn read_workbook_stream(bytes: &[u8]) -> Result<(String, Vec<u8>)> {
     let cursor = Cursor::new(bytes.to_vec());
-    let mut cf = CompoundFile::open(cursor).map_err(|error| {
-        ExcelError::Format(format!("cannot open xls OLE container: {error}"))
-    })?;
+    let mut cf = CompoundFile::open(cursor)
+        .map_err(|error| ExcelError::Format(format!("cannot open xls OLE container: {error}")))?;
     for path in ["/Workbook", "/Book", "Workbook", "Book"] {
         if cf.is_stream(path) {
             let mut stream = cf.open_stream(path).map_err(|error| {
@@ -587,7 +606,9 @@ fn discover_sheets(records: &[RawRecord]) -> Result<Vec<SheetSpan>> {
     while index < records.len() {
         let record = &records[index];
         if record.typ == BOF && is_worksheet_bof(&record.data) {
-            let name = name_iter.next().unwrap_or_else(|| format!("Sheet{}", sheets.len() + 1));
+            let name = name_iter
+                .next()
+                .unwrap_or_else(|| format!("Sheet{}", sheets.len() + 1));
             let bof_index = index;
             let mut dimension_index = None;
             let mut eof_index = None;
@@ -648,7 +669,7 @@ fn decode_boundsheet_name(data: &[u8]) -> Result<String> {
             .collect();
         Ok(String::from_utf16_lossy(&units))
     }
-    }
+}
 
 /// Parses the Shared String Table (SST) BIFF record if present,
 /// returning a Vec of all unique strings indexed by position.
@@ -656,10 +677,16 @@ fn parse_sst(records: &[RawRecord]) -> Vec<String> {
     for record in records {
         if record.typ == SST && record.data.len() >= 8 {
             let _cst_total = u32::from_le_bytes([
-                record.data[0], record.data[1], record.data[2], record.data[3],
+                record.data[0],
+                record.data[1],
+                record.data[2],
+                record.data[3],
             ]);
             let cst_unique = u32::from_le_bytes([
-                record.data[4], record.data[5], record.data[6], record.data[7],
+                record.data[4],
+                record.data[5],
+                record.data[6],
+                record.data[7],
             ]);
             let body = &record.data[8..];
             let mut strings = Vec::with_capacity(cst_unique as usize);
@@ -724,9 +751,7 @@ fn decode_label_payload(data: &[u8]) -> (u16, u8, Option<String>) {
     let text = if string_data.len() >= byte_len + 1 {
         // BIFF8 short string: leading byte is length, followed by bytes
         let len = string_data[0] as usize;
-        if len <= string_data.len().saturating_sub(1)
-            && len <= byte_len
-        {
+        if len <= string_data.len().saturating_sub(1) && len <= byte_len {
             let raw = &string_data[1..=len.min(string_data.len().saturating_sub(1))];
             String::from_utf8_lossy(raw).into_owned()
         } else {
@@ -735,7 +760,11 @@ fn decode_label_payload(data: &[u8]) -> (u16, u8, Option<String>) {
     } else {
         String::new()
     };
-    (row, col as u8, if text.is_empty() { None } else { Some(text) })
+    (
+        row,
+        col as u8,
+        if text.is_empty() { None } else { Some(text) },
+    )
 }
 
 /// Decodes a BIFF8 LABELSST record payload, returning `(row, col, text)`.
@@ -796,12 +825,7 @@ fn cell_coords(record: &RawRecord) -> Option<(u16, u8)> {
     }
 }
 
-fn find_cell_record(
-    records: &[RawRecord],
-    sheet: &SheetSpan,
-    row: u16,
-    col: u8,
-) -> Option<usize> {
+fn find_cell_record(records: &[RawRecord], sheet: &SheetSpan, row: u16, col: u8) -> Option<usize> {
     for index in sheet.bof_index..=sheet.eof_index {
         if cell_coords(&records[index]) == Some((row, col)) {
             return Some(index);
@@ -884,12 +908,7 @@ mod tests {
 
         // Overwrite one cell and append another — other cells must survive.
         package
-            .set_cell(
-                "Sheet1",
-                1,
-                0,
-                Biff8Cell::general(Biff8Value::Number(99.0)),
-            )
+            .set_cell("Sheet1", 1, 0, Biff8Cell::general(Biff8Value::Number(99.0)))
             .unwrap();
         package
             .set_cell(

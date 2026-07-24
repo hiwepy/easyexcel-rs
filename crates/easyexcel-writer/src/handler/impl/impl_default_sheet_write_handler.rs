@@ -16,9 +16,7 @@ impl DefaultWriteSheetHandler {
     /// Creates the handler. (Java `DefaultWriteSheetHandler()`)
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            initialized: false,
-        }
+        Self { initialized: false }
     }
 
     /// Returns whether the sheet has been initialized.

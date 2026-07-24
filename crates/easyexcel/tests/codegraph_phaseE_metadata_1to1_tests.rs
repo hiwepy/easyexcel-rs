@@ -3,9 +3,7 @@
 //!
 //! Java references:
 //! - com.alibaba.excel.read.builder.ExcelReaderSheetBuilder
-//! - com.alibaba.excel.read.builder.ExcelReaderTableBuilder
 //! - com.alibaba.excel.read.metadata.ReadSheet
-//! - com.alibaba.excel.read.metadata.ReadTable
 //! - com.alibaba.excel.read.metadata.ReadWorkbook
 //! - com.alibaba.excel.write.metadata.WriteSheet
 //! - com.alibaba.excel.write.metadata.WriteTable
@@ -74,6 +72,21 @@ mod excel_reader_sheet_builder_test {
         let b = ExcelReaderSheetBuilder::new().sheet_no(2);
         assert_eq!(b.parameter().sheet_no(), 2);
     }
+
+    /// Java: name-only sheet selection leaves `sheetNo` null and carries
+    /// inherited read parameters into the built `ReadSheet`.
+    #[test]
+    fn t08_name_only_and_basic_parameters07() {
+        let sheet = ExcelReaderSheetBuilder::new()
+            .sheet_name("Sheet2")
+            .head_row_number(2)
+            .use_scientific_format(true)
+            .build();
+        assert!(!sheet.has_sheet_no());
+        assert_eq!(sheet.sheet_name(), "Sheet2");
+        assert_eq!(sheet.head_row_number(), Some(2));
+        assert_eq!(sheet.use_scientific_format(), Some(true));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -141,11 +154,14 @@ mod read_sheet_test {
     /// Java: `copyBasicParameter(ReadSheet other)`.
     #[test]
     fn t08_copy_basic_parameter07() {
-        let mut a = ReadSheet::default_construction();
-        let b = ReadSheet::with_name(2, "B");
+        let mut a = ReadSheet::with_name(1, "A");
+        let mut b = ReadSheet::with_name(2, "B");
+        b.set_head_row_number(2).set_use_scientific_format(true);
         a.copy_basic_parameter(&b);
-        assert_eq!(a.sheet_no(), 2);
-        assert_eq!(a.sheet_name(), "B");
+        assert_eq!(a.sheet_no(), 1);
+        assert_eq!(a.sheet_name(), "A");
+        assert_eq!(a.head_row_number(), Some(2));
+        assert_eq!(a.use_scientific_format(), Some(true));
     }
 
     /// Java: `toString()` format.
@@ -384,28 +400,28 @@ mod write_workbook_test {
 }
 
 // ---------------------------------------------------------------------------
-// ExcelReaderTableBuilder
+// ExcelReaderTableBuilder (legacy compatibility; absent from Java 4.0.3)
 // ---------------------------------------------------------------------------
 
 mod excel_reader_table_builder_test {
-    //! Mirrors ExcelReaderTableBuilder
+    //! Preserves the pre-4.x `ExcelReaderTableBuilder` compatibility surface.
     use easyexcel_reader::builder::excel_reader_table_builder::ExcelReaderTableBuilder;
 
-    /// Java: `ExcelReaderTableBuilder()` default ctor.
+    /// Legacy Java: `ExcelReaderTableBuilder()` default ctor.
     #[test]
     fn t01_default_ctor07() {
         let b = ExcelReaderTableBuilder::new();
         assert!(b.table_no.is_none());
     }
 
-    /// Java: `tableNo(Integer)` setter.
+    /// Legacy Java: `tableNo(Integer)` setter.
     #[test]
     fn t02_table_no_setter07() {
         let b = ExcelReaderTableBuilder::new().table_no(2);
         assert_eq!(b.table_no, Some(2));
     }
 
-    /// Java: `build()` returns a ReadTable.
+    /// Legacy Java: `build()` returns a ReadTable.
     #[test]
     fn t03_build_returns_read_table07() {
         let b = ExcelReaderTableBuilder::new().table_no(3);
@@ -413,21 +429,21 @@ mod excel_reader_table_builder_test {
         assert_eq!(t.table_no(), 3);
     }
 
-    /// Java: `parameter()` returns same as `build()`.
+    /// Legacy Java: `parameter()` returns same as `build()`.
     #[test]
     fn t04_parameter_returns_read_table07() {
         let b = ExcelReaderTableBuilder::new().table_no(4);
         assert_eq!(b.parameter().table_no(), 4);
     }
 
-    /// Java: `headRowNumber(Integer)` inherited setter.
+    /// Legacy Java: `headRowNumber(Integer)` inherited setter.
     #[test]
     fn t05_head_row_number_setter07() {
         let b = ExcelReaderTableBuilder::new().head_row_number(1);
         assert_eq!(b.head_row_number, Some(1));
     }
 
-    /// Java: `useScientificFormat(Boolean)` inherited setter.
+    /// Legacy Java: `useScientificFormat(Boolean)` inherited setter.
     #[test]
     fn t06_use_scientific_format_setter07() {
         let b = ExcelReaderTableBuilder::new().use_scientific_format(true);

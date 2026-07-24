@@ -1,7 +1,7 @@
 //! Mirrors Java `com.alibaba.excel.metadata.ConfigurationHolder` and `Holder`.
 
-use crate::Holder as HolderEnum;
 use crate::ConverterRegistry;
+use crate::Holder as HolderEnum;
 
 use super::global_configuration::GlobalConfiguration;
 

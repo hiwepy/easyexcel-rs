@@ -7,8 +7,9 @@ use crate::comment_data::CommentData;
 use crate::excel_cell_style::ExcelCellStyle;
 use crate::excel_font_style::ExcelFontStyle;
 use crate::hyperlink_data::HyperlinkData;
-use crate::metadata::property::data_validation_property::ExcelDataValidationMeta;
 use crate::metadata::property::LoopMergeProperty;
+use crate::metadata::property::NumberRoundingMode;
+use crate::metadata::property::data_validation_property::ExcelDataValidationMeta;
 use crate::write_cell_data::WriteCellData;
 
 /// Static metadata for one Rust struct field and Excel column.
@@ -20,6 +21,11 @@ use crate::write_cell_data::WriteCellData;
 pub struct ExcelColumn {
     /// Rust field name. (Java `Head.fieldName`)
     pub field: &'static str,
+    /// Declared Rust field type. (Java `Head.field.getType()`)
+    ///
+    /// Derive-generated schemas populate this with `stringify!(FieldType)`.
+    /// Manually constructed schemas leave it unset unless explicitly supplied.
+    pub field_type: Option<&'static str>,
     /// Excel header name. (Java `Head.headNameList[0]`)
     pub name: &'static str,
     /// Explicit zero-based column index. (Java `Head.forceIndex` + `index`)
@@ -28,6 +34,11 @@ pub struct ExcelColumn {
     pub order: i32,
     /// Optional date or number format. (Java `@ExcelProperty.format`)
     pub format: Option<&'static str>,
+    /// Java `@NumberFormat.roundingMode`; defaults to `HALF_UP`.
+    pub number_rounding_mode: Option<NumberRoundingMode>,
+    /// Field-level override for Excel's 1904 date system.
+    /// (Java `@DateTimeFormat.use1904windowing`)
+    pub use_1904_windowing: Option<bool>,
     /// Optional annotation-driven column width in Excel character units. (Java `ColumnWidth`)
     pub column_width: Option<u16>,
     /// Field-level header cell style. (Java `@HeadStyle`)
@@ -74,10 +85,13 @@ impl ExcelColumn {
     ) -> Self {
         Self {
             field,
+            field_type: None,
             name,
             index,
             order,
             format,
+            number_rounding_mode: None,
+            use_1904_windowing: None,
             column_width: None,
             head_style: None,
             content_style: None,
@@ -92,6 +106,29 @@ impl ExcelColumn {
             conditional_format: None,
             auto_filter: false,
         }
+    }
+
+    /// Adds Java-compatible number rounding metadata.
+    #[must_use]
+    pub const fn with_number_rounding_mode(mut self, mode: NumberRoundingMode) -> Self {
+        self.number_rounding_mode = Some(mode);
+        self
+    }
+
+    /// Adds the declared Rust field type.
+    ///
+    /// Mirrors Java `Head.field.getType()` / `originalFieldClass`.
+    #[must_use]
+    pub const fn with_field_type(mut self, field_type: &'static str) -> Self {
+        self.field_type = Some(field_type);
+        self
+    }
+
+    /// Adds the field-level `@DateTimeFormat.use1904windowing` override.
+    #[must_use]
+    pub const fn with_use_1904_windowing(mut self, enabled: bool) -> Self {
+        self.use_1904_windowing = Some(enabled);
+        self
     }
 
     /// Adds annotation-driven column width. (Java `@ColumnWidth`)

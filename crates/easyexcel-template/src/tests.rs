@@ -809,11 +809,7 @@ fn repeated_fill_reuses_java_cursor_when_direction_changes() -> Result<()> {
     );
     let mut writer = ExcelTemplateWriter::new(&template, &output)?;
     writer
-        .fill_list_on_sheet(
-            &TemplateSheet::name("纵转横"),
-            &first,
-            FillConfig::new(),
-        )?
+        .fill_list_on_sheet(&TemplateSheet::name("纵转横"), &first, FillConfig::new())?
         .fill_list_on_sheet(
             &TemplateSheet::name("纵转横"),
             &second,
@@ -824,17 +820,11 @@ fn repeated_fill_reuses_java_cursor_when_direction_changes() -> Result<()> {
             &first,
             FillConfig::new().direction(FillDirection::Horizontal),
         )?
-        .fill_list_on_sheet(
-            &TemplateSheet::name("横转纵"),
-            &second,
-            FillConfig::new(),
-        )?
+        .fill_list_on_sheet(&TemplateSheet::name("横转纵"), &second, FillConfig::new())?
         .finish()?;
 
     let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
-    let vertical_then_horizontal = workbook
-        .worksheet_range("纵转横")
-        .map_err(test_error)?;
+    let vertical_then_horizontal = workbook.worksheet_range("纵转横").map_err(test_error)?;
     assert_eq!(
         vertical_then_horizontal.get((0, 0)),
         Some(&Data::String("A".to_owned()))
@@ -852,9 +842,7 @@ fn repeated_fill_reuses_java_cursor_when_direction_changes() -> Result<()> {
         Some(&Data::String("D".to_owned()))
     );
 
-    let horizontal_then_vertical = workbook
-        .worksheet_range("横转纵")
-        .map_err(test_error)?;
+    let horizontal_then_vertical = workbook.worksheet_range("横转纵").map_err(test_error)?;
     assert_eq!(
         horizontal_then_vertical.get((0, 0)),
         Some(&Data::String("A".to_owned()))
@@ -884,9 +872,7 @@ fn repeated_fill_applies_each_calls_force_row_and_auto_style_config() -> Result<
     worksheet
         .write_string_with_format(0, 0, "{items.name}", &Format::new().set_bold())
         .map_err(test_error)?;
-    worksheet
-        .write_string(1, 0, "Footer")
-        .map_err(test_error)?;
+    worksheet.write_string(1, 0, "Footer").map_err(test_error)?;
     workbook.save(&template).map_err(test_error)?;
 
     let mut writer = ExcelTemplateWriter::new(&template, &output)?;
@@ -903,19 +889,14 @@ fn repeated_fill_applies_each_calls_force_row_and_auto_style_config() -> Result<
                     TemplateData::new().with("name", "C"),
                 ],
             ),
-            FillConfig::new()
-                .force_new_row(true)
-                .auto_style(false),
+            FillConfig::new().force_new_row(true).auto_style(false),
         )?
         .finish()?;
 
     let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
     let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
     for (row, value) in [(0, "A"), (1, "B"), (2, "C"), (3, "Footer")] {
-        assert_eq!(
-            range.get((row, 0)),
-            Some(&Data::String(value.to_owned()))
-        );
+        assert_eq!(range.get((row, 0)), Some(&Data::String(value.to_owned())));
     }
 
     let entries = load_entries(&output)?;
@@ -938,10 +919,7 @@ fn repeated_fill_applies_each_calls_force_row_and_auto_style_config() -> Result<
 
 #[test]
 fn collection_cursor_defensive_paths_and_shifted_cached_templates_are_covered() -> Result<()> {
-    let wrapper = FillWrapper::named(
-        "items",
-        [TemplateData::new().with("name", "value")],
-    );
+    let wrapper = FillWrapper::named("items", [TemplateData::new().with("name", "value")]);
     let fill = PendingCollectionFill {
         wrapper: wrapper.clone(),
         config: FillConfig::new(),
@@ -953,14 +931,15 @@ fn collection_cursor_defensive_paths_and_shifted_cached_templates_are_covered() 
         Err(ExcelError::Format(message)) if message.contains("worksheet part")
     ));
     let mut invalid_utf8 = vec![synthetic_entry("xl/worksheets/sheet1.xml", vec![0xff])];
-    assert!(replace_collection_fills_in_sheet(
-        &mut invalid_utf8,
-        "xl/worksheets/sheet1.xml",
-        std::slice::from_ref(&fill)
-    )
-    .is_err());
-    let worksheet_without_marker =
-        r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>plain</t></is></c></row></sheetData></worksheet>"#;
+    assert!(
+        replace_collection_fills_in_sheet(
+            &mut invalid_utf8,
+            "xl/worksheets/sheet1.xml",
+            std::slice::from_ref(&fill)
+        )
+        .is_err()
+    );
+    let worksheet_without_marker = r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>plain</t></is></c></row></sheetData></worksheet>"#;
     let mut entries_without_marker = vec![synthetic_entry(
         "xl/worksheets/sheet1.xml",
         worksheet_without_marker.as_bytes().to_vec(),
@@ -1018,10 +997,7 @@ fn collection_cursor_defensive_paths_and_shifted_cached_templates_are_covered() 
     )];
     let fills = [
         PendingCollectionFill {
-            wrapper: FillWrapper::named(
-                "b",
-                [TemplateData::new().with("name", "B1")],
-            ),
+            wrapper: FillWrapper::named("b", [TemplateData::new().with("name", "B1")]),
             config: FillConfig::new(),
             order: 0,
         },
@@ -1037,19 +1013,12 @@ fn collection_cursor_defensive_paths_and_shifted_cached_templates_are_covered() 
             order: 1,
         },
         PendingCollectionFill {
-            wrapper: FillWrapper::named(
-                "b",
-                [TemplateData::new().with("name", "B2")],
-            ),
+            wrapper: FillWrapper::named("b", [TemplateData::new().with("name", "B2")]),
             config: FillConfig::new(),
             order: 2,
         },
     ];
-    replace_collection_fills_in_sheet(
-        &mut entries,
-        "xl/worksheets/sheet1.xml",
-        &fills,
-    )?;
+    replace_collection_fills_in_sheet(&mut entries, "xl/worksheets/sheet1.xml", &fills)?;
     let xml = std::str::from_utf8(&entries[0].bytes).map_err(test_error)?;
     assert!(xml.contains("A2"));
     assert!(xml.contains("B2"));

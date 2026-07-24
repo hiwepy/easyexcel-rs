@@ -28,13 +28,27 @@ pub enum LabelSstCell {
 
 /// Mirrors Java `LabelSstRecordHandler`.
 #[derive(Debug, Default)]
-pub struct LabelSstRecordHandler;
+pub struct LabelSstRecordHandler {
+    /// Most recently parsed raw LabelSST placement and cache index.
+    pub last_reference: Option<LabelSstReference>,
+}
+
+/// Raw fields carried by a BIFF `LabelSST` record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LabelSstReference {
+    /// Zero-based row.
+    pub row: u32,
+    /// Zero-based column.
+    pub column: usize,
+    /// Shared-string table index.
+    pub sst_index: usize,
+}
 
 impl LabelSstRecordHandler {
     /// Creates an idle handler.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
     /// Java `LabelSstRecordHandler.processRecord`.
@@ -74,9 +88,14 @@ impl XlsRecordHandler for LabelSstRecordHandler {
         if record_sid != LABEL_SST_SID || data.len() < 10 {
             return;
         }
-        let _row = u16::from_le_bytes([data[0], data[1]]);
-        let _col = u16::from_le_bytes([data[2], data[3]]);
-        let _sst = u32::from_le_bytes([data[6], data[7], data[8], data[9]]);
+        let row = u16::from_le_bytes([data[0], data[1]]) as u32;
+        let column = u16::from_le_bytes([data[2], data[3]]) as usize;
+        let sst_index = u32::from_le_bytes([data[6], data[7], data[8], data[9]]) as usize;
+        self.last_reference = Some(LabelSstReference {
+            row,
+            column,
+            sst_index,
+        });
     }
 }
 

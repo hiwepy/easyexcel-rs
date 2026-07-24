@@ -27,7 +27,9 @@ impl BufRead for FaultyBufRead {
         Err(std::io::Error::other("injected probe failure"))
     }
 
-    fn consume(&mut self, amount: usize) { let _ = amount; }
+    fn consume(&mut self, amount: usize) {
+        let _ = amount;
+    }
 }
 
 fn test_error(error: impl std::fmt::Display) -> ExcelError {
@@ -61,6 +63,7 @@ impl ExcelRow for TestRow {
                 column_index: Some(0),
                 field: "value",
                 format: None,
+                use_1904_windowing: false,
             })
             .map(|value| vec![value])
     }
@@ -278,7 +281,11 @@ impl ReadListener<TestRow> for ExtraProbe {
         Ok(())
     }
 
-    fn extra(&mut self, extra: &easyexcel_core::CellExtra, context: &AnalysisContext) -> Result<()> {
+    fn extra(
+        &mut self,
+        extra: &easyexcel_core::CellExtra,
+        context: &AnalysisContext,
+    ) -> Result<()> {
         self.record_custom(context);
         self.events.push("extra");
         self.extras.push(extra.clone());
@@ -508,7 +515,7 @@ fn calamine_values_map_to_every_core_cell_variant() {
         ),
         (
             DataRef::Error(CellErrorType::Div0),
-            CellValue::String("#DIV/0!".to_owned()),
+            CellValue::Error("#DIV/0!".to_owned()),
         ),
     ];
     for (input, expected) in cases {
@@ -714,7 +721,7 @@ fn legacy_range_read_preserves_coordinates_headers_and_empty_sheets() -> Result<
         "Empty",
         &options(),
         &std::collections::HashMap::new(),
-            &mut TypedRowConsumer::<TestRow> {
+        &mut TypedRowConsumer::<TestRow> {
             listener: &mut probe,
         },
     )?;
@@ -1158,7 +1165,10 @@ fn xlsx_extra_callbacks_follow_rows_and_java_listener_control_flow() -> Result<(
         &mut comments_only,
     )?;
     assert_eq!(comments_only.extras.len(), 1);
-    assert_eq!(comments_only.extras[0].extra_type(), easyexcel_core::CellExtraType::Comment);
+    assert_eq!(
+        comments_only.extras[0].extra_type(),
+        easyexcel_core::CellExtraType::Comment
+    );
 
     let mut stopped = ExtraProbe {
         stop_after_extra: true,
@@ -1330,7 +1340,7 @@ fn xlsx_stream_matches_java_cell_types_cached_formulas_dates_and_trimming() -> R
     assert_eq!(probe.0[0].cells[4], CellValue::Float(3.5));
     assert_eq!(probe.0[0].cells[5], CellValue::Float(45.5));
     assert_eq!(probe.0[0].cells[6], CellValue::String("cached".to_owned()));
-    assert_eq!(probe.0[0].cells[7], CellValue::String("#DIV/0!".to_owned()));
+    assert_eq!(probe.0[0].cells[7], CellValue::Error("#DIV/0!".to_owned()));
     assert_eq!(probe.0[0].cells[8].as_text(), "1904-01-02 00:00:00");
     assert_eq!(
         probe.0[0].formulas,

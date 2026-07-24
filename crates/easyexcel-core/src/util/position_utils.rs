@@ -18,8 +18,14 @@ pub fn get_row_by_row_tagt(row_tag: &str) -> u32 {
 /// The result is returned 0-based to match the Rust internal indexing.
 #[must_use]
 pub fn get_row(cell_ref: &str) -> u32 {
-    let digits: String = cell_ref.chars().skip_while(|c| c.is_ascii_alphabetic()).collect();
-    digits.parse::<u32>().map(|n| n.saturating_sub(1)).unwrap_or(0)
+    let digits: String = cell_ref
+        .chars()
+        .skip_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    digits
+        .parse::<u32>()
+        .map(|n| n.saturating_sub(1))
+        .unwrap_or(0)
 }
 
 /// Mirrors `com.alibaba.excel.util.PositionUtils#getCol`.

@@ -32,7 +32,10 @@ pub fn excel_download_response_from_bytes(file_name: &str, bytes: Vec<u8>) -> Ht
         crate::headers::excel_xlsx_attachment_headers(file_name);
     HttpResponse::Ok()
         .insert_header((actix_web::http::header::CONTENT_TYPE, content_type))
-        .insert_header((actix_web::http::header::CONTENT_DISPOSITION, content_disposition))
+        .insert_header((
+            actix_web::http::header::CONTENT_DISPOSITION,
+            content_disposition,
+        ))
         .body(bytes)
 }
 
@@ -59,11 +62,9 @@ where
 pub fn excel_download_error_response(body: ExcelDownloadErrorBody) -> HttpResponse {
     HttpResponse::InternalServerError()
         .content_type("application/json; charset=utf-8")
-        .body(
-            serde_json::to_string(&body).unwrap_or_else(|_| {
-                r#"{"status":"failure","message":"下载文件失败JSON序列化错误"}"#.to_owned()
-            }),
-        )
+        .body(serde_json::to_string(&body).unwrap_or_else(|_| {
+            r#"{"status":"failure","message":"下载文件失败JSON序列化错误"}"#.to_owned()
+        }))
 }
 
 /// 尝试生成 XLSX 附件；失败时自动降级为 JSON 错误体。
@@ -79,6 +80,8 @@ where
 {
     match write_rows_to_bytes::<T, _>(sheet_name, rows) {
         Ok(bytes) => excel_download_response_from_bytes(file_name, bytes),
-        Err(error) => excel_download_error_response(ExcelDownloadErrorBody::download_failed(&error)),
+        Err(error) => {
+            excel_download_error_response(ExcelDownloadErrorBody::download_failed(&error))
+        }
     }
 }

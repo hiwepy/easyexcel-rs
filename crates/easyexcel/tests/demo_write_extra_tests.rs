@@ -89,11 +89,13 @@ fn demo_write_complex_head_write() {
         .sheet("模板")
         .do_write(write_demo_data())
         .unwrap();
-    assert!(!EasyExcel::read_dynamic_sync(&path)
-        .head_row_number(0)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_dynamic_sync(&path)
+            .head_row_number(0)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Java `WriteTest.converterWrite`.
@@ -133,7 +135,11 @@ fn demo_write_converter_write() {
 #[test]
 fn demo_write_image_write() {
     let img = fixture("converter/img.jpg");
-    assert!(img.exists(), "required Java fixture missing: {}", img.display());
+    assert!(
+        img.exists(),
+        "required Java fixture missing: {}",
+        img.display()
+    );
     let bytes = std::fs::read(&img).unwrap();
 
     #[derive(Debug, Clone, ExcelRow)]
@@ -191,13 +197,16 @@ fn demo_write_write_cell_data_write() {
                 .hyperlink_type(HyperlinkType::Url),
         ),
         comment_data: WriteCellData::from_string("备注的单元格信息").comment_data(
-            CommentData::new().author("Jiaju Zhuang").text("这是一个备注").anchor(
-                ClientAnchorData::new().coordinates(
-                    CoordinateData::new()
-                        .relative_last_column_index(1)
-                        .relative_last_row_index(1),
+            CommentData::new()
+                .author("Jiaju Zhuang")
+                .text("这是一个备注")
+                .anchor(
+                    ClientAnchorData::new().coordinates(
+                        CoordinateData::new()
+                            .relative_last_column_index(1)
+                            .relative_last_row_index(1),
+                    ),
                 ),
-            ),
         ),
         formula_data: WriteCellData::new(CellValue::Empty)
             .formula_data(FormulaData::new("REPLACE(123456789,1,1,2)")),
@@ -207,10 +216,12 @@ fn demo_write_write_cell_data_write() {
         .sheet("模板")
         .do_write(vec![row])
         .unwrap();
-    assert!(!EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_dynamic_sync(&path)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Java `WriteTest.widthAndHeightWrite`.
@@ -336,17 +347,14 @@ fn demo_write_custom_handler_write() {
     }
     impl WriteHandler for CountingHandler {
         fn after_workbook(&mut self, _ctx: &WriteWorkbookContext) -> easyexcel::Result<()> {
-            self.hits
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         }
     }
     let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let path = temp_path("customHandlerWrite.xlsx");
     EasyExcel::write::<WriteDemoData>(&path)
-        .register_write_handler(CountingHandler {
-            hits: hits.clone(),
-        })
+        .register_write_handler(CountingHandler { hits: hits.clone() })
         .sheet("模板")
         .do_write(write_demo_data())
         .unwrap();

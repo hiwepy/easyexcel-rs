@@ -5,13 +5,15 @@ use std::io::{self, Cursor, Read as _, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use calamine::{Data, Dimensions, Reader, Xls, Xlsx, open_workbook};
+use calamine::{Data, DataType, Dimensions, Reader, Xls, Xlsx, open_workbook};
 use chrono::NaiveDate;
+use easyexcel_core::metadata::{CellRange, RowHeightProperty};
 use easyexcel_core::{
-    BigDecimal, ClientAnchorData, CoordinateData, ImageData, ImageType, IntoExcelCell,
-    WriteCellData,
+    BigDecimal, ClientAnchorData, CoordinateData, DynamicRow, DynamicValue, HeadKind, ImageData,
+    ImageType, IntoExcelCell, OnceAbsoluteMergeProperty, WriteCellData,
 };
 use tempfile::tempdir;
 use zip::ZipArchive;
@@ -283,6 +285,33 @@ struct DimensionRow;
 
 struct StyledAnnotationRow;
 
+struct AnnotationHandlerRow(&'static str);
+
+impl ExcelRow for AnnotationHandlerRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("value", "Value", Some(0), 0, None)
+            .with_column_width(18)
+            .with_loop_merge(easyexcel_core::LoopMergeProperty::new(2, 1))];
+        COLUMNS
+    }
+
+    fn write_metadata() -> &'static ExcelWriteMetadata {
+        const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new()
+            .head_row_height(31)
+            .content_row_height(24)
+            .once_absolute_merge(OnceAbsoluteMergeProperty::new(10, 10, 0, 1));
+        &METADATA
+    }
+
+    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+        Ok(Self(""))
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![CellValue::String(self.0.to_owned())])
+    }
+}
+
 impl ExcelRow for StyledAnnotationRow {
     fn schema() -> &'static [ExcelColumn] {
         const FIELD_HEAD_STYLE: ExcelCellStyle = ExcelCellStyle {
@@ -359,6 +388,452 @@ impl ExcelRow for StyledAnnotationRow {
             CellValue::String("type".to_owned()),
         ])
     }
+}
+
+struct OverrideAnnotationDimensions;
+
+impl WriteHandler for OverrideAnnotationDimensions {
+    fn order(&self) -> i32 {
+        easyexcel_core::constant::order_constant::DEFINE_STYLE
+    }
+
+    fn style_column_width(&self, _column_index: usize) -> Option<u16> {
+        Some(27)
+    }
+
+    fn style_head_row_height(&self) -> Option<u16> {
+        Some(40)
+    }
+
+    fn style_content_row_height(&self) -> Option<u16> {
+        Some(36)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ContextStringConverter(&'static str);
+
+impl Converter<String> for ContextStringConverter {
+    fn convert_to_excel_data(
+        &self,
+        context: &easyexcel_core::WriteConverterContext<'_, String>,
+    ) -> Result<WriteCellData> {
+        Ok(WriteCellData::from_string(format!(
+            "{}:{}",
+            self.0,
+            context.value()
+        )))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ContextI32Converter(&'static str);
+
+impl Converter<i32> for ContextI32Converter {
+    fn convert_to_excel_data(
+        &self,
+        context: &easyexcel_core::WriteConverterContext<'_, i32>,
+    ) -> Result<WriteCellData> {
+        Ok(WriteCellData::from_string(format!(
+            "{}:{}",
+            self.0,
+            context.value()
+        )))
+    }
+}
+
+struct ConverterMapProbe(Arc<Mutex<Vec<(String, String)>>>);
+
+impl WriteHandler for ConverterMapProbe {
+    fn after_cell_data_converted(&mut self, context: &WriteCellContext) -> Result<()> {
+        if context.is_head {
+            return Ok(());
+        }
+        let registry = context
+            .write_context()
+            .current_write_holder()
+            .converter_map();
+        let column = ExcelColumn::new("value", "Value", Some(0), 0, None);
+        let convert_context = easyexcel_core::ConvertContext {
+            sheet_name: context.sheet_name.clone(),
+            row_index: context.row_index,
+            column_index: Some(usize::from(context.column_index)),
+            field: "value",
+            format: None,
+            use_1904_windowing: false,
+        };
+        let string_value = registry
+            .convert_to_excel_data(&"probe".to_owned(), &column, &convert_context)?
+            .expect("effective holder must contain the sheet/table String converter")
+            .value()
+            .as_text();
+        let integer_value = registry
+            .convert_to_excel_data(&7_i32, &column, &convert_context)?
+            .expect("effective holder must inherit the workbook i32 converter")
+            .value()
+            .as_text();
+        self.0
+            .lock()
+            .map_err(|_| ExcelError::Format("converter map probe poisoned".to_owned()))?
+            .push((string_value, integer_value));
+        Ok(())
+    }
+}
+
+struct ConverterContextRow(String);
+
+impl ExcelRow for ConverterContextRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("value", "Value", Some(0), 0, None)];
+        COLUMNS
+    }
+
+    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+        Ok(Self(String::new()))
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![CellValue::String(self.0.clone())])
+    }
+
+    fn to_excel_write_row(
+        &self,
+        converters: &ConverterRegistry,
+    ) -> Result<(Vec<CellValue>, Vec<WriteCellData>)> {
+        let original = CellValue::String(self.0.clone());
+        let converted = converters
+            .convert_to_excel_data(
+                &self.0,
+                &Self::schema()[0],
+                &easyexcel_core::ConvertContext {
+                    sheet_name: String::new(),
+                    row_index: 0,
+                    column_index: Some(0),
+                    field: "value",
+                    format: None,
+                    use_1904_windowing: false,
+                },
+            )?
+            .unwrap_or_else(|| WriteCellData::new(original.clone()));
+        Ok((vec![original], vec![converted]))
+    }
+}
+
+struct NumericConverterContextRow(i32);
+
+impl ExcelRow for NumericConverterContextRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("value", "Value", Some(0), 0, None)];
+        COLUMNS
+    }
+
+    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+        Ok(Self(0))
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![CellValue::Int(i64::from(self.0))])
+    }
+
+    fn to_excel_write_row(
+        &self,
+        converters: &ConverterRegistry,
+    ) -> Result<(Vec<CellValue>, Vec<WriteCellData>)> {
+        let original = CellValue::Int(i64::from(self.0));
+        let converted = converters
+            .convert_to_excel_data(
+                &self.0,
+                &Self::schema()[0],
+                &easyexcel_core::ConvertContext {
+                    sheet_name: String::new(),
+                    row_index: 0,
+                    column_index: Some(0),
+                    field: "value",
+                    format: None,
+                    use_1904_windowing: false,
+                },
+            )?
+            .unwrap_or_else(|| WriteCellData::new(original.clone()));
+        Ok((vec![original], vec![converted]))
+    }
+}
+
+struct DefaultRegistryRequiredRow;
+
+impl ExcelRow for DefaultRegistryRequiredRow {
+    fn schema() -> &'static [ExcelColumn] {
+        const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("value", "Value", Some(0), 0, None)];
+        COLUMNS
+    }
+
+    fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+        Ok(Self)
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        Ok(vec![CellValue::Int(7)])
+    }
+
+    fn to_row_with_converters(&self, converters: &ConverterRegistry) -> Result<Vec<CellValue>> {
+        if converters.is_empty() {
+            return Err(test_error("default write converter registry is missing"));
+        }
+        self.to_row()
+    }
+}
+
+struct ConvertedTypeProbe(Arc<Mutex<Vec<easyexcel_core::CellDataType>>>);
+
+impl WriteHandler for ConvertedTypeProbe {
+    fn after_cell_data_converted(&mut self, context: &WriteCellContext) -> Result<()> {
+        if !context.is_head
+            && let Some(value) = context.first_cell_data()
+        {
+            self.0
+                .lock()
+                .map_err(|_| test_error("converted type probe poisoned"))?
+                .push(value.data_type());
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn csv_uses_java_target_string_converter_before_cell_handlers() -> Result<()> {
+    let directory = tempdir()?;
+    let output = directory.path().join("target-string.csv");
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let mut handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(ConvertedTypeProbe(Arc::clone(&observed)))];
+    write_csv_with_handlers::<NumericConverterContextRow, _>(
+        &output,
+        &WriteOptions::default(),
+        [NumericConverterContextRow(42)],
+        &mut handlers,
+    )?;
+    assert_eq!(
+        *observed
+            .lock()
+            .map_err(|_| test_error("converted type probe poisoned"))?,
+        [easyexcel_core::CellDataType::String]
+    );
+    assert!(std::fs::read_to_string(output)?.contains("42"));
+    Ok(())
+}
+
+#[test]
+fn stateless_xlsx_and_xls_materialize_default_write_converters() -> Result<()> {
+    let directory = tempdir()?;
+    let xlsx = directory.path().join("default-converters.xlsx");
+    let xls = directory.path().join("default-converters.xls");
+    let options = WriteOptions {
+        need_head: false,
+        ..WriteOptions::default()
+    };
+
+    write_xlsx::<DefaultRegistryRequiredRow, _>(&xlsx, &options, [DefaultRegistryRequiredRow])?;
+    write_xls::<DefaultRegistryRequiredRow, _>(&xls, &options, [DefaultRegistryRequiredRow])?;
+
+    let mut xlsx_book: Xlsx<_> = open_workbook(&xlsx).map_err(test_error)?;
+    let xlsx_range = xlsx_book.worksheet_range("Sheet1").map_err(test_error)?;
+    assert!(matches!(
+        xlsx_range.get((0, 0)),
+        Some(Data::Int(7)) | Some(Data::Float(7.0))
+    ));
+
+    let mut xls_book: Xls<_> = open_workbook(&xls).map_err(test_error)?;
+    let xls_range = xls_book.worksheet_range("Sheet1").map_err(test_error)?;
+    assert!(matches!(
+        xls_range.get((0, 0)),
+        Some(Data::Int(7)) | Some(Data::Float(7.0))
+    ));
+    Ok(())
+}
+
+#[test]
+fn annotation_config_loads_real_ordered_handlers_for_every_java_strategy() -> Result<()> {
+    let options = WriteOptions {
+        sheet_name: "Data".to_owned(),
+        ..WriteOptions::default()
+    };
+    let mut handlers = load_annotation_handlers::<AnnotationHandlerRow>(&options)?;
+    assert_eq!(handlers.len(), 5);
+    sort_handlers(&mut handlers);
+    assert_eq!(
+        handlers
+            .iter()
+            .map(|handler| handler.order())
+            .collect::<Vec<_>>(),
+        vec![-60_000, -60_000, -50_000, -50_000, 0]
+    );
+    assert!(handlers.iter().any(|handler| {
+        handler.style_once_absolute_merge() == Some(OnceAbsoluteMergeProperty::new(10, 10, 0, 1))
+    }));
+    assert!(handlers.iter().any(|handler| {
+        handler.style_loop_merge() == Some((easyexcel_core::LoopMergeProperty::new(2, 1), 0))
+    }));
+    assert!(
+        handlers
+            .iter()
+            .any(|handler| handler.style_column_width(0) == Some(18))
+    );
+    assert!(
+        handlers
+            .iter()
+            .any(|handler| handler.style_head_row_height() == Some(31))
+    );
+    assert!(
+        handlers
+            .iter()
+            .any(|handler| handler.style_content_row_height() == Some(24))
+    );
+    Ok(())
+}
+
+#[test]
+fn stateful_sheet_persists_annotation_handlers_and_deduplicates_merges() -> Result<()> {
+    let directory = tempdir()?;
+    let output = directory.path().join("annotation-handler-scope.xlsx");
+    let sheet = WriteSheet::<AnnotationHandlerRow>::from_options(WriteOptions {
+        sheet_name: "Data".to_owned(),
+        ..WriteOptions::default()
+    });
+    let mut writer = ExcelWriter::new(&output);
+    writer.write(
+        vec![
+            AnnotationHandlerRow("first"),
+            AnnotationHandlerRow("second"),
+        ],
+        &sheet,
+    )?;
+
+    let annotation_handlers = writer
+        .sheet_annotation_handlers
+        .get("Data")
+        .expect("sheet annotation handlers");
+    assert_eq!(annotation_handlers.len(), 5);
+    assert_eq!(
+        writer
+            .sheet_handler_scope("Data")
+            .own
+            .iter()
+            .map(SharedWriteHandler::order)
+            .collect::<Vec<_>>(),
+        vec![-60_000, -60_000, -50_000, -50_000, 0]
+    );
+    writer.finish()?;
+
+    let sheet_xml = zip_entry(&output, "xl/worksheets/sheet1.xml")?;
+    assert!(sheet_xml.contains("ref=\"A2:A3\""), "{sheet_xml}");
+    assert!(sheet_xml.contains("ref=\"A11:B11\""), "{sheet_xml}");
+    assert_eq!(sheet_xml.matches("ref=\"A2:A3\"").count(), 1);
+    assert_eq!(sheet_xml.matches("ref=\"A11:B11\"").count(), 1);
+    assert!((sheet_row_height(&sheet_xml, 1)? - 31.0).abs() <= 0.25);
+    assert_eq!(sheet_row_height(&sheet_xml, 2)?, 24.0);
+    assert_eq!(sheet_row_height(&sheet_xml, 3)?, 24.0);
+    Ok(())
+}
+
+#[test]
+fn parent_custom_dimension_handler_overrides_annotation_defaults() -> Result<()> {
+    let directory = tempdir()?;
+    let output = directory.path().join("annotation-handler-override.xlsx");
+    let sheet = WriteSheet::<AnnotationHandlerRow>::from_options(WriteOptions {
+        sheet_name: "Data".to_owned(),
+        ..WriteOptions::default()
+    });
+    let mut writer = ExcelWriter::new(&output);
+    writer.register_write_handler(Box::new(OverrideAnnotationDimensions))?;
+    writer.write(vec![AnnotationHandlerRow("first")], &sheet)?;
+
+    let effective = writer.sheet_handler_scope("Data").effective;
+    let orders = effective
+        .iter()
+        .map(SharedWriteHandler::order)
+        .collect::<Vec<_>>();
+    assert_eq!(&orders[..5], &[-60_000, -60_000, -50_000, -50_000, -50_000]);
+    assert!(orders[5..].iter().all(|order| *order == 0), "{orders:?}");
+    writer.finish()?;
+
+    let sheet_xml = zip_entry(&output, "xl/worksheets/sheet1.xml")?;
+    assert!(
+        sheet_xml.contains("width=\"27\"") || sheet_xml.contains("width=\"27.0\""),
+        "{sheet_xml}"
+    );
+    assert!((sheet_row_height(&sheet_xml, 1)? - 40.0).abs() <= 0.25);
+    assert!((sheet_row_height(&sheet_xml, 2)? - 36.0).abs() <= 0.25);
+    Ok(())
+}
+
+#[test]
+fn live_holder_converter_map_matches_sheet_and_table_write_precedence() -> Result<()> {
+    let directory = tempdir()?;
+    let output = directory.path().join("holder-converter-map.xlsx");
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let mut workbook_options = WriteOptions::default();
+    workbook_options
+        .converters
+        .register::<i32, _>(ContextI32Converter("workbook"));
+    let mut writer = ExcelWriter::with_handlers_and_options(
+        &output,
+        vec![Box::new(ConverterMapProbe(Arc::clone(&observed)))],
+        workbook_options,
+    );
+    let sheet = WriteSheet::<ConverterContextRow>::new("Data")
+        .register_converter::<String, _>(ContextStringConverter("sheet"));
+    writer.write(vec![ConverterContextRow("sheet-row".to_owned())], &sheet)?;
+
+    let mut table = crate::metadata::WriteTable::with_table_no(2);
+    table
+        .options
+        .converters
+        .register::<String, _>(ContextStringConverter("table"));
+    writer.write_with_table(
+        vec![ConverterContextRow("table-row".to_owned())],
+        &sheet,
+        &table,
+    )?;
+    writer.finish()?;
+
+    assert_eq!(
+        observed
+            .lock()
+            .map_err(|_| ExcelError::Format("converter map probe poisoned".to_owned()))?
+            .as_slice(),
+        [
+            ("sheet:probe".to_owned(), "workbook:7".to_owned()),
+            ("table:probe".to_owned(), "workbook:7".to_owned()),
+        ]
+    );
+
+    let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Data").map_err(test_error)?;
+    let values = range
+        .cells()
+        .filter_map(|cell| cell.2.get_string())
+        .collect::<Vec<_>>();
+    assert!(values.contains(&"sheet:sheet-row"), "{values:?}");
+    assert!(values.contains(&"table:table-row"), "{values:?}");
+    Ok(())
+}
+
+#[test]
+fn sheet_then_table_deduplicates_the_same_absolute_merge() -> Result<()> {
+    let directory = tempdir()?;
+    let output = directory.path().join("sheet-table-absolute-merge.xlsx");
+    let sheet = WriteSheet::<AnnotationHandlerRow>::new("Data");
+    let mut writer = ExcelWriter::new(&output);
+    writer.write(vec![AnnotationHandlerRow("sheet-row")], &sheet)?;
+    writer.write_with_table(
+        vec![AnnotationHandlerRow("table-row")],
+        &sheet,
+        &crate::metadata::WriteTable::with_table_no(2),
+    )?;
+    writer.finish()?;
+
+    let sheet_xml = zip_entry(&output, "xl/worksheets/sheet1.xml")?;
+    assert_eq!(sheet_xml.matches("ref=\"A11:B11\"").count(), 1);
+    Ok(())
 }
 
 impl ExcelRow for DimensionRow {
@@ -440,6 +915,7 @@ impl ExcelRow for AnchoredImageRow {
                 column_index: Some(0),
                 field: "cell",
                 format: None,
+                use_1904_windowing: false,
             },
         )?])
     }
@@ -743,6 +1219,7 @@ fn default_options_and_helpers_are_deterministic() {
     assert_eq!(
         WriteOptions::default(),
         WriteOptions {
+            excel_type: None,
             sheet_name: "Sheet1".to_owned(),
             sheet_index: None,
             auto_trim: true,
@@ -753,6 +1230,7 @@ fn default_options_and_helpers_are_deterministic() {
             constant_memory: false,
             compress_temp_files: false,
             need_head: true,
+            use_default_style: true,
             freeze_head: false,
             freeze_panes: None,
             include_column_indexes: None,
@@ -813,6 +1291,1265 @@ fn default_options_and_helpers_are_deterministic() {
     let indexed_name = WriteSheet::<EveryCell>::new("Named").sheet_index(6);
     assert_eq!(indexed_name.options().sheet_index, Some(6));
     assert_eq!(indexed_name.options().sheet_name, "Named");
+}
+
+#[test]
+fn stateful_writer_installs_java_default_handlers_by_effective_type() {
+    let xlsx = ExcelWriter::with_handlers_and_options(
+        "default-handlers.xlsx",
+        Vec::new(),
+        WriteOptions::default(),
+    );
+    assert_eq!(xlsx.workbook_handlers.len(), 4);
+
+    let xls = ExcelWriter::with_handlers_and_options(
+        "default-handlers.xls",
+        Vec::new(),
+        WriteOptions {
+            use_default_style: false,
+            ..WriteOptions::default()
+        },
+    );
+    assert_eq!(xls.workbook_handlers.len(), 2);
+
+    let csv = ExcelWriter::with_handlers_and_options(
+        "default-handlers.csv",
+        Vec::new(),
+        WriteOptions::default(),
+    );
+    assert_eq!(csv.workbook_handlers.len(), 2);
+}
+
+#[test]
+fn stateful_sheet_handlers_are_isolated_and_reused_by_holder() -> Result<()> {
+    #[derive(Default)]
+    struct Counts {
+        workbook: AtomicUsize,
+        sheet: AtomicUsize,
+        row: AtomicUsize,
+    }
+
+    struct ScopeProbe(Arc<Counts>);
+
+    impl WriteHandler for ScopeProbe {
+        fn before_workbook_create(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+            self.0.workbook.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn before_sheet_create(&mut self, _context: &WriteSheetContext) -> Result<()> {
+            self.0.sheet.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn before_row_create(&mut self, _context: &WriteRowContext) -> Result<()> {
+            self.0.row.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let directory = tempdir()?;
+    let output = directory.path().join("sheet-handler-isolation.xlsx");
+    let workbook_counts = Arc::new(Counts::default());
+    let first_counts = Arc::new(Counts::default());
+    let second_counts = Arc::new(Counts::default());
+    let mut writer = ExcelWriter::with_handlers(
+        &output,
+        vec![Box::new(ScopeProbe(Arc::clone(&workbook_counts)))],
+    );
+    let first = WriteSheet::<EveryCell>::from_options(WriteOptions {
+        sheet_name: "First".to_owned(),
+        need_head: false,
+        ..WriteOptions::default()
+    });
+    let second = WriteSheet::<EveryCell>::from_options(WriteOptions {
+        sheet_name: "Second".to_owned(),
+        need_head: false,
+        ..WriteOptions::default()
+    });
+
+    writer.write_with_sheet_handlers(
+        vec![every_cell()],
+        &first,
+        vec![Box::new(ScopeProbe(Arc::clone(&first_counts)))],
+    )?;
+    writer.write_with_sheet_handlers(
+        vec![every_cell()],
+        &second,
+        vec![Box::new(ScopeProbe(Arc::clone(&second_counts)))],
+    )?;
+    writer.write(vec![every_cell()], &first)?;
+    writer.finish()?;
+
+    assert_eq!(workbook_counts.workbook.load(Ordering::SeqCst), 1);
+    assert_eq!(workbook_counts.sheet.load(Ordering::SeqCst), 2);
+    assert_eq!(workbook_counts.row.load(Ordering::SeqCst), 3);
+    assert_eq!(first_counts.workbook.load(Ordering::SeqCst), 1);
+    assert_eq!(first_counts.sheet.load(Ordering::SeqCst), 1);
+    assert_eq!(first_counts.row.load(Ordering::SeqCst), 2);
+    assert_eq!(second_counts.workbook.load(Ordering::SeqCst), 1);
+    assert_eq!(second_counts.sheet.load(Ordering::SeqCst), 1);
+    assert_eq!(second_counts.row.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[test]
+fn table_holder_runs_supplementary_callbacks_then_own_parent_row_chain() -> Result<()> {
+    struct LogProbe {
+        scope: &'static str,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl LogProbe {
+        fn push(&self, event: &str) {
+            self.events
+                .lock()
+                .expect("handler event mutex poisoned")
+                .push(format!("{}:{event}", self.scope));
+        }
+    }
+
+    impl WriteHandler for LogProbe {
+        fn before_workbook_create(&mut self, context: &WriteWorkbookContext) -> Result<()> {
+            assert_eq!(
+                context
+                    .write_workbook_holder()
+                    .path()
+                    .file_name()
+                    .and_then(std::ffi::OsStr::to_str),
+                Some("table-handler-holder-order.xlsx")
+            );
+            let current_holder = context.write_context().current_write_holder();
+            assert_eq!(current_holder.holder_type(), Holder::Workbook);
+            assert_eq!(current_holder.path(), context.path());
+            self.push("workbook");
+            Ok(())
+        }
+
+        fn before_sheet_create(&mut self, context: &WriteSheetContext) -> Result<()> {
+            assert_eq!(
+                context
+                    .write_workbook_holder()
+                    .and_then(|holder| holder.path().file_name())
+                    .and_then(std::ffi::OsStr::to_str),
+                Some("table-handler-holder-order.xlsx")
+            );
+            assert_eq!(context.write_sheet_holder().sheet_name(), "Data");
+            assert_eq!(context.write_sheet_holder().sheet_no(), Some(0));
+            assert!(context.write_table_holder().is_none());
+            self.push("sheet");
+            Ok(())
+        }
+
+        fn before_row_create(&mut self, context: &WriteRowContext) -> Result<()> {
+            assert_eq!(
+                context
+                    .write_workbook_holder()
+                    .and_then(|holder| holder.path().file_name())
+                    .and_then(std::ffi::OsStr::to_str),
+                Some("table-handler-holder-order.xlsx")
+            );
+            assert_eq!(context.write_sheet_holder().sheet_name(), "Data");
+            assert_eq!(context.write_sheet_holder().sheet_no(), Some(0));
+            assert_eq!(
+                context
+                    .write_table_holder()
+                    .map(easyexcel_core::WriteTableHolderView::table_no),
+                Some(0)
+            );
+            let current_holder = context.write_context().current_write_holder();
+            assert_eq!(current_holder.holder_type(), Holder::Table);
+            assert!(!current_holder.need_head());
+            assert!(!current_holder.automatic_merge_head());
+            assert!(current_holder.order_by_include_column());
+            assert_eq!(current_holder.include_column_indexes(), Some(&[1, 0][..]));
+            assert_eq!(
+                current_holder.exclude_column_field_names(),
+                &["decimal".to_owned()]
+            );
+            let head_map = current_holder.excel_write_head_property().head_map();
+            assert_eq!(head_map.len(), 2);
+            assert_eq!(
+                head_map.get(&0).and_then(|head| head.field_name()),
+                Some("string")
+            );
+            assert_eq!(
+                head_map.get(&1).and_then(|head| head.field_name()),
+                Some("empty")
+            );
+            self.push("row");
+            Ok(())
+        }
+
+        fn before_cell_create(&mut self, context: &mut WriteCellContext) -> Result<()> {
+            assert_eq!(
+                context
+                    .write_workbook_holder()
+                    .and_then(|holder| holder.path().file_name())
+                    .and_then(std::ffi::OsStr::to_str),
+                Some("table-handler-holder-order.xlsx")
+            );
+            assert_eq!(context.write_sheet_holder().last_row_index(), Some(0));
+            assert_eq!(
+                context
+                    .write_table_holder()
+                    .map(easyexcel_core::WriteTableHolderView::table_no),
+                Some(0)
+            );
+            let current_holder = context.write_context().current_write_holder();
+            assert_eq!(current_holder.holder_type(), Holder::Table);
+            assert_eq!(
+                current_holder.excel_write_head_property().head_map().len(),
+                2
+            );
+            Ok(())
+        }
+    }
+
+    let directory = tempdir()?;
+    let output = directory.path().join("table-handler-holder-order.xlsx");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let mut writer = ExcelWriter::with_handlers(
+        &output,
+        vec![Box::new(LogProbe {
+            scope: "workbook",
+            events: Arc::clone(&events),
+        })],
+    );
+    let sheet = WriteSheet::<EveryCell>::from_options(WriteOptions {
+        sheet_name: "Data".to_owned(),
+        need_head: false,
+        automatic_merge_head: false,
+        order_by_include_column: true,
+        include_column_indexes: Some(vec![1, 0]),
+        exclude_column_field_names: vec!["decimal".to_owned()],
+        ..WriteOptions::default()
+    });
+    let mut table = MirroredWriteTable::new();
+    table.table_no = 0;
+
+    writer.write_with_table_handlers(
+        vec![every_cell()],
+        &sheet,
+        &table,
+        vec![Box::new(LogProbe {
+            scope: "sheet",
+            events: Arc::clone(&events),
+        })],
+        vec![Box::new(LogProbe {
+            scope: "table",
+            events: Arc::clone(&events),
+        })],
+    )?;
+    writer.finish()?;
+
+    assert_eq!(
+        *events.lock().expect("handler event mutex poisoned"),
+        vec![
+            "workbook:workbook",
+            "sheet:workbook",
+            "sheet:sheet",
+            "workbook:sheet",
+            "table:workbook",
+            "table:sheet",
+            "table:row",
+            "sheet:row",
+            "workbook:row",
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn holder_handler_scope_deduplicates_effective_chain_but_runs_each_own_chain() -> Result<()> {
+    struct UniqueProbe {
+        scope: &'static str,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl UniqueProbe {
+        fn push(&self, event: &str) {
+            self.events
+                .lock()
+                .expect("handler event mutex poisoned")
+                .push(format!("{}:{event}", self.scope));
+        }
+    }
+
+    impl NotRepeatExecutor for UniqueProbe {
+        fn unique_value(&self) -> &str {
+            "same-holder-handler"
+        }
+    }
+
+    impl WriteHandler for UniqueProbe {
+        fn as_not_repeat_executor(&self) -> Option<&dyn NotRepeatExecutor> {
+            Some(self)
+        }
+
+        fn before_workbook_create(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+            self.push("workbook");
+            Ok(())
+        }
+
+        fn before_sheet_create(&mut self, _context: &WriteSheetContext) -> Result<()> {
+            self.push("sheet");
+            Ok(())
+        }
+
+        fn before_row_create(&mut self, _context: &WriteRowContext) -> Result<()> {
+            self.push("row");
+            Ok(())
+        }
+
+        fn after_workbook_dispose(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+            self.push("dispose");
+            Ok(())
+        }
+    }
+
+    let directory = tempdir()?;
+    let output = directory.path().join("holder-handler-dedup.xlsx");
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let probe = |scope| {
+        Box::new(UniqueProbe {
+            scope,
+            events: Arc::clone(&events),
+        }) as Box<dyn WriteHandler>
+    };
+    let mut writer = ExcelWriter::with_handlers(&output, vec![probe("workbook")]);
+    let sheet = WriteSheet::<EveryCell>::from_options(WriteOptions {
+        sheet_name: "Data".to_owned(),
+        need_head: false,
+        ..WriteOptions::default()
+    });
+    let mut table = MirroredWriteTable::new();
+    table.table_no = 0;
+
+    writer.write_with_table_handlers(
+        vec![every_cell()],
+        &sheet,
+        &table,
+        vec![probe("sheet")],
+        vec![probe("table")],
+    )?;
+    writer.finish()?;
+
+    assert_eq!(
+        *events.lock().expect("handler event mutex poisoned"),
+        vec![
+            "workbook:workbook",
+            "sheet:workbook",
+            "sheet:sheet",
+            "table:workbook",
+            "table:sheet",
+            "table:row",
+            "table:dispose",
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn handler_registered_before_empty_finish_participates_in_dispose_chain() -> Result<()> {
+    #[derive(Default)]
+    struct Counts {
+        create: AtomicUsize,
+        dispose: AtomicUsize,
+    }
+
+    struct WorkbookProbe(Arc<Counts>);
+
+    impl WriteHandler for WorkbookProbe {
+        fn before_workbook_create(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+            self.0.create.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn after_workbook_dispose(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+            self.0.dispose.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    let directory = tempdir()?;
+    let output = directory.path().join("empty-finish-handler.xlsx");
+    let counts = Arc::new(Counts::default());
+    let mut writer = ExcelWriter::new(&output);
+    writer.register_write_handler(Box::new(WorkbookProbe(Arc::clone(&counts))))?;
+    writer.finish()?;
+
+    assert_eq!(counts.create.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.dispose.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[test]
+fn multiple_tables_keep_independent_schema_options_and_single_head() -> Result<()> {
+    struct FirstTableRow(&'static str);
+
+    impl ExcelRow for FirstTableRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("first", "First", Some(0), 0, None)];
+            COLUMNS
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self(""))
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![CellValue::String(self.0.to_owned())])
+        }
+    }
+
+    struct SecondTableRow(&'static str, i64);
+
+    impl ExcelRow for SecondTableRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] = &[
+                ExcelColumn::new("second", "Second", Some(0), 0, None),
+                ExcelColumn::new("count", "Count", Some(1), 0, None).with_column_width(31),
+            ];
+            COLUMNS
+        }
+
+        fn write_metadata() -> &'static ExcelWriteMetadata {
+            const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new()
+                .once_absolute_merge(easyexcel_core::OnceAbsoluteMergeProperty::new(5, 5, 0, 1));
+            &METADATA
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self("", 0))
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![
+                CellValue::String(self.0.to_owned()),
+                CellValue::Int(self.1),
+            ])
+        }
+    }
+
+    let directory = tempdir()?;
+    let output = directory.path().join("multiple-table-holder-heads.xlsx");
+    let first_sheet = WriteSheet::<FirstTableRow>::from_options(WriteOptions {
+        sheet_name: "Data".to_owned(),
+        need_head: false,
+        ..WriteOptions::default()
+    });
+    let second_sheet = WriteSheet::<SecondTableRow>::from_options(WriteOptions {
+        sheet_name: "Data".to_owned(),
+        need_head: false,
+        ..WriteOptions::default()
+    });
+    let mut first_table = MirroredWriteTable::with_table_no(0);
+    first_table.parameter.need_head = Some(true);
+    let mut second_table = MirroredWriteTable::with_table_no(1);
+    second_table.parameter.need_head = Some(true);
+
+    let mut writer = ExcelWriter::new(&output);
+    writer.write_with_table(vec![FirstTableRow("alpha")], &first_sheet, &first_table)?;
+    writer.write_with_table(vec![FirstTableRow("beta")], &first_sheet, &first_table)?;
+    writer.write_with_table(
+        vec![SecondTableRow("gamma", 3)],
+        &second_sheet,
+        &second_table,
+    )?;
+    writer.finish()?;
+
+    let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Data").map_err(test_error)?;
+    assert_eq!(range.get((0, 0)), Some(&Data::String("First".to_owned())));
+    assert_eq!(range.get((1, 0)), Some(&Data::String("alpha".to_owned())));
+    assert_eq!(range.get((2, 0)), Some(&Data::String("beta".to_owned())));
+    assert_eq!(range.get((3, 0)), Some(&Data::String("Second".to_owned())));
+    assert_eq!(range.get((3, 1)), Some(&Data::String("Count".to_owned())));
+    assert_eq!(range.get((4, 0)), Some(&Data::String("gamma".to_owned())));
+    assert_eq!(range.get((4, 1)), Some(&Data::Float(3.0)));
+    let sheet_xml = zip_entry(&output, "xl/worksheets/sheet1.xml")?;
+    assert_eq!(sheet_column_width(&sheet_xml, 2)?, 31.0);
+    assert!(sheet_xml.contains("<mergeCell ref=\"A6:B6\"/>"));
+    Ok(())
+}
+
+#[test]
+fn template_annotation_layout_stays_absolute_and_preserves_package() -> Result<()> {
+    struct TemplateRow(&'static str, i64);
+
+    impl ExcelRow for TemplateRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const FIELD_STYLE: ExcelCellStyle = ExcelCellStyle {
+                fill_pattern: Some(ExcelFillPattern::Solid),
+                fill_foreground_color: Some(ExcelColor::Indexed(14)),
+                ..ExcelCellStyle::new()
+            };
+            const FIELD_FONT: ExcelFontStyle = ExcelFontStyle {
+                font_height_in_points: Some(18.0),
+                ..ExcelFontStyle::new()
+            };
+            const COLUMNS: &[ExcelColumn] = &[
+                ExcelColumn::new("name", "Name", Some(0), 0, None)
+                    .with_content_style(FIELD_STYLE)
+                    .with_content_font_style(FIELD_FONT),
+                ExcelColumn::new("count", "Count", Some(1), 0, None).with_column_width(29),
+            ];
+            COLUMNS
+        }
+
+        fn write_metadata() -> &'static ExcelWriteMetadata {
+            const HEAD_STYLE: ExcelCellStyle = ExcelCellStyle {
+                fill_pattern: Some(ExcelFillPattern::Solid),
+                fill_foreground_color: Some(ExcelColor::Indexed(13)),
+                ..ExcelCellStyle::new()
+            };
+            const HEAD_FONT: ExcelFontStyle = ExcelFontStyle {
+                italic: Some(true),
+                font_height_in_points: Some(16.0),
+                ..ExcelFontStyle::new()
+            };
+            const CONTENT_STYLE: ExcelCellStyle = ExcelCellStyle {
+                border_bottom: Some(ExcelBorderStyle::Thin),
+                ..ExcelCellStyle::new()
+            };
+            const CONTENT_FONT: ExcelFontStyle = ExcelFontStyle {
+                bold: Some(true),
+                color: Some(ExcelColor::Indexed(10)),
+                ..ExcelFontStyle::new()
+            };
+            const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new()
+                .head_style(HEAD_STYLE)
+                .head_font_style(HEAD_FONT)
+                .content_row_height(26)
+                .content_style(CONTENT_STYLE)
+                .content_font_style(CONTENT_FONT)
+                .once_absolute_merge(easyexcel_core::OnceAbsoluteMergeProperty::new(0, 0, 0, 1));
+            &METADATA
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self("", 0))
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![
+                CellValue::String(self.0.to_owned()),
+                CellValue::Int(self.1),
+            ])
+        }
+    }
+
+    let directory = tempdir()?;
+    let template = directory.path().join("absolute-layout-template.xlsx");
+    let output = directory.path().join("absolute-layout-output.xlsx");
+    let mut workbook = Workbook::new();
+    let seed_format = Format::new()
+        .set_bold()
+        .set_background_color(0x0000_00ff)
+        .set_pattern(FormatPattern::Solid);
+    workbook
+        .add_worksheet()
+        .set_name("Data")
+        .map_err(test_error)?
+        .write_string_with_format(0, 0, "seed", &seed_format)
+        .map_err(test_error)?;
+    workbook.save(&template).map_err(test_error)?;
+    let template_sheet_xml = zip_entry(&template, "xl/worksheets/sheet1.xml")?;
+    let seed_style = cell_style_id(&template_sheet_xml, "A1").expect("template seed style");
+
+    let handler_style = ExcelCellStyle {
+        vertical_alignment: Some(easyexcel_core::ExcelVerticalAlignment::Center),
+        data_format: Some(ExcelDataFormat::Custom("0.000")),
+        ..ExcelCellStyle::new()
+    };
+    let mut handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(HorizontalCellStyleStrategy::new(vec![
+            handler_style,
+        ]))];
+    write_xlsx_with_handlers::<TemplateRow, _>(
+        &output,
+        &WriteOptions {
+            sheet_name: "Data".to_owned(),
+            template_file: Some(template),
+            ..WriteOptions::default()
+        },
+        vec![TemplateRow("appended", 7)],
+        &mut handlers,
+    )?;
+
+    let sheet_xml = zip_entry(&output, "xl/worksheets/sheet1.xml")?;
+    assert!(sheet_xml.contains("<mergeCell ref=\"A1:B1\"/>"));
+    assert!(!sheet_xml.contains("<mergeCell ref=\"A2:B2\"/>"));
+    assert_eq!(
+        cell_style_id(&sheet_xml, "A1").as_deref(),
+        Some(seed_style.as_str())
+    );
+    assert_eq!(sheet_column_width(&sheet_xml, 2)?, 29.0);
+    assert!((sheet_row_height(&sheet_xml, 3)? - 26.0).abs() < f64::EPSILON);
+    assert!(sheet_xml.contains("appended"));
+    let head_style = cell_style_id(&sheet_xml, "A2").expect("head annotation style");
+    let first_style = cell_style_id(&sheet_xml, "A3").expect("field annotation style");
+    let second_style = cell_style_id(&sheet_xml, "B3").expect("type annotation style");
+    assert_ne!(head_style, first_style);
+    assert_ne!(first_style, second_style);
+    let styles_xml = zip_entry(&output, "xl/styles.xml")?;
+    assert!(styles_xml.contains("rgb=\"FFFF00FF\""));
+    assert!(styles_xml.contains("rgb=\"FFFF0000\""));
+    assert!(styles_xml.contains("rgb=\"FFFFFF00\""));
+    assert!(styles_xml.contains("<sz val=\"16\"/>"));
+    assert!(styles_xml.contains("<sz val=\"18\"/>"));
+    assert!(styles_xml.contains("<i/>"));
+    assert!(styles_xml.contains("<b/>"));
+    assert!(styles_xml.contains("style=\"thin\""));
+    assert!(styles_xml.contains("formatCode=\"0.000\""));
+    assert!(styles_xml.contains("vertical=\"center\""));
+    assert!(styles_xml.contains("rgb=\"FF0000FF\""));
+    let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Data").map_err(test_error)?;
+    assert_eq!(range.get((0, 0)), Some(&Data::String("seed".to_owned())));
+    assert_eq!(range.get((1, 0)), Some(&Data::String("Name".to_owned())));
+    assert_eq!(
+        range.get((2, 0)),
+        Some(&Data::String("appended".to_owned()))
+    );
+    Ok(())
+}
+
+#[test]
+fn template_zip_path_runs_row_cell_lifecycle_and_applies_mutation_and_skip() -> Result<()> {
+    struct TemplateRow;
+
+    impl ExcelRow for TemplateRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] = &[
+                ExcelColumn::new("name", "Name", Some(0), 0, None),
+                ExcelColumn::new("count", "Count", Some(1), 0, None),
+            ];
+            COLUMNS
+        }
+
+        fn write_metadata() -> &'static ExcelWriteMetadata {
+            const STYLE: ExcelCellStyle = ExcelCellStyle {
+                fill_pattern: Some(ExcelFillPattern::Solid),
+                fill_foreground_color: Some(ExcelColor::Indexed(10)),
+                ..ExcelCellStyle::new()
+            };
+            const METADATA: ExcelWriteMetadata = ExcelWriteMetadata::new().content_style(STYLE);
+            &METADATA
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self)
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![
+                CellValue::String("original".to_owned()),
+                CellValue::Int(7),
+            ])
+        }
+    }
+
+    struct MutatingHandler {
+        events: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl WriteHandler for MutatingHandler {
+        fn before_row_create(&mut self, context: &WriteRowContext) -> Result<()> {
+            self.events
+                .lock()
+                .map_err(|_| test_error("events poisoned"))?
+                .push(format!("row-before:{}", context.row_index));
+            Ok(())
+        }
+
+        fn after_row_create(&mut self, context: &WriteRowContext) -> Result<()> {
+            self.events
+                .lock()
+                .map_err(|_| test_error("events poisoned"))?
+                .push(format!("row-created:{}", context.row_index));
+            Ok(())
+        }
+
+        fn before_cell_create(&mut self, context: &mut WriteCellContext) -> Result<()> {
+            if context.column_index == 0 {
+                context.value = CellValue::String("mutated".to_owned());
+                context.ignore_fill_style = true;
+            } else {
+                context.skip = true;
+            }
+            self.events
+                .lock()
+                .map_err(|_| test_error("events poisoned"))?
+                .push(format!("cell-before:{}", context.column_index));
+            Ok(())
+        }
+
+        fn after_cell_create(&mut self, context: &WriteCellContext) -> Result<()> {
+            self.events
+                .lock()
+                .map_err(|_| test_error("events poisoned"))?
+                .push(format!("cell-created:{}", context.column_index));
+            Ok(())
+        }
+
+        fn after_cell_data_converted(&mut self, context: &WriteCellContext) -> Result<()> {
+            self.events
+                .lock()
+                .map_err(|_| test_error("events poisoned"))?
+                .push(format!("cell-converted:{}", context.column_index));
+            Ok(())
+        }
+
+        fn after_cell_dispose(&mut self, context: &WriteCellContext) -> Result<()> {
+            self.events
+                .lock()
+                .map_err(|_| test_error("events poisoned"))?
+                .push(format!("cell-disposed:{}", context.column_index));
+            Ok(())
+        }
+
+        fn after_row_dispose(&mut self, context: &WriteRowContext) -> Result<()> {
+            self.events
+                .lock()
+                .map_err(|_| test_error("events poisoned"))?
+                .push(format!("row-disposed:{}", context.row_index));
+            Ok(())
+        }
+    }
+
+    let directory = tempdir()?;
+    let template = directory.path().join("handler-template.xlsx");
+    let output = directory.path().join("handler-output.xlsx");
+    let mut workbook = Workbook::new();
+    workbook
+        .add_worksheet()
+        .set_name("Data")
+        .map_err(test_error)?
+        .write_string(0, 0, "seed")
+        .map_err(test_error)?;
+    workbook.save(&template).map_err(test_error)?;
+
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(MutatingHandler {
+        events: Arc::clone(&events),
+    })];
+    write_xlsx_with_handlers::<TemplateRow, _>(
+        &output,
+        &WriteOptions {
+            sheet_name: "Data".to_owned(),
+            need_head: false,
+            template_file: Some(template),
+            ..WriteOptions::default()
+        },
+        vec![TemplateRow],
+        &mut handlers,
+    )?;
+
+    let sheet = zip_entry(&output, "xl/worksheets/sheet1.xml")?;
+    assert!(sheet.contains("mutated"), "sheet XML: {sheet}");
+    assert!(!sheet.contains("original"));
+    assert!(!sheet.contains("<c r=\"B2\""));
+    assert!(cell_style_id(&sheet, "A2").is_none());
+    assert_eq!(
+        events
+            .lock()
+            .map_err(|_| test_error("events poisoned"))?
+            .as_slice(),
+        [
+            "row-before:1",
+            "row-created:1",
+            "cell-before:0",
+            "cell-created:0",
+            "cell-converted:0",
+            "cell-disposed:0",
+            "cell-before:1",
+            "cell-created:1",
+            "cell-converted:1",
+            "cell-disposed:1",
+            "row-disposed:1",
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn handler_context_matches_java_conversion_stages_and_ignore_fill_style() -> Result<()> {
+    struct ContextRow;
+
+    impl ExcelRow for ContextRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const STYLE: ExcelCellStyle = ExcelCellStyle {
+                fill_pattern: Some(ExcelFillPattern::Solid),
+                fill_foreground_color: Some(ExcelColor::Indexed(10)),
+                ..ExcelCellStyle::new()
+            };
+            const COLUMNS: &[ExcelColumn] =
+                &[ExcelColumn::new("name", "Name", Some(0), 0, None).with_content_style(STYLE)];
+            COLUMNS
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self)
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![CellValue::String("value".to_owned())])
+        }
+    }
+
+    #[derive(Default)]
+    struct ObservedContext {
+        rows: Vec<(bool, Option<usize>)>,
+        before_content_original: Option<CellValue>,
+        before_content_data_len: usize,
+        after_create_content_data_len: usize,
+        head_converted_calls: usize,
+        content_converted_calls: usize,
+        converted_original: Option<CellValue>,
+        converted_first: Option<CellValue>,
+        converted_target: Option<easyexcel_core::CellDataType>,
+        head_disposed_first: Option<CellValue>,
+    }
+
+    struct ContextProbe {
+        observed: Arc<std::sync::Mutex<ObservedContext>>,
+    }
+
+    impl WriteHandler for ContextProbe {
+        fn before_row_create(&mut self, context: &WriteRowContext) -> Result<()> {
+            self.observed
+                .lock()
+                .map_err(|_| test_error("context poisoned"))?
+                .rows
+                .push((context.is_head, context.relative_row_index));
+            Ok(())
+        }
+
+        fn before_cell_create(&mut self, context: &mut WriteCellContext) -> Result<()> {
+            if !context.is_head {
+                let mut observed = self
+                    .observed
+                    .lock()
+                    .map_err(|_| test_error("context poisoned"))?;
+                observed.before_content_original = context.original_value.clone();
+                observed.before_content_data_len = context.cell_data_list.len();
+                context.ignore_fill_style = true;
+            }
+            Ok(())
+        }
+
+        fn after_cell_create(&mut self, context: &WriteCellContext) -> Result<()> {
+            if !context.is_head {
+                self.observed
+                    .lock()
+                    .map_err(|_| test_error("context poisoned"))?
+                    .after_create_content_data_len = context.cell_data_list.len();
+            }
+            Ok(())
+        }
+
+        fn after_cell_data_converted(&mut self, context: &WriteCellContext) -> Result<()> {
+            let mut observed = self
+                .observed
+                .lock()
+                .map_err(|_| test_error("context poisoned"))?;
+            if context.is_head {
+                observed.head_converted_calls += 1;
+            } else {
+                observed.content_converted_calls += 1;
+                observed.converted_original = context.original_value.clone();
+                observed.converted_first = context.first_cell_data().cloned();
+                observed.converted_target = context.target_cell_data_type;
+            }
+            Ok(())
+        }
+
+        fn after_cell_dispose(&mut self, context: &WriteCellContext) -> Result<()> {
+            if context.is_head {
+                self.observed
+                    .lock()
+                    .map_err(|_| test_error("context poisoned"))?
+                    .head_disposed_first = context.first_cell_data().cloned();
+            }
+            Ok(())
+        }
+    }
+
+    let directory = tempdir()?;
+    let output = directory.path().join("handler-context.xlsx");
+    let observed = Arc::new(std::sync::Mutex::new(ObservedContext::default()));
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(ContextProbe {
+        observed: Arc::clone(&observed),
+    })];
+    write_xlsx_with_handlers::<ContextRow, _>(
+        &output,
+        &WriteOptions::default(),
+        vec![ContextRow],
+        &mut handlers,
+    )?;
+
+    let observed = observed
+        .lock()
+        .map_err(|_| test_error("context poisoned"))?;
+    assert_eq!(observed.rows, [(true, Some(0)), (false, Some(0))]);
+    assert_eq!(observed.before_content_original, None);
+    assert_eq!(observed.before_content_data_len, 0);
+    assert_eq!(observed.after_create_content_data_len, 0);
+    assert_eq!(observed.head_converted_calls, 0);
+    assert_eq!(observed.content_converted_calls, 1);
+    assert_eq!(
+        observed.converted_original,
+        Some(CellValue::String("value".to_owned()))
+    );
+    assert_eq!(
+        observed.converted_first,
+        Some(CellValue::String("value".to_owned()))
+    );
+    assert_eq!(
+        observed.converted_target,
+        Some(easyexcel_core::CellDataType::String)
+    );
+    assert_eq!(
+        observed.head_disposed_first,
+        Some(CellValue::String("Name".to_owned()))
+    );
+    drop(observed);
+
+    let sheet = zip_entry(&output, "xl/worksheets/sheet1.xml")?;
+    assert!(
+        cell_style_id(&sheet, "A2").is_none(),
+        "ignoreFillStyle must suppress annotation style: {sheet}"
+    );
+    Ok(())
+}
+
+#[test]
+fn handler_context_exposes_real_pre_converter_value_across_write_backends() -> Result<()> {
+    struct ConvertedContextRow(i64);
+
+    impl ExcelRow for ConvertedContextRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] =
+                &[ExcelColumn::new("amount", "Amount", Some(0), 0, None).with_field_type("i64")];
+            COLUMNS
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self(0))
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![CellValue::Int(self.0)])
+        }
+
+        fn to_row_with_converters(
+            &self,
+            _converters: &easyexcel_core::ConverterRegistry,
+        ) -> Result<Vec<CellValue>> {
+            Ok(vec![CellValue::String(format!("converted:{}", self.0))])
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Snapshot {
+        original: Option<CellValue>,
+        field_type: Option<&'static str>,
+        converted: CellValue,
+        first_data: Option<CellValue>,
+        target_type: Option<easyexcel_core::CellDataType>,
+        workbook_file: Option<String>,
+        sheet_name: String,
+        sheet_no: Option<i32>,
+        last_row_index: Option<u32>,
+        table_no: Option<i32>,
+    }
+
+    struct ConversionProbe {
+        snapshots: Arc<std::sync::Mutex<Vec<Snapshot>>>,
+    }
+
+    impl WriteHandler for ConversionProbe {
+        fn before_cell_create(&mut self, context: &mut WriteCellContext) -> Result<()> {
+            if !context.is_head {
+                self.snapshots
+                    .lock()
+                    .map_err(|_| test_error("snapshot poisoned"))?
+                    .push(Snapshot {
+                        original: context.original_value.clone(),
+                        field_type: context.original_field_type,
+                        converted: context.value.clone(),
+                        first_data: context.first_cell_data().cloned(),
+                        target_type: context.target_cell_data_type,
+                        workbook_file: context
+                            .write_workbook_holder()
+                            .and_then(|holder| holder.path().file_name())
+                            .and_then(std::ffi::OsStr::to_str)
+                            .map(str::to_owned),
+                        sheet_name: context.write_sheet_holder().sheet_name().to_owned(),
+                        sheet_no: context.write_sheet_holder().sheet_no(),
+                        last_row_index: context.write_sheet_holder().last_row_index(),
+                        table_no: context
+                            .write_table_holder()
+                            .map(easyexcel_core::WriteTableHolderView::table_no),
+                    });
+            } else {
+                assert_eq!(context.original_value, None);
+                assert_eq!(context.original_field_type, None);
+            }
+            Ok(())
+        }
+
+        fn after_cell_data_converted(&mut self, context: &WriteCellContext) -> Result<()> {
+            if !context.is_head {
+                self.snapshots
+                    .lock()
+                    .map_err(|_| test_error("snapshot poisoned"))?
+                    .push(Snapshot {
+                        original: context.original_value.clone(),
+                        field_type: context.original_field_type,
+                        converted: context.value.clone(),
+                        first_data: context.first_cell_data().cloned(),
+                        target_type: context.target_cell_data_type,
+                        workbook_file: context
+                            .write_workbook_holder()
+                            .and_then(|holder| holder.path().file_name())
+                            .and_then(std::ffi::OsStr::to_str)
+                            .map(str::to_owned),
+                        sheet_name: context.write_sheet_holder().sheet_name().to_owned(),
+                        sheet_no: context.write_sheet_holder().sheet_no(),
+                        last_row_index: context.write_sheet_holder().last_row_index(),
+                        table_no: context
+                            .write_table_holder()
+                            .map(easyexcel_core::WriteTableHolderView::table_no),
+                    });
+            }
+            Ok(())
+        }
+    }
+
+    fn assert_snapshots(
+        snapshots: &Arc<std::sync::Mutex<Vec<Snapshot>>>,
+        expected_file: &str,
+        expected_row: u32,
+    ) -> Result<()> {
+        let snapshots = snapshots
+            .lock()
+            .map_err(|_| test_error("snapshot poisoned"))?;
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots[0].original, None);
+        assert_eq!(snapshots[0].field_type, None);
+        assert_eq!(
+            snapshots[0].converted,
+            CellValue::String("converted:42".to_owned())
+        );
+        assert_eq!(snapshots[0].first_data, None);
+        assert_eq!(snapshots[0].target_type, None);
+        for snapshot in snapshots.iter() {
+            assert_eq!(snapshot.workbook_file.as_deref(), Some(expected_file));
+            assert_eq!(snapshot.sheet_name, "Sheet1");
+            assert_eq!(snapshot.sheet_no, Some(0));
+            assert_eq!(snapshot.last_row_index, Some(expected_row));
+            assert_eq!(snapshot.table_no, None);
+        }
+        assert_eq!(snapshots[1].original, Some(CellValue::Int(42)));
+        assert_eq!(snapshots[1].field_type, Some("i64"));
+        assert_eq!(
+            snapshots[1].first_data,
+            Some(CellValue::String("converted:42".to_owned()))
+        );
+        assert_eq!(
+            snapshots[1].target_type,
+            Some(easyexcel_core::CellDataType::String)
+        );
+        Ok(())
+    }
+
+    let directory = tempdir()?;
+    for extension in ["xlsx", "xls", "csv"] {
+        let output = directory.path().join(format!("converted.{extension}"));
+        let snapshots = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(ConversionProbe {
+            snapshots: Arc::clone(&snapshots),
+        })];
+        match extension {
+            "xlsx" => write_xlsx_with_handlers::<ConvertedContextRow, _>(
+                &output,
+                &WriteOptions::default(),
+                [ConvertedContextRow(42)],
+                &mut handlers,
+            )?,
+            "xls" => write_xls_with_handlers::<ConvertedContextRow, _>(
+                &output,
+                &WriteOptions::default(),
+                [ConvertedContextRow(42)],
+                &mut handlers,
+            )?,
+            "csv" => write_csv_with_handlers::<ConvertedContextRow, _>(
+                &output,
+                &WriteOptions::default(),
+                [ConvertedContextRow(42)],
+                &mut handlers,
+            )?,
+            _ => unreachable!(),
+        }
+        assert_snapshots(&snapshots, &format!("converted.{extension}"), 1)?;
+    }
+
+    let template = directory.path().join("source-template.xlsx");
+    write_xlsx::<ConvertedContextRow, _>(&template, &WriteOptions::default(), std::iter::empty())?;
+    let output = directory.path().join("converted-template.xlsx");
+    let snapshots = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(ConversionProbe {
+        snapshots: Arc::clone(&snapshots),
+    })];
+    write_xlsx_with_handlers::<ConvertedContextRow, _>(
+        &output,
+        &WriteOptions {
+            template_file: Some(template),
+            ..WriteOptions::default()
+        },
+        [ConvertedContextRow(42)],
+        &mut handlers,
+    )?;
+    assert_snapshots(&snapshots, "converted-template.xlsx", 2)
+}
+
+#[test]
+fn logical_row_and_cell_handles_commit_real_backend_mutations() -> Result<()> {
+    struct HandleRow;
+
+    impl ExcelRow for HandleRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("value", "Value", Some(0), 0, None)];
+            COLUMNS
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self)
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![CellValue::String("source".to_owned())])
+        }
+    }
+
+    struct MutationProbe;
+
+    impl WriteHandler for MutationProbe {
+        fn after_row_dispose(&mut self, context: &WriteRowContext) -> Result<()> {
+            if !context.is_head {
+                context.row().set_height(31);
+            }
+            Ok(())
+        }
+
+        fn after_cell_dispose(&mut self, context: &WriteCellContext) -> Result<()> {
+            if !context.is_head {
+                context
+                    .cell()
+                    .set_value(CellValue::String("mutated".to_owned()));
+                context.cell().set_style(ExcelCellStyle {
+                    fill_pattern: Some(ExcelFillPattern::Solid),
+                    fill_foreground_color: Some(ExcelColor::Rgb(0x4472C4)),
+                    ..ExcelCellStyle::new()
+                });
+            }
+            Ok(())
+        }
+    }
+
+    struct MutationObserver;
+
+    impl WriteHandler for MutationObserver {
+        fn order(&self) -> i32 {
+            1
+        }
+
+        fn after_cell_dispose(&mut self, context: &WriteCellContext) -> Result<()> {
+            if !context.is_head {
+                assert_eq!(
+                    context.cell().value(),
+                    CellValue::String("mutated".to_owned())
+                );
+            }
+            Ok(())
+        }
+    }
+
+    let directory = tempdir()?;
+    for extension in ["xlsx", "xls", "csv"] {
+        let output = directory.path().join(format!("handle.{extension}"));
+        let mut handlers: Vec<Box<dyn WriteHandler>> =
+            vec![Box::new(MutationProbe), Box::new(MutationObserver)];
+        match extension {
+            "xlsx" => write_xlsx_with_handlers::<HandleRow, _>(
+                &output,
+                &WriteOptions::default(),
+                [HandleRow],
+                &mut handlers,
+            )?,
+            "xls" => write_xls_with_handlers::<HandleRow, _>(
+                &output,
+                &WriteOptions::default(),
+                [HandleRow],
+                &mut handlers,
+            )?,
+            "csv" => write_csv_with_handlers::<HandleRow, _>(
+                &output,
+                &WriteOptions::default(),
+                [HandleRow],
+                &mut handlers,
+            )?,
+            _ => unreachable!(),
+        }
+        if extension == "csv" {
+            assert!(std::fs::read_to_string(&output)?.contains("mutated"));
+        } else if extension == "xls" {
+            let mut workbook: Xls<_> = open_workbook(&output).map_err(test_error)?;
+            let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+            assert_eq!(
+                range.get_value((1, 0)),
+                Some(&Data::String("mutated".to_owned()))
+            );
+        } else {
+            let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
+            let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+            assert_eq!(
+                range.get_value((1, 0)),
+                Some(&Data::String("mutated".to_owned()))
+            );
+            let sheet = zip_entry(&output, "xl/worksheets/sheet1.xml")?;
+            assert!((sheet_row_height(&sheet, 2)? - 31.0).abs() <= 0.25);
+            assert!(cell_style_id(&sheet, "A2").is_some());
+        }
+    }
+
+    let template = directory.path().join("handle-template-source.xlsx");
+    write_xlsx::<HandleRow, _>(&template, &WriteOptions::default(), std::iter::empty())?;
+    let output = directory.path().join("handle-template.xlsx");
+    let mut handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(MutationProbe), Box::new(MutationObserver)];
+    write_xlsx_with_handlers::<HandleRow, _>(
+        &output,
+        &WriteOptions {
+            template_file: Some(template),
+            ..WriteOptions::default()
+        },
+        [HandleRow],
+        &mut handlers,
+    )?;
+    let mut workbook: Xlsx<_> = open_workbook(&output).map_err(test_error)?;
+    let range = workbook.worksheet_range("Sheet1").map_err(test_error)?;
+    assert_eq!(
+        range.get_value((2, 0)),
+        Some(&Data::String("mutated".to_owned()))
+    );
+    let sheet = zip_entry(&output, "xl/worksheets/sheet1.xml")?;
+    assert!((sheet_row_height(&sheet, 3)? - 31.0).abs() <= 0.25);
+    assert!(cell_style_id(&sheet, "A3").is_some());
+    Ok(())
 }
 
 #[test]
@@ -1363,6 +3100,30 @@ fn annotation_dimensions_apply_field_type_and_explicit_precedence() -> Result<()
 }
 
 #[test]
+fn custom_row_height_handler_overrides_annotation_height() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory
+        .path()
+        .join("handler-overrides-annotation-height.xlsx");
+    let mut handlers: Vec<Box<dyn WriteHandler>> = vec![Box::new(
+        SimpleRowHeightStyleStrategy::new(Some(30), Some(22)),
+    )];
+    write_xlsx_with_handlers::<DimensionRow, _>(
+        &path,
+        &WriteOptions::default(),
+        vec![DimensionRow],
+        &mut handlers,
+    )?;
+
+    let sheet = zip_entry(&path, "xl/worksheets/sheet1.xml")?;
+    assert!((sheet_row_height(&sheet, 1)? - 30.0).abs() < f64::EPSILON);
+    // XLSX stores row heights in quarter-point increments. The writer may
+    // normalize the requested value to the nearest representable height.
+    assert!((sheet_row_height(&sheet, 2)? - 22.0).abs() <= 0.25);
+    Ok(())
+}
+
+#[test]
 fn annotation_styles_apply_field_type_and_builder_precedence() -> Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("annotation-styles.xlsx");
@@ -1415,6 +3176,113 @@ fn annotation_styles_apply_field_type_and_builder_precedence() -> Result<()> {
 }
 
 #[test]
+fn excel_write_head_property_resolves_metadata_and_java_merge_ranges() -> Result<()> {
+    let mut parent_head_style = ExcelCellStyle::new();
+    parent_head_style.wrapped = Some(true);
+    let mut parent_head_font = ExcelFontStyle::new();
+    parent_head_font.bold = Some(true);
+    let mut field_head_style = ExcelCellStyle::new();
+    field_head_style.locked = Some(false);
+
+    let columns = [
+        ExcelColumn::new("a", "A", Some(0), 0, None)
+            .with_column_width(18)
+            .with_head_style(field_head_style),
+        ExcelColumn::new("b", "B", Some(1), 0, None),
+        ExcelColumn::new("c", "C", Some(2), 0, None),
+        ExcelColumn::new("d", "D", Some(3), 0, None),
+        ExcelColumn::new("e", "E", Some(4), 0, None),
+    ];
+    let effective_columns = columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| (index, column))
+        .collect::<Vec<_>>();
+    let head = vec![
+        vec!["顶格".to_owned(), "顶格".to_owned(), "两格".to_owned()],
+        vec!["顶格".to_owned(), "顶格".to_owned(), "两格".to_owned()],
+        vec!["顶格".to_owned(), "四联".to_owned(), "四联".to_owned()],
+        vec!["顶格".to_owned(), "四联".to_owned(), "四联".to_owned()],
+        vec!["顶格".to_owned()],
+    ];
+    let once_merge = OnceAbsoluteMergeProperty::new(10, 11, 1, 2);
+    let property = ExcelWriteHeadProperty::from_columns(
+        Some("DemoData".to_owned()),
+        &effective_columns,
+        Some(&head),
+        ExcelWriteMetadata::new()
+            .column_width(12)
+            .head_row_height(25)
+            .content_row_height(17)
+            .head_style(parent_head_style)
+            .head_font_style(parent_head_font)
+            .once_absolute_merge(once_merge),
+    )?;
+
+    assert_eq!(property.head_kind(), HeadKind::Class);
+    assert_eq!(property.head_row_number(), 3);
+    assert_eq!(
+        property.head_row_height_property(),
+        Some(&RowHeightProperty::new(25))
+    );
+    assert_eq!(
+        property.content_row_height_property(),
+        Some(&RowHeightProperty::new(17))
+    );
+    assert_eq!(property.once_absolute_merge_property(), Some(&once_merge));
+    assert_eq!(
+        property.head_map()[&0]
+            .column_width_property
+            .expect("field width")
+            .width(),
+        18
+    );
+    assert_eq!(
+        property.head_map()[&1]
+            .column_width_property
+            .expect("parent width")
+            .width(),
+        12
+    );
+    assert_eq!(
+        property.head_map()[&0]
+            .head_style_property
+            .expect("field style")
+            .cell_style,
+        field_head_style
+    );
+    assert_eq!(
+        property.head_map()[&1]
+            .head_style_property
+            .expect("parent style")
+            .cell_style,
+        parent_head_style
+    );
+    assert_eq!(
+        property.head_map()[&1]
+            .head_font_property
+            .expect("parent font")
+            .bold,
+        Some(true)
+    );
+    assert_eq!(
+        property.head_map()[&4].head_name_list(),
+        ["顶格", "顶格", "顶格"]
+    );
+    assert_eq!(
+        property.head_cell_range_list(),
+        vec![
+            CellRange::new(0, 0, 0, 4),
+            CellRange::new(1, 1, 0, 1),
+            CellRange::new(2, 2, 0, 1),
+            CellRange::new(1, 2, 2, 3),
+            CellRange::new(1, 2, 4, 4),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
 fn dynamic_multi_level_head_merges_parents_and_offsets_data_rows() -> Result<()> {
     let directory = tempdir()?;
     let path = directory.path().join("dynamic-head.xlsx");
@@ -1426,6 +3294,7 @@ fn dynamic_multi_level_head_merges_parents_and_offsets_data_rows() -> Result<()>
             vec!["User".to_owned(), "String".to_owned()],
             vec!["Meta".to_owned()],
         ]),
+        relative_head_row_index: 2,
         freeze_head: true,
         ..WriteOptions::default()
     };
@@ -1435,22 +3304,131 @@ fn dynamic_multi_level_head_merges_parents_and_offsets_data_rows() -> Result<()>
     let mut workbook: Xlsx<_> = open_workbook(&path).map_err(test_error)?;
     let range = workbook.worksheet_range("Dynamic").map_err(test_error)?;
     assert_eq!(
-        range.get_value((0, 0)),
+        range.get_value((2, 0)),
         Some(&Data::String("User".to_owned()))
     );
     assert_eq!(
-        range.get_value((1, 1)),
+        range.get_value((3, 1)),
         Some(&Data::String("String".to_owned()))
     );
     assert_eq!(
-        range.get_value((2, 1)),
+        range.get_value((4, 1)),
         Some(&Data::String("text".to_owned()))
     );
     assert_eq!(
         workbook
             .merge_cells_by_sheet_name("Dynamic")
             .map_err(test_error)?,
-        vec![Dimensions::new((0, 0), (0, 1))]
+        vec![
+            Dimensions::new((2, 0), (2, 1)),
+            Dimensions::new((2, 2), (3, 2)),
+        ]
+    );
+
+    let xls_path = directory.path().join("dynamic-head.xls");
+    write_xls::<EveryCell, _>(&xls_path, &options, vec![every_cell()])?;
+    let xls: Xls<_> = open_workbook(&xls_path).map_err(test_error)?;
+    assert_eq!(
+        xls.merge_cells_by_sheet_name("Dynamic")
+            .map_err(test_error)?,
+        vec![
+            Dimensions::new((2, 0), (2, 1)),
+            Dimensions::new((2, 2), (3, 2)),
+        ]
+    );
+
+    let unmerged_path = directory.path().join("dynamic-head-unmerged.xlsx");
+    write_xlsx::<EveryCell, _>(
+        &unmerged_path,
+        &WriteOptions {
+            automatic_merge_head: false,
+            ..options
+        },
+        vec![every_cell()],
+    )?;
+    let mut unmerged: Xlsx<_> = open_workbook(&unmerged_path).map_err(test_error)?;
+    assert!(
+        unmerged
+            .merge_cells_by_sheet_name("Dynamic")
+            .map_err(test_error)?
+            .is_empty()
+    );
+    Ok(())
+}
+
+#[test]
+fn dynamic_head_merges_are_preserved_on_xlsx_and_xls_templates() -> Result<()> {
+    let directory = tempdir()?;
+    let dynamic_head = vec![
+        vec!["User".to_owned(), "Empty".to_owned()],
+        vec!["User".to_owned(), "String".to_owned()],
+        vec!["Meta".to_owned()],
+    ];
+
+    let xlsx_template = directory.path().join("dynamic-template.xlsx");
+    let mut workbook = Workbook::new();
+    workbook
+        .add_worksheet()
+        .set_name("Dynamic")
+        .map_err(test_error)?
+        .write_string(0, 0, "seed")
+        .map_err(test_error)?;
+    workbook.save(&xlsx_template).map_err(test_error)?;
+    let xlsx_output = directory.path().join("dynamic-template-output.xlsx");
+    write_xlsx::<EveryCell, _>(
+        &xlsx_output,
+        &WriteOptions {
+            sheet_name: "Dynamic".to_owned(),
+            template_file: Some(xlsx_template),
+            include_column_indexes: Some(vec![0, 1, 2]),
+            dynamic_head: Some(dynamic_head.clone()),
+            relative_head_row_index: 2,
+            ..WriteOptions::default()
+        },
+        vec![every_cell()],
+    )?;
+    let mut xlsx: Xlsx<_> = open_workbook(&xlsx_output).map_err(test_error)?;
+    assert_eq!(
+        xlsx.merge_cells_by_sheet_name("Dynamic")
+            .map_err(test_error)?,
+        vec![
+            Dimensions::new((3, 0), (3, 1)),
+            Dimensions::new((3, 2), (4, 2)),
+        ]
+    );
+
+    let xls_template = directory.path().join("dynamic-template.xls");
+    write_xls::<EveryCell, _>(
+        &xls_template,
+        &WriteOptions {
+            sheet_name: "Dynamic".to_owned(),
+            need_head: false,
+            include_column_indexes: Some(vec![0]),
+            ..WriteOptions::default()
+        },
+        vec![every_cell()],
+    )?;
+    let xls_output = directory.path().join("dynamic-template-output.xls");
+    write_xls::<EveryCell, _>(
+        &xls_output,
+        &WriteOptions {
+            sheet_name: "Dynamic".to_owned(),
+            template_file: Some(xls_template),
+            include_column_indexes: Some(vec![0, 1, 2]),
+            dynamic_head: Some(dynamic_head),
+            relative_head_row_index: 2,
+            ..WriteOptions::default()
+        },
+        vec![every_cell()],
+    )?;
+    let xls: Xls<_> = open_workbook(&xls_output).map_err(test_error)?;
+    assert_eq!(
+        xls.merge_cells_by_sheet_name("Dynamic")
+            .map_err(test_error)?,
+        vec![
+            Dimensions::new((3, 0), (3, 1)),
+            Dimensions::new((3, 2), (4, 2)),
+        ]
     );
     Ok(())
 }
@@ -1615,7 +3593,12 @@ fn dynamic_head_validation_and_backend_failures_are_typed() -> Result<()> {
                 worksheet,
                 &columns,
                 &head,
-                SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new(), WriteGlobalFlags::default()),
+                SheetStyleContext::head(
+                    &CellStyle::default(),
+                    &ExcelWriteMetadata::new(),
+                    WriteGlobalFlags::default()
+                ),
+                0,
             )
             .is_err()
         );
@@ -1627,38 +3610,41 @@ fn dynamic_head_validation_and_backend_failures_are_typed() -> Result<()> {
         })
         .is_err()
     );
-    assert!(!same_dynamic_head_group(
-        &[
-            vec!["A".to_owned(), "X".to_owned()],
-            vec!["B".to_owned(), "X".to_owned()]
-        ],
-        0,
-        1,
-        1
-    ));
+    assert_eq!(
+        dynamic_head_merge_ranges(
+            &[(0, 0, &TEST_COLUMN), (1, 1, &TEST_COLUMN)],
+            &[
+                vec!["A".to_owned(), "X".to_owned()],
+                vec!["B".to_owned(), "X".to_owned()]
+            ],
+            0
+        )?,
+        vec![MergeRange::new(1, 1, 0, 1)]
+    );
     Ok(())
 }
 
 #[test]
 #[allow(clippy::too_many_lines)]
-fn columns_are_ordered_by_physical_index_order_and_schema_position() {
+fn columns_follow_java_field_cache_order_and_selection_rules() {
     const SCHEMA: &[ExcelColumn] = &[
         ExcelColumn::new("third", "Third", Some(2), 0, None),
-        ExcelColumn::new("second", "Second", Some(1), 5, None),
-        ExcelColumn::new("first", "First", Some(1), 1, None),
+        ExcelColumn::new("late", "Late", None, 5, None),
+        ExcelColumn::new("first", "First", None, 1, None),
         ExcelColumn::new("implicit", "Implicit", None, 0, None),
     ];
     let actual = ordered_columns(SCHEMA)
+        .expect("valid schema")
         .into_iter()
         .map(|(physical, schema, column)| (physical, schema, column.field))
         .collect::<Vec<_>>();
     assert_eq!(
         actual,
         vec![
+            (0, 3, "implicit"),
             (1, 2, "first"),
-            (1, 1, "second"),
             (2, 0, "third"),
-            (3, 3, "implicit")
+            (3, 1, "late")
         ]
     );
 
@@ -1669,20 +3655,21 @@ fn columns_are_ordered_by_physical_index_order_and_schema_position() {
             order_by_include_column: true,
             ..WriteOptions::default()
         },
-    );
+    )
+    .expect("valid selected columns");
     assert_eq!(
         by_index
             .iter()
             .map(|(_, _, column)| column.field)
             .collect::<Vec<_>>(),
-        vec!["third", "first", "second"]
+        vec!["third", "first"]
     );
     assert_eq!(
         by_index
             .iter()
             .map(|(physical, _, _)| *physical)
             .collect::<Vec<_>>(),
-        vec![0, 1, 2]
+        vec![0, 1]
     );
 
     let by_name = selected_columns(
@@ -1692,7 +3679,8 @@ fn columns_are_ordered_by_physical_index_order_and_schema_position() {
             order_by_include_column: true,
             ..WriteOptions::default()
         },
-    );
+    )
+    .expect("valid selected columns");
     assert_eq!(
         by_name
             .iter()
@@ -1705,16 +3693,17 @@ fn columns_are_ordered_by_physical_index_order_and_schema_position() {
         SCHEMA,
         &WriteOptions {
             exclude_column_indexes: vec![2],
-            exclude_column_field_names: vec!["second".to_owned()],
+            exclude_column_field_names: vec!["late".to_owned()],
             ..WriteOptions::default()
         },
-    );
+    )
+    .expect("valid selected columns");
     assert_eq!(
         excluded
             .iter()
             .map(|(_, _, column)| column.field)
             .collect::<Vec<_>>(),
-        vec!["first", "implicit"]
+        vec!["implicit", "first"]
     );
 
     let dynamic = selected_columns(
@@ -1730,13 +3719,26 @@ fn columns_are_ordered_by_physical_index_order_and_schema_position() {
             order_by_include_column: true,
             ..WriteOptions::default()
         },
-    );
+    )
+    .expect("valid dynamic columns");
     assert_eq!(
         dynamic
             .iter()
             .map(|(physical, source, column)| (*physical, *source, column.field))
             .collect::<Vec<_>>(),
         vec![(0, 2, ""), (1, 0, "")]
+    );
+    assert_eq!(
+        selected_dynamic_head_paths(
+            &dynamic,
+            &[
+                vec!["First".to_owned()],
+                vec!["Second".to_owned()],
+                vec!["Third".to_owned()],
+            ],
+        )
+        .expect("selected head paths"),
+        vec![vec!["Third".to_owned()], vec!["First".to_owned()]]
     );
     assert!(
         selected_dynamic_columns(
@@ -1764,6 +3766,118 @@ fn columns_are_ordered_by_physical_index_order_and_schema_position() {
 }
 
 #[test]
+fn duplicate_manual_indexes_fail_before_handlers_filters_templates_and_output() -> Result<()> {
+    struct DuplicateIndexRow;
+
+    impl ExcelRow for DuplicateIndexRow {
+        fn schema() -> &'static [ExcelColumn] {
+            const SCHEMA: &[ExcelColumn] = &[
+                ExcelColumn::new("first", "First", Some(1), 0, None),
+                ExcelColumn::new("second", "Second", Some(1), 0, None),
+            ];
+            SCHEMA
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            unreachable!("duplicate schema must fail before row conversion")
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            unreachable!("duplicate schema must fail before row conversion")
+        }
+    }
+
+    struct WorkbookProbe(Arc<AtomicUsize>);
+
+    impl WriteHandler for WorkbookProbe {
+        fn before_workbook(&mut self, _context: &WriteWorkbookContext) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn assert_duplicate(error: ExcelError) {
+        assert_eq!(
+            error.to_string(),
+            "excel format error: The index of 'first' and 'second' must be inconsistent"
+        );
+    }
+
+    let directory = tempdir()?;
+    let options = WriteOptions {
+        // Java validates the complete FieldCache before applying excludes.
+        exclude_column_field_names: vec!["second".to_owned()],
+        ..WriteOptions::default()
+    };
+
+    for extension in ["xlsx", "xls", "csv"] {
+        let output = directory.path().join(format!("duplicate.{extension}"));
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let mut handlers: Vec<Box<dyn WriteHandler>> =
+            vec![Box::new(WorkbookProbe(Arc::clone(&callbacks)))];
+        let error = match extension {
+            "xlsx" => write_xlsx_with_handlers::<DuplicateIndexRow, _>(
+                &output,
+                &options,
+                vec![DuplicateIndexRow],
+                &mut handlers,
+            )
+            .expect_err("duplicate XLSX index must fail"),
+            "xls" => write_xls_with_handlers::<DuplicateIndexRow, _>(
+                &output,
+                &options,
+                vec![DuplicateIndexRow],
+                &mut handlers,
+            )
+            .expect_err("duplicate XLS index must fail"),
+            "csv" => write_csv_with_handlers::<DuplicateIndexRow, _>(
+                &output,
+                &options,
+                vec![DuplicateIndexRow],
+                &mut handlers,
+            )
+            .expect_err("duplicate CSV index must fail"),
+            _ => unreachable!(),
+        };
+        assert_duplicate(error);
+        assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+        assert!(!output.exists(), "{extension} output must not be created");
+    }
+
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let mut handlers: Vec<Box<dyn WriteHandler>> =
+        vec![Box::new(WorkbookProbe(Arc::clone(&callbacks)))];
+    let template_options = WriteOptions {
+        template_bytes: Some(b"not a workbook".to_vec()),
+        ..options.clone()
+    };
+    let error = write_xlsx_with_handlers::<DuplicateIndexRow, _>(
+        &directory.path().join("duplicate-template.xlsx"),
+        &template_options,
+        vec![DuplicateIndexRow],
+        &mut handlers,
+    )
+    .expect_err("schema validation must precede template parsing");
+    assert_duplicate(error);
+    assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+
+    let stateful_output = directory.path().join("duplicate-stateful.xlsx");
+    let callbacks = Arc::new(AtomicUsize::new(0));
+    let mut writer = ExcelWriter::new(&stateful_output);
+    writer.register_write_handler(Box::new(WorkbookProbe(Arc::clone(&callbacks))))?;
+    let sheet = WriteSheet::<DuplicateIndexRow>::new("Data");
+    let error = match writer.write(vec![DuplicateIndexRow], &sheet) {
+        Ok(_) => panic!("stateful schema validation must precede writer start"),
+        Err(error) => error,
+    };
+    assert_duplicate(error);
+    assert_eq!(callbacks.load(Ordering::SeqCst), 0);
+    assert!(!stateful_output.exists());
+
+    Ok(())
+}
+
+#[test]
 fn dynamic_row_layout_omits_a_synthetic_head_and_accepts_a_dynamic_head() -> Result<()> {
     let options = WriteOptions::default();
     assert_eq!(head_rows_for_schema_state(true, &options)?, 0);
@@ -1779,14 +3893,52 @@ fn dynamic_row_layout_omits_a_synthetic_head_and_accepts_a_dynamic_head() -> Res
         ..WriteOptions::default()
     };
     assert_eq!(head_rows_for_schema_state(true, &headed_options)?, 1);
-    assert!(dynamic_columns_for_row(true, 3, &headed_options).is_none());
+    assert_eq!(
+        dynamic_columns_for_row(true, 3, &headed_options)
+            .expect("dynamic basic row mapping")
+            .iter()
+            .map(|(physical, source, _)| (*physical, *source))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 1), (2, 2)]
+    );
+    assert_eq!(
+        dynamic_columns_for_row(true, 1, &headed_options)
+            .expect("short dynamic basic row mapping")
+            .iter()
+            .map(|(physical, source, _)| (*physical, *source))
+            .collect::<Vec<_>>(),
+        vec![(0, 0)]
+    );
+    assert_eq!(
+        dynamic_columns_for_row(
+            true,
+            3,
+            &WriteOptions {
+                dynamic_head: headed_options.dynamic_head.clone(),
+                include_column_indexes: Some(vec![2, 0]),
+                order_by_include_column: true,
+                ..WriteOptions::default()
+            },
+        )
+        .expect("filtered head map")
+        .iter()
+        .map(|(physical, source, _)| (*physical, *source))
+        .collect::<Vec<_>>(),
+        vec![(0, 0), (1, 1), (2, 2)]
+    );
 
     let mut writer = create_csv_record_writer(Box::new(Vec::<u8>::new()), &options.charset, true)?;
-    let mut rows = [Ok(vec![
+    let cells = vec![
         CellValue::String("Alice".to_owned()),
         CellValue::Empty,
         CellValue::Int(7),
-    ])]
+    ];
+    let converted = cells.iter().cloned().map(WriteCellData::new).collect();
+    let mut rows = [Ok(PreparedWriteRow {
+        absent: false,
+        original_cells: cells,
+        cells: converted,
+    })]
     .into_iter();
     let progress = append_csv_records(
         &mut writer,
@@ -1798,10 +3950,433 @@ fn dynamic_row_layout_omits_a_synthetic_head_and_accepts_a_dynamic_head() -> Res
         0,
         0,
         true,
+        None,
     )?;
     assert_eq!(progress.next_row, 1);
     assert_eq!(progress.next_data_index, 1);
     finish_csv_record_writer(writer)
+}
+
+#[test]
+fn dynamic_basic_row_keeps_values_beyond_the_head_map_across_backends() -> Result<()> {
+    let directory = tempdir()?;
+    let options = WriteOptions {
+        sheet_name: "Dynamic".to_owned(),
+        dynamic_head: Some(vec![vec!["First".to_owned()], vec!["Second".to_owned()]]),
+        ..WriteOptions::default()
+    };
+    let row = DynamicRow::new(
+        [
+            (0, DynamicValue::String("alpha".to_owned())),
+            (1, DynamicValue::String("beta".to_owned())),
+            (2, DynamicValue::String("after-head".to_owned())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    let xlsx_path = directory.path().join("dynamic-extra.xlsx");
+    write_xlsx::<DynamicRow, _>(&xlsx_path, &options, [row.clone()])?;
+    let mut xlsx: Xlsx<_> = open_workbook(&xlsx_path).map_err(test_error)?;
+    let xlsx_range = xlsx.worksheet_range("Dynamic").map_err(test_error)?;
+    assert_eq!(
+        xlsx_range.get_value((1, 2)),
+        Some(&Data::String("after-head".to_owned()))
+    );
+
+    let xls_path = directory.path().join("dynamic-extra.xls");
+    write_xls::<DynamicRow, _>(&xls_path, &options, [row.clone()])?;
+    let mut xls: Xls<_> = open_workbook(&xls_path).map_err(test_error)?;
+    let xls_range = xls.worksheet_range("Dynamic").map_err(test_error)?;
+    assert_eq!(
+        xls_range.get_value((1, 2)),
+        Some(&Data::String("after-head".to_owned()))
+    );
+
+    let csv = write_csv_to_buffer::<DynamicRow, _>(
+        Path::new("dynamic-extra.csv"),
+        &options,
+        [row.clone()],
+        &mut [],
+    )?;
+    let mut csv_reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .flexible(true)
+        .from_reader(csv.as_slice());
+    let records = csv_reader
+        .records()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(test_error)?;
+    assert_eq!(records[1].get(2), Some("after-head"));
+
+    let (template_rows, _, _, _) =
+        collect_template_append_rows::<DynamicRow, _>(&options, [row], true, 0)?;
+    assert_eq!(
+        template_rows[1].get(2),
+        Some(&(2, CellValue::String("after-head".to_owned())))
+    );
+    Ok(())
+}
+
+#[test]
+fn collection_and_map_row_data_enter_the_public_writer_backends() -> Result<()> {
+    let directory = tempdir()?;
+    let collection = CollectionRowData::new(vec![
+        CellValue::String("collection".to_owned()),
+        CellValue::Int(1),
+    ]);
+    let map = MapRowData::new(
+        [
+            (0, CellValue::String("map".to_owned())),
+            (1, CellValue::Int(2)),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    let xlsx_path = directory.path().join("row-data.xlsx");
+    let mut writer = ExcelWriter::new(&xlsx_path);
+    writer.write(
+        [collection.clone()],
+        &WriteSheet::<CollectionRowData>::new("Rows").need_head(false),
+    )?;
+    writer.write(
+        [map.clone()],
+        &WriteSheet::<MapRowData>::new("Rows").need_head(false),
+    )?;
+    writer.finish()?;
+    let mut xlsx: Xlsx<_> = open_workbook(&xlsx_path).map_err(test_error)?;
+    let xlsx_range = xlsx.worksheet_range("Rows").map_err(test_error)?;
+    assert_eq!(
+        xlsx_range.get_value((0, 0)),
+        Some(&Data::String("collection".to_owned()))
+    );
+    assert_eq!(
+        xlsx_range.get_value((1, 0)),
+        Some(&Data::String("map".to_owned()))
+    );
+
+    let xls_path = directory.path().join("collection-row.xls");
+    write_xls::<CollectionRowData, _>(
+        &xls_path,
+        &WriteOptions {
+            need_head: false,
+            sheet_name: "Rows".to_owned(),
+            ..WriteOptions::default()
+        },
+        [collection],
+    )?;
+    let mut xls: Xls<_> = open_workbook(&xls_path).map_err(test_error)?;
+    assert_eq!(
+        xls.worksheet_range("Rows")
+            .map_err(test_error)?
+            .get_value((0, 1)),
+        Some(&Data::Int(1))
+    );
+
+    let csv = write_csv_to_buffer::<MapRowData, _>(
+        Path::new("map-row.csv"),
+        &WriteOptions {
+            need_head: false,
+            with_bom: false,
+            ..WriteOptions::default()
+        },
+        [map],
+        &mut [],
+    )?;
+    let text = String::from_utf8(csv).map_err(test_error)?;
+    assert_eq!(text.trim_end(), "map,2");
+
+    let sparse = MapRowData::new(
+        [
+            (0, CellValue::String("kept".to_owned())),
+            (2, CellValue::String("outside-size".to_owned())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    assert_eq!(
+        <MapRowData as ExcelRow>::to_row(&sparse)?,
+        vec![CellValue::String("kept".to_owned()), CellValue::Empty]
+    );
+
+    let read_row = easyexcel_core::RowData::new(
+        "Rows",
+        0,
+        vec![CellValue::String("read".to_owned()), CellValue::Int(3)],
+        Arc::new(std::collections::HashMap::new()),
+    );
+    assert_eq!(
+        <CollectionRowData as ExcelRow>::from_row(&read_row)?.values(),
+        &[CellValue::String("read".to_owned()), CellValue::Int(3)]
+    );
+    assert_eq!(
+        <MapRowData as ExcelRow>::from_row(&read_row)?.values(),
+        &[
+            (0, CellValue::String("read".to_owned())),
+            (1, CellValue::Int(3))
+        ]
+        .into_iter()
+        .collect()
+    );
+    Ok(())
+}
+
+#[test]
+fn absent_option_rows_keep_indexes_without_rows_cells_or_handlers() -> Result<()> {
+    struct NeverConvert;
+
+    impl ExcelRow for NeverConvert {
+        fn schema() -> &'static [ExcelColumn] {
+            &[]
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            panic!("absent rows must not be decoded")
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            panic!("absent rows must not be converted")
+        }
+    }
+
+    #[derive(Default)]
+    struct Events {
+        rows: std::sync::Mutex<Vec<(u32, Option<usize>)>>,
+        cells: std::sync::Mutex<Vec<(u32, Option<usize>)>>,
+    }
+
+    struct Probe {
+        events: Arc<Events>,
+    }
+
+    impl WriteHandler for Probe {
+        fn before_row_create(&mut self, context: &WriteRowContext) -> Result<()> {
+            self.events
+                .rows
+                .lock()
+                .expect("row events")
+                .push((context.row_index, context.relative_row_index));
+            Ok(())
+        }
+
+        fn before_cell_create(&mut self, context: &mut WriteCellContext) -> Result<()> {
+            self.events
+                .cells
+                .lock()
+                .expect("cell events")
+                .push((context.row_index, context.relative_row_index));
+            Ok(())
+        }
+    }
+
+    fn rows() -> Vec<Option<CollectionRowData>> {
+        vec![
+            Some(CollectionRowData::new(vec![CellValue::String(
+                "first".to_owned(),
+            )])),
+            None,
+            Some(CollectionRowData::new(vec![CellValue::String(
+                "third".to_owned(),
+            )])),
+        ]
+    }
+
+    fn assert_events(events: &Events) {
+        assert_eq!(
+            *events.rows.lock().expect("row events"),
+            vec![(0, Some(0)), (2, Some(2))]
+        );
+        assert_eq!(
+            *events.cells.lock().expect("cell events"),
+            vec![(0, Some(0)), (2, Some(2))]
+        );
+    }
+
+    let directory = tempdir()?;
+    let options = WriteOptions {
+        need_head: false,
+        sheet_name: "Rows".to_owned(),
+        with_bom: false,
+        ..WriteOptions::default()
+    };
+    write_xlsx::<Option<NeverConvert>, _>(
+        &directory.path().join("absent-never-convert.xlsx"),
+        &options,
+        [None],
+    )?;
+
+    let xlsx_path = directory.path().join("absent.xlsx");
+    let xlsx_events = Arc::new(Events::default());
+    write_xlsx_with_handlers::<Option<CollectionRowData>, _>(
+        &xlsx_path,
+        &options,
+        rows(),
+        &mut [Box::new(Probe {
+            events: Arc::clone(&xlsx_events),
+        })],
+    )?;
+    assert_events(&xlsx_events);
+    let xlsx_xml = zip_entry(&xlsx_path, "xl/worksheets/sheet1.xml")?;
+    assert!(xlsx_xml.contains("<row r=\"1\""));
+    assert!(!xlsx_xml.contains("<row r=\"2\""));
+    assert!(xlsx_xml.contains("<row r=\"3\""));
+
+    let xls_path = directory.path().join("absent.xls");
+    let xls_events = Arc::new(Events::default());
+    write_xls_with_handlers::<Option<CollectionRowData>, _>(
+        &xls_path,
+        &options,
+        rows(),
+        &mut [Box::new(Probe {
+            events: Arc::clone(&xls_events),
+        })],
+    )?;
+    assert_events(&xls_events);
+    let mut xls: Xls<_> = open_workbook(&xls_path).map_err(test_error)?;
+    let range = xls.worksheet_range("Rows").map_err(test_error)?;
+    assert_eq!(
+        range.get_value((0, 0)),
+        Some(&Data::String("first".to_owned()))
+    );
+    assert_eq!(range.get_value((1, 0)), Some(&Data::Empty));
+    assert_eq!(
+        range.get_value((2, 0)),
+        Some(&Data::String("third".to_owned()))
+    );
+
+    let csv_events = Arc::new(Events::default());
+    let csv = write_csv_to_buffer::<Option<CollectionRowData>, _>(
+        Path::new("absent.csv"),
+        &options,
+        rows(),
+        &mut [Box::new(Probe {
+            events: Arc::clone(&csv_events),
+        })],
+    )?;
+    assert_events(&csv_events);
+    assert_eq!(
+        String::from_utf8(csv).map_err(test_error)?,
+        "first\nthird\n"
+    );
+
+    let template_path = directory.path().join("empty-template.xlsx");
+    write_xlsx::<CollectionRowData, _>(&template_path, &options, Vec::<CollectionRowData>::new())?;
+    let templated_path = directory.path().join("absent-template.xlsx");
+    let template_events = Arc::new(Events::default());
+    write_xlsx_with_handlers::<Option<CollectionRowData>, _>(
+        &templated_path,
+        &WriteOptions {
+            template_file: Some(template_path),
+            ..options
+        },
+        rows(),
+        &mut [Box::new(Probe {
+            events: Arc::clone(&template_events),
+        })],
+    )?;
+    assert_events(&template_events);
+    let template_xml = zip_entry(&templated_path, "xl/worksheets/sheet1.xml")?;
+    assert!(template_xml.contains("<row r=\"1\""));
+    assert!(!template_xml.contains("<row r=\"2\""));
+    assert!(template_xml.contains("<row r=\"3\""));
+    Ok(())
+}
+
+#[test]
+fn java_field_cache_order_and_forced_index_are_preserved_across_backends() -> Result<()> {
+    struct OrderedBean;
+
+    impl ExcelRow for OrderedBean {
+        fn schema() -> &'static [ExcelColumn] {
+            const COLUMNS: &[ExcelColumn] = &[
+                ExcelColumn::new("forced", "Forced", Some(2), i32::MAX, None),
+                ExcelColumn::new("late", "Late", None, 20, None),
+                ExcelColumn::new("early_a", "Early A", None, 10, None),
+                ExcelColumn::new("early_b", "Early B", None, 10, None),
+            ];
+            COLUMNS
+        }
+
+        fn from_row(_row: &easyexcel_core::RowData) -> Result<Self> {
+            Ok(Self)
+        }
+
+        fn to_row(&self) -> Result<Vec<CellValue>> {
+            Ok(vec![
+                CellValue::String("forced".to_owned()),
+                CellValue::String("late".to_owned()),
+                CellValue::String("early-a".to_owned()),
+                CellValue::String("early-b".to_owned()),
+            ])
+        }
+    }
+
+    fn assert_range_order(range: &calamine::Range<Data>) {
+        let expected_head = ["Early A", "Early B", "Forced", "Late"];
+        let expected_data = ["early-a", "early-b", "forced", "late"];
+        for (column, expected) in expected_head.into_iter().enumerate() {
+            assert_eq!(
+                range.get_value((0, u32::try_from(column).expect("column"))),
+                Some(&Data::String(expected.to_owned()))
+            );
+        }
+        for (column, expected) in expected_data.into_iter().enumerate() {
+            assert_eq!(
+                range.get_value((1, u32::try_from(column).expect("column"))),
+                Some(&Data::String(expected.to_owned()))
+            );
+        }
+    }
+
+    let directory = tempdir()?;
+    let options = WriteOptions {
+        sheet_name: "Order".to_owned(),
+        with_bom: false,
+        ..WriteOptions::default()
+    };
+
+    let xlsx_path = directory.path().join("field-order.xlsx");
+    write_xlsx::<OrderedBean, _>(&xlsx_path, &options, [OrderedBean])?;
+    let mut xlsx: Xlsx<_> = open_workbook(&xlsx_path).map_err(test_error)?;
+    assert_range_order(&xlsx.worksheet_range("Order").map_err(test_error)?);
+
+    let xls_path = directory.path().join("field-order.xls");
+    write_xls::<OrderedBean, _>(&xls_path, &options, [OrderedBean])?;
+    let mut xls: Xls<_> = open_workbook(&xls_path).map_err(test_error)?;
+    assert_range_order(&xls.worksheet_range("Order").map_err(test_error)?);
+
+    let csv = write_csv_to_buffer::<OrderedBean, _>(
+        Path::new("field-order.csv"),
+        &options,
+        [OrderedBean],
+        &mut [],
+    )?;
+    assert_eq!(
+        String::from_utf8(csv).map_err(test_error)?,
+        "Early A,Early B,Forced,Late\nearly-a,early-b,forced,late\n"
+    );
+
+    let (template_rows, _, _, _) =
+        collect_template_append_rows::<OrderedBean, _>(&options, [OrderedBean], true, 0)?;
+    assert_eq!(
+        template_rows,
+        vec![
+            vec![
+                (0, CellValue::String("Early A".to_owned())),
+                (1, CellValue::String("Early B".to_owned())),
+                (2, CellValue::String("Forced".to_owned())),
+                (3, CellValue::String("Late".to_owned())),
+            ],
+            vec![
+                (0, CellValue::String("early-a".to_owned())),
+                (1, CellValue::String("early-b".to_owned())),
+                (2, CellValue::String("forced".to_owned())),
+                (3, CellValue::String("late".to_owned())),
+            ],
+        ]
+    );
+    Ok(())
 }
 
 #[test]
@@ -2020,7 +4595,8 @@ fn rich_text_writer_applies_java_whole_and_utf16_interval_fonts() -> Result<()> 
             0,
             &TEST_COLUMN,
             &CellValue::RichText(invalid),
-            SheetStyleContext::content(None, &metadata, WriteGlobalFlags::default()).column(&TEST_COLUMN),
+            SheetStyleContext::content(None, &metadata, WriteGlobalFlags::default())
+                .column(&TEST_COLUMN),
             &ImageLayout::default(),
         )
         .is_err()
@@ -2042,7 +4618,7 @@ fn rich_text_writer_applies_java_whole_and_utf16_interval_fonts() -> Result<()> 
 #[test]
 #[allow(clippy::too_many_lines)]
 fn image_anchor_layout_and_validation_cover_java_coordinate_boundaries() -> Result<()> {
-    let columns = selected_columns(AnchoredImageRow::schema(), &WriteOptions::default());
+    let columns = selected_columns(AnchoredImageRow::schema(), &WriteOptions::default())?;
     let layout = ImageLayout::new(
         &columns,
         &WriteOptions {
@@ -2148,7 +4724,8 @@ fn image_anchor_layout_and_validation_cover_java_coordinate_boundaries() -> Resu
     let valid_image = image_from_buffer(&bytes)?;
     assert!(insert_scaled_image(worksheet, u32::MAX, 0, &valid_image, 0, 0).is_err());
     let metadata = ExcelWriteMetadata::new();
-    let style = SheetStyleContext::content(None, &metadata, WriteGlobalFlags::default()).column(&TEST_COLUMN);
+    let style = SheetStyleContext::content(None, &metadata, WriteGlobalFlags::default())
+        .column(&TEST_COLUMN);
     assert!(
         write_cell(
             worksheet,
@@ -2188,7 +4765,8 @@ fn image_anchor_layout_and_validation_cover_java_coordinate_boundaries() -> Resu
 fn decimal_writer_rejects_values_outside_xlsx_numeric_range() {
     let huge: BigDecimal = "9".repeat(400).parse().expect("valid large decimal");
     let metadata = ExcelWriteMetadata::new();
-    let style = SheetStyleContext::content(None, &metadata, WriteGlobalFlags::default()).column(&TEST_COLUMN);
+    let style = SheetStyleContext::content(None, &metadata, WriteGlobalFlags::default())
+        .column(&TEST_COLUMN);
     let mut workbook = Workbook::new();
     let worksheet = workbook.add_worksheet();
     assert!(
@@ -2684,17 +5262,22 @@ fn every_handler_failure_stage_is_propagated() -> Result<()> {
     assert!(
         write_headers_with_handlers(
             worksheet,
-            &selected_columns(EveryCell::schema(), &WriteOptions::default()),
+            &selected_columns(EveryCell::schema(), &WriteOptions::default())?,
             "Sheet1",
-            SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new(), WriteGlobalFlags::default()),
+            SheetStyleContext::head(
+                &CellStyle::default(),
+                &ExcelWriteMetadata::new(),
+                WriteGlobalFlags::default()
+            ),
             &mut handlers,
             &ImageLayout::default(),
             0,
+            None,
         )
         .is_err()
     );
     let worksheet = workbook.add_worksheet();
-    let columns = selected_columns(EveryCell::schema(), &WriteOptions::default());
+    let columns = selected_columns(EveryCell::schema(), &WriteOptions::default())?;
     let head = columns
         .iter()
         .map(|_| vec!["Head".to_owned()])
@@ -2706,10 +5289,16 @@ fn every_handler_failure_stage_is_propagated() -> Result<()> {
             &columns,
             &head,
             "Sheet2",
-            SheetStyleContext::head(&CellStyle::default(), &ExcelWriteMetadata::new(), WriteGlobalFlags::default()),
+            SheetStyleContext::head(
+                &CellStyle::default(),
+                &ExcelWriteMetadata::new(),
+                WriteGlobalFlags::default()
+            ),
             &mut handlers,
             &ImageLayout::default(),
             0,
+            true,
+            None,
         )
         .is_err()
     );
@@ -3582,8 +6171,7 @@ fn write_font_merges_size_and_color_into_strategy_styles() -> Result<()> {
 
     impl ExcelRow for PlainRow {
         fn schema() -> &'static [ExcelColumn] {
-            const COLUMNS: &[ExcelColumn] =
-                &[ExcelColumn::new("name", "name", Some(0), 0, None)];
+            const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("name", "name", Some(0), 0, None)];
             COLUMNS
         }
 
@@ -3665,8 +6253,7 @@ fn longest_match_sets_column_width_from_byte_length() -> Result<()> {
 
     impl ExcelRow for PlainRow {
         fn schema() -> &'static [ExcelColumn] {
-            const COLUMNS: &[ExcelColumn] =
-                &[ExcelColumn::new("name", "name", Some(0), 0, None)];
+            const COLUMNS: &[ExcelColumn] = &[ExcelColumn::new("name", "name", Some(0), 0, None)];
             COLUMNS
         }
 
@@ -3725,7 +6312,7 @@ fn longest_match_sets_column_width_from_byte_length() -> Result<()> {
 /// match the final sheet column widths applied by `apply_handler_column_widths`.
 #[test]
 fn image_layout_reads_handler_column_width() -> Result<()> {
-    let columns = selected_columns(AnchoredImageRow::schema(), &WriteOptions::default());
+    let columns = selected_columns(AnchoredImageRow::schema(), &WriteOptions::default())?;
     // AnchoredImageRow annotates column_width=20; uniform(30) must still win.
     let handlers: Vec<Box<dyn WriteHandler>> =
         vec![Box::new(SimpleColumnWidthStyleStrategy::uniform(30))];
@@ -3760,6 +6347,11 @@ fn image_layout_reads_handler_column_width() -> Result<()> {
 /// (Java `registerWriteHandler(new OnceAbsoluteMergeStrategy(...))`).
 #[test]
 fn once_absolute_merge_strategy_register_applies_merge() -> Result<()> {
+    assert!(OnceAbsoluteMergeStrategy::new(-1, 0, 0, 1).is_err());
+    assert!(OnceAbsoluteMergeStrategy::new(0, -1, 0, 1).is_err());
+    assert!(OnceAbsoluteMergeStrategy::new(0, 0, -1, 1).is_err());
+    assert!(OnceAbsoluteMergeStrategy::new(0, 0, 0, -1).is_err());
+
     #[derive(Debug, Clone)]
     struct PlainRow {
         left: String,
@@ -3794,7 +6386,7 @@ fn once_absolute_merge_strategy_register_applies_merge() -> Result<()> {
     let path = directory.path().join("once-absolute-register.xlsx");
     // Merge head row columns 0..=1 (Java firstRow=0,lastRow=0,firstCol=0,lastCol=1).
     let mut handlers: Vec<Box<dyn WriteHandler>> =
-        vec![Box::new(OnceAbsoluteMergeStrategy::new(0, 0, 0, 1))];
+        vec![Box::new(OnceAbsoluteMergeStrategy::new(0, 0, 0, 1)?)];
     write_xlsx_with_handlers::<PlainRow, _>(
         &path,
         &WriteOptions::default(),
@@ -3820,8 +6412,6 @@ fn once_absolute_merge_strategy_register_applies_merge() -> Result<()> {
     Ok(())
 }
 
-
-
 /// Integration: write styled + merged `.xls` via `write_xls`, read back with calamine.
 ///
 /// Java mapping: StyleDataTest / LoopMergeStrategy subset for BIFF8 — asserts
@@ -3843,12 +6433,7 @@ fn write_xls_style_merge_round_trip() -> Result<()> {
     write_xls::<DimensionRow, _>(
         &path,
         &options,
-        vec![
-            DimensionRow,
-            DimensionRow,
-            DimensionRow,
-            DimensionRow,
-        ],
+        vec![DimensionRow, DimensionRow, DimensionRow, DimensionRow],
     )?;
 
     let mut book: Xls<_> = open_workbook(&path).map_err(test_error)?;
@@ -3888,10 +6473,7 @@ fn write_xls_annotation_dimensions_and_style() -> Result<()> {
     )?;
     let mut book: Xls<_> = open_workbook(&path).map_err(test_error)?;
     let range = book.worksheet_range("styled").map_err(test_error)?;
-    assert_eq!(
-        range.get((1, 0)).map(|c| format!("{c:?}")).is_some(),
-        true
-    );
+    assert_eq!(range.get((1, 0)).map(|c| format!("{c:?}")).is_some(), true);
     // DimensionRow-like widths via StyledAnnotationRow schema — file must be real BIFF8
     let magic = std::fs::read(&path).map_err(test_error)?;
     assert_eq!(&magic[..4], &[0xD0, 0xCF, 0x11, 0xE0], "OLE compound magic");
@@ -3913,4 +6495,51 @@ fn write_xls_rejects_password_and_images() {
     .expect("XLS password write must succeed (Phase 5.3)");
     assert!(directory.path().join("protected03.xls").exists());
     // Phase 5.5: image writing also works — see core_phase5_xls_features test
+}
+
+/// Java `WorkBookUtil.createWorkBook/createSheet/createRow/createCell` delegates
+/// to real POI objects. The Rust adapter must likewise produce a readable XLSX,
+/// rather than returning parity-only placeholders.
+#[test]
+fn workbook_util_creator_chain_materializes_real_xlsx_cells() -> Result<()> {
+    let mut workbook = create_work_book(XlsxWorkBookCreator)?;
+    {
+        let mut sheet_creator = XlsxSheetCreator {
+            workbook: &mut workbook,
+            constant_memory: false,
+        };
+        let worksheet = create_sheet(&mut sheet_creator, "用户")?;
+        let mut row_creator = XlsxRowCreator { worksheet };
+        let mut row = create_row(&mut row_creator, 2)?;
+        let cell = create_cell(&mut row, 4)?;
+        let XlsxCell {
+            worksheet,
+            row_index,
+            column_index,
+        } = cell;
+        worksheet
+            .write_string(row_index, column_index, "真实单元格")
+            .map_err(format_error)?;
+    }
+
+    let bytes = workbook.save_to_buffer().map_err(format_error)?;
+    let mut parsed = Xlsx::new(Cursor::new(bytes)).map_err(test_error)?;
+    let range = parsed.worksheet_range("用户").map_err(test_error)?;
+    assert_eq!(
+        range.get_value((2, 4)),
+        Some(&Data::String("真实单元格".to_owned()))
+    );
+
+    let mut workbook = create_work_book(XlsxWorkBookCreator)?;
+    let mut sheet_creator = XlsxSheetCreator {
+        workbook: &mut workbook,
+        constant_memory: false,
+    };
+    let worksheet = create_sheet(&mut sheet_creator, "limit")?;
+    let mut row_creator = XlsxRowCreator { worksheet };
+    assert!(matches!(
+        create_row(&mut row_creator, 1_048_576),
+        Err(ExcelError::Format(message)) if message.contains("1048575")
+    ));
+    Ok(())
 }

@@ -24,9 +24,7 @@ mod xls_cache;
 pub use ehcache::Ehcache;
 pub use map_cache::MapCache;
 pub use read_cache::ReadCache;
-pub use selector::{
-    EternalReadCacheSelector, ReadCacheSelector, SimpleReadCacheSelector,
-};
+pub use selector::{EternalReadCacheSelector, ReadCacheSelector, SimpleReadCacheSelector};
 pub use xls_cache::XlsCache;
 
 pub use read_cache::{new_disk_cache, new_map_cache, resolve_read_cache_mode};

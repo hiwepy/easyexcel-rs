@@ -1,7 +1,9 @@
 //! Mirrors Java `com.alibaba.excel.metadata.Head`.
 
 use crate::excel_error::ExcelError;
-use crate::metadata::property::{ColumnWidthProperty, FontProperty, LoopMergeProperty, StyleProperty};
+use crate::metadata::property::{
+    ColumnWidthProperty, FontProperty, LoopMergeProperty, StyleProperty,
+};
 
 /// Excel header metadata for one column.
 ///
@@ -33,8 +35,9 @@ impl Head {
     ///
     /// # Errors
     ///
-    /// Returns [`ExcelError::Format`] when any header label is null/empty in
-    /// the Java sense (Rust rejects empty strings in the name list).
+    /// Rust strings cannot be null, so every supplied label is valid,
+    /// including the empty string. This matches Java `Head`, which rejects
+    /// null labels but permits empty labels.
     pub fn new(
         column_index: i32,
         field_name: Option<String>,
@@ -42,14 +45,6 @@ impl Head {
         force_index: bool,
         force_name: bool,
     ) -> Result<Self, ExcelError> {
-        for head_name in &head_name_list {
-            if head_name.is_empty() {
-                return Err(ExcelError::Format(
-                    "head name can not be null.".to_owned(),
-                ));
-            }
-        }
-
         Ok(Self {
             column_index: Some(column_index),
             field_name,

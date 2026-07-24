@@ -1,7 +1,7 @@
 //! Mirrors Java `com.alibaba.excel.read.metadata.property.ExcelReadHeadProperty`.
 
-use super::excel_head_property::ExcelHeadProperty;
 use super::super::configuration_holder::ConfigurationHolder;
+use super::excel_head_property::ExcelHeadProperty;
 
 /// Read-side header metadata.
 ///

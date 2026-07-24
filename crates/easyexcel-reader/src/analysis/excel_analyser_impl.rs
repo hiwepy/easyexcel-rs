@@ -1,12 +1,66 @@
 //! Mirrors Java `com.alibaba.excel.analysis.ExcelAnalyserImpl`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use easyexcel_core::support::ExcelTypeEnum;
-use easyexcel_core::{AnalysisContext, ExcelError, ExcelRow, ReadListener, Result};
+use easyexcel_core::{
+    AnalysisContext, CellExtra, ErrorAction, ExcelError, ExcelRow, ReadListener, Result,
+};
 
 use crate::analysis::excel_analyser::ExcelAnalyser;
-use crate::{ReadOptions, SheetSelector, read_csv, read_xls, read_xlsx};
+use crate::analysis::excel_read_executor::ExcelReadExecutorKind;
+use crate::{ReadOptions, SheetSelector};
+
+struct ContextTrackingReadListener<'a, L> {
+    delegate: &'a mut L,
+    latest: &'a mut AnalysisContext,
+}
+
+impl<L> ContextTrackingReadListener<'_, L> {
+    fn capture(&mut self, context: &AnalysisContext) {
+        self.latest.clone_from(context);
+    }
+}
+
+impl<T, L> ReadListener<T> for ContextTrackingReadListener<'_, L>
+where
+    L: ReadListener<T>,
+{
+    fn on_exception(&mut self, error: &ExcelError, context: &AnalysisContext) -> ErrorAction {
+        self.capture(context);
+        self.delegate.on_exception(error, context)
+    }
+
+    fn invoke_head(
+        &mut self,
+        head: &std::collections::HashMap<String, usize>,
+        context: &AnalysisContext,
+    ) -> Result<()> {
+        self.capture(context);
+        self.delegate.invoke_head(head, context)
+    }
+
+    fn invoke(&mut self, data: T, context: &AnalysisContext) -> Result<()> {
+        self.capture(context);
+        self.delegate.invoke(data, context)
+    }
+
+    fn extra(&mut self, extra: &CellExtra, context: &AnalysisContext) -> Result<()> {
+        self.capture(context);
+        self.delegate.extra(extra, context)
+    }
+
+    fn do_after_all_analysed(&mut self, context: &AnalysisContext) -> Result<()> {
+        self.capture(context);
+        self.delegate.do_after_all_analysed(context)
+    }
+
+    fn has_next(&mut self, context: &AnalysisContext) -> bool {
+        self.capture(context);
+        self.delegate.has_next(context)
+    }
+}
 
 /// Mirrors Java `com.alibaba.excel.analysis.ExcelAnalyserImpl implements ExcelAnalyser`.
 ///
@@ -22,11 +76,15 @@ pub struct ExcelAnalyserImpl {
     options: ReadOptions,
     /// Detected workbook type. (Java `ExcelTypeEnum valueOf(ReadWorkbook)`)
     excel_type: Option<ExcelTypeEnum>,
+    /// Format-specific executor selected during construction.
+    excel_read_executor: Option<ExcelReadExecutorKind>,
     /// Live analysis context. (Java `ExcelAnalyserImpl.analysisContext`)
     context: AnalysisContext,
     /// Prevents multiple shutdowns. (Java `ExcelAnalyserImpl.finished`)
     finished: bool,
-    /// Captures errors from the void [`ExcelAnalyser::analysis`] entry.
+    /// Keeps a materialised Java-style input stream alive until `finish`.
+    temporary_input: Option<Arc<tempfile::TempPath>>,
+    /// Captures the last typed analysis error.
     last_error: Option<ExcelError>,
 }
 
@@ -48,10 +106,12 @@ impl ExcelAnalyserImpl {
             path: None,
             options: ReadOptions::default(),
             excel_type: None,
+            excel_read_executor: None,
             // Safe default — Java leaves `analysisContext` null until
             // `choiceExcelExecutor`; Rust always exposes a usable value.
             context: AnalysisContext::new("", 0, 0),
             finished: false,
+            temporary_input: None,
             last_error: None,
         }
     }
@@ -66,11 +126,28 @@ impl ExcelAnalyserImpl {
             path: Some(path.into()),
             options,
             excel_type: None,
+            excel_read_executor: None,
             context: AnalysisContext::new("", 0, 0),
             finished: false,
+            temporary_input: None,
             last_error: None,
         };
         analyser.choice_excel_executor()?;
+        Ok(analyser)
+    }
+
+    /// Creates an analyser whose workbook path is owned by a temporary-file guard.
+    ///
+    /// Java accepts non-seekable `InputStream` values and deletes the
+    /// materialised file from `finish()`. Keeping the guard in the analyser
+    /// also guarantees cleanup when analysis itself fails and calls `finish`.
+    pub(crate) fn from_temporary_input(
+        path: impl Into<PathBuf>,
+        temporary_input: Arc<tempfile::TempPath>,
+        options: ReadOptions,
+    ) -> Result<Self> {
+        let mut analyser = Self::from_path(path, options)?;
+        analyser.temporary_input = Some(temporary_input);
         Ok(analyser)
     }
 
@@ -98,6 +175,12 @@ impl ExcelAnalyserImpl {
         self.finished
     }
 
+    /// Returns whether this analyser owns a materialised input stream.
+    #[must_use]
+    pub const fn has_temporary_input(&self) -> bool {
+        self.temporary_input.is_some()
+    }
+
     /// Returns the bound read options.
     #[must_use]
     pub const fn options(&self) -> &ReadOptions {
@@ -117,9 +200,8 @@ impl ExcelAnalyserImpl {
     /// Mirrors Java `choiceExcelExecutor(ReadWorkbook)`.
     ///
     /// Resolves `ExcelTypeEnum` from the path extension (with a CSV fallback)
-    /// and seeds [`analysis_context`](ExcelAnalyser::analysis_context). The
-    /// concrete SAX/CSV executors are not constructed here — Rust dispatches
-    /// to [`read_xlsx`] / [`read_xls`] / [`read_csv`] at analysis time.
+    /// and seeds [`analysis_context`](ExcelAnalyser::analysis_context). It
+    /// constructs the concrete XLSX/XLS/CSV executor used by analysis.
     ///
     /// # Errors
     ///
@@ -131,6 +213,11 @@ impl ExcelAnalyserImpl {
             )
         })?;
         let excel_type = detect_excel_type(path)?;
+        self.excel_read_executor = Some(ExcelReadExecutorKind::new(
+            excel_type,
+            path,
+            self.options.clone(),
+        )?);
         self.excel_type = Some(excel_type);
         // Seed context the way DefaultXlsx/Xls/CsvReadContext would after construction.
         let sheet_hint = match &self.options.sheet {
@@ -166,23 +253,26 @@ impl ExcelAnalyserImpl {
         if self.excel_type.is_none() {
             self.choice_excel_executor()?;
         }
-        let path = self.path.as_ref().ok_or_else(|| {
-            ExcelError::Format(
+        if self.path.is_none() {
+            return Err(ExcelError::Format(
                 "ExcelAnalyserImpl.analysis requires a workbook path".to_owned(),
-            )
-        })?;
-        let excel_type = self.excel_type.ok_or_else(|| {
-            ExcelError::Format(
-                "ExcelAnalyserImpl.analysis missing ExcelTypeEnum after choiceExcelExecutor"
-                    .to_owned(),
-            )
-        })?;
-
-        // Java: excelReadExecutor.execute() inside analysis(...).
-        let result = match excel_type {
-            ExcelTypeEnum::Xlsx => read_xlsx::<T, L>(path, &self.options, listener),
-            ExcelTypeEnum::Xls => read_xls::<T, L>(path, &self.options, listener),
-            ExcelTypeEnum::Csv => read_csv::<T, L>(path, &self.options, listener),
+            ));
+        }
+        // Java exposes the same mutable AnalysisContext owned by the selected
+        // executor. Rust callback contexts are immutable snapshots, so capture
+        // every callback before forwarding it and retain the latest snapshot.
+        let result = {
+            let executor = self.excel_read_executor.as_mut().ok_or_else(|| {
+                ExcelError::Format(
+                    "ExcelAnalyserImpl.analysis missing ExcelReadExecutor after choiceExcelExecutor"
+                        .to_owned(),
+                )
+            })?;
+            let mut tracking_listener = ContextTrackingReadListener {
+                delegate: listener,
+                latest: &mut self.context,
+            };
+            executor.execute_with_listener::<T, _>(&self.options, &mut tracking_listener)
         };
 
         match result {
@@ -201,38 +291,35 @@ impl ExcelAnalyserImpl {
 }
 
 impl ExcelAnalyser for ExcelAnalyserImpl {
-    /// Java `analysis(List<ReadSheet>, Boolean)`.
-    ///
-    /// The Java signature carries listeners on `ReadWorkbook`; Rust listeners
-    /// are passed explicitly via
-    /// [`analysis_with_listener`](ExcelAnalyserImpl::analysis_with_listener).
-    /// This void entry records a clear [`ExcelError`] instead of panicking.
-    fn analysis(&mut self) {
-        if self.finished {
-            self.last_error = Some(ExcelError::Unsupported(
-                "ExcelAnalyserImpl.analysis called after finish()".to_owned(),
-            ));
-            return;
-        }
-        if self.path.is_none() {
-            self.last_error = Some(ExcelError::Format(
-                "ExcelAnalyserImpl.analysis requires a workbook path".to_owned(),
-            ));
-            return;
-        }
-        // Typed rows + listener are required for read_* dispatch.
-        self.last_error = Some(ExcelError::Unsupported(
-            "use ExcelAnalyserImpl::analysis_with_listener::<T, L>(...) to run read_xlsx/read_xls/read_csv"
-                .to_owned(),
-        ));
+    fn analysis<T, L>(&mut self, listener: &mut L) -> Result<()>
+    where
+        T: ExcelRow,
+        L: ReadListener<T>,
+    {
+        self.analysis_with_listener::<T, L>(listener)
     }
 
-    /// Java `finish()` — marks the analyser closed (idempotent).
+    /// Java `finish()` — releases per-thread caches and temporary input.
+    ///
+    /// The Rust parsers own workbook/ZIP/CSV handles inside each `execute`
+    /// call, so those handles close by RAII before this method runs. Unlike
+    /// POI's `Biff8EncryptionKey`, passwords are stored per reader and never
+    /// installed in global or thread-local state, so no `clearEncrypt03`
+    /// operation is required.
     fn finish(&mut self) {
         if self.finished {
             return;
         }
+        crate::read_cache::remove_thread_local_cache();
+        easyexcel_core::util::number_data_formatter_utils::remove_thread_local_cache();
+        self.temporary_input = None;
         self.finished = true;
+    }
+
+    fn excel_executor(&self) -> &ExcelReadExecutorKind {
+        self.excel_read_executor
+            .as_ref()
+            .expect("choice_excel_executor must initialize an executor")
     }
 
     /// Java `analysisContext()` — always returns a safe context (never `unreachable!`).
@@ -310,8 +397,10 @@ mod tests {
         let file = write_csv();
         let analyser = ExcelAnalyserImpl::from_path(file.path(), ReadOptions::default())?;
         assert_eq!(analyser.excel_type(), Some(ExcelTypeEnum::Csv));
-        assert!(analyser.analysis_context().sheet_name().is_empty()
-            || analyser.analysis_context().row_index() == 0);
+        assert!(
+            analyser.analysis_context().sheet_name().is_empty()
+                || analyser.analysis_context().row_index() == 0
+        );
         Ok(())
     }
 
@@ -328,17 +417,24 @@ mod tests {
             Some(DynamicValue::String(name)) => assert_eq!(name, "alice"),
             other => panic!("expected alice string cell, got {other:?}"),
         }
+        assert_eq!(analyser.analysis_context().sheet_name(), "Sheet1");
+        assert_eq!(analyser.analysis_context().sheet_no(), 0);
+        assert_eq!(analyser.analysis_context().row_index(), 1);
         assert!(!analyser.is_finished());
         Ok(())
     }
 
     #[test]
-    fn void_analysis_records_error_instead_of_panicking() {
-        let mut analyser = ExcelAnalyserImpl::new();
-        analyser.analysis();
-        assert!(analyser.last_error().is_some());
-        // Still returns a usable context.
-        let _ = analyser.analysis_context();
+    fn trait_analysis_dispatches_to_the_real_typed_executor() -> Result<()> {
+        let file = write_csv();
+        let mut options = ReadOptions::default();
+        options.head_row_number = 1;
+        let mut analyser = ExcelAnalyserImpl::from_path(file.path(), options)?;
+        let mut listener = CollectingListener::default();
+        ExcelAnalyser::analysis::<DynamicRow, _>(&mut analyser, &mut listener)?;
+        assert_eq!(listener.rows.len(), 1);
+        assert!(analyser.last_error().is_none());
+        Ok(())
     }
 
     #[test]

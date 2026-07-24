@@ -1,20 +1,29 @@
 //! XLSX writer backed by `rust_xlsxwriter`.
 
-use std::collections::HashMap;
+use std::any::type_name;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use bigdecimal::ToPrimitive;
+use bigdecimal::{BigDecimal, ToPrimitive};
+use easyexcel_core::event::NotRepeatExecutor;
+use easyexcel_core::metadata::csv::{CsvSheet, CsvWorkbook};
+use easyexcel_core::util::work_book_util::{
+    CellCreator, RowCreator, SheetCreator, WorkBookCreator, create_cell, create_row, create_sheet,
+    create_work_book,
+};
 use easyexcel_core::{
-    AnchorType, CacheLocation, CellValue, Converter, ConverterRegistry, CsvCharset, ExcelBorderStyle,
-    ExcelCellStyle, ExcelColor, ExcelColumn, ExcelDataFormat, ExcelError, ExcelFillPattern,
-    ExcelFontScript, ExcelFontStyle, ExcelHorizontalAlignment, ExcelRow, ExcelUnderline,
-    ExcelVerticalAlignment, ExcelWriteMetadata, ImageData, Result, RichTextStringData,
-    WriteCellContext, WriteFont, WriteHandler, WriteRowContext, WriteSheetContext,
-    WriteWorkbookContext,
+    AnchorType, CacheLocation, CellValue, Converter, ConverterRegistry, CsvCharset,
+    ExcelBorderStyle, ExcelCellStyle, ExcelColor, ExcelColumn, ExcelDataFormat, ExcelError,
+    ExcelFillPattern, ExcelFontScript, ExcelFontStyle, ExcelHorizontalAlignment, ExcelRow,
+    ExcelUnderline, ExcelVerticalAlignment, ExcelWriteMetadata, Holder, ImageData,
+    NullableObjectConverter, Result, RichTextStringData, WriteCellContext, WriteCellData,
+    WriteContextHolderState, WriteFont, WriteHandler, WriteHolderContext, WriteRowContext,
+    WriteSheetContext, WriteSheetHolderView, WriteTableHolderView, WriteWorkbookContext,
+    WriteWorkbookHolderView,
 };
 use encoding_rs::{CoderResult, Encoding, UTF_8, UTF_16BE, UTF_16LE};
 use ms_offcrypto_writer::Ecma376AgileWriter;
@@ -23,13 +32,103 @@ use rust_xlsxwriter::{
     Note, ObjectMovement, Workbook, Worksheet,
 };
 
+struct XlsxWorkBookCreator;
+
+impl WorkBookCreator for XlsxWorkBookCreator {
+    type WorkBook = Workbook;
+
+    fn create_work_book(self) -> Result<Self::WorkBook> {
+        Ok(Workbook::new())
+    }
+}
+
+struct XlsxSheetCreator<'a> {
+    workbook: &'a mut Workbook,
+    constant_memory: bool,
+}
+
+impl SheetCreator for XlsxSheetCreator<'_> {
+    type Sheet<'a>
+        = &'a mut Worksheet
+    where
+        Self: 'a;
+
+    fn create_sheet(&mut self, sheet_name: &str) -> Result<Self::Sheet<'_>> {
+        let worksheet = if self.constant_memory {
+            self.workbook.add_worksheet_with_constant_memory()
+        } else {
+            self.workbook.add_worksheet()
+        };
+        worksheet.set_name(sheet_name).map_err(format_error)?;
+        Ok(worksheet)
+    }
+}
+
+struct XlsxRowCreator<'a> {
+    worksheet: &'a mut Worksheet,
+}
+
+struct XlsxRow<'a> {
+    worksheet: &'a mut Worksheet,
+    row_index: u32,
+}
+
+struct XlsxCell<'a> {
+    worksheet: &'a mut Worksheet,
+    row_index: u32,
+    column_index: u16,
+}
+
+impl RowCreator for XlsxRowCreator<'_> {
+    type Row<'a>
+        = XlsxRow<'a>
+    where
+        Self: 'a;
+
+    fn create_row(&mut self, row_index: u32) -> Result<Self::Row<'_>> {
+        if row_index >= 1_048_576 {
+            return Err(ExcelError::Format(format!(
+                "XLSX row index {row_index} exceeds 1048575"
+            )));
+        }
+        Ok(XlsxRow {
+            worksheet: self.worksheet,
+            row_index,
+        })
+    }
+}
+
+impl CellCreator for XlsxRow<'_> {
+    type Cell<'a>
+        = XlsxCell<'a>
+    where
+        Self: 'a;
+
+    fn create_cell(&mut self, column_index: u16) -> Result<Self::Cell<'_>> {
+        if column_index >= 16_384 {
+            return Err(ExcelError::Format(format!(
+                "XLSX column index {column_index} exceeds 16383"
+            )));
+        }
+        Ok(XlsxCell {
+            worksheet: self.worksheet,
+            row_index: self.row_index,
+            column_index,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mirrored Java sub-packages
 // ---------------------------------------------------------------------------
+/// BIFF8 (`.xls`) writer — Java `ExcelTypeEnum.XLS` / POI HSSF subset.
+pub mod biff8;
 pub mod builder;
 mod excel_builder;
-pub mod global_configuration;
 pub mod executor;
+pub mod global_configuration;
+/// SXSSF `GZIPSheetDataWriter` equivalent — gzip row spill for `compress_temp_files`.
+pub mod gzip_spill;
 pub mod handler;
 pub mod holder;
 pub mod merge;
@@ -37,22 +136,103 @@ pub mod metadata;
 pub mod property;
 pub mod style;
 mod template_write;
-/// SXSSF `GZIPSheetDataWriter` equivalent — gzip row spill for `compress_temp_files`.
-pub mod gzip_spill;
-/// BIFF8 (`.xls`) writer — Java `ExcelTypeEnum.XLS` / POI HSSF subset.
-pub mod biff8;
+/// Java `com.alibaba.excel.write` package-compatible API paths.
+pub mod write;
 
+use biff8::{
+    Biff8Book, Biff8Cell, Biff8Merge, Biff8Sheet, Biff8StyleRequest, Biff8StyleTable, Biff8Value,
+    date_to_excel_serial, date_to_excel_serial_with_windowing, datetime_to_excel_serial,
+    datetime_to_excel_serial_with_windowing,
+};
+
+struct Biff8RowCreator<'a> {
+    sheet: &'a mut Biff8Sheet,
+}
+
+struct Biff8Row<'a> {
+    sheet: &'a mut Biff8Sheet,
+    row_index: u32,
+}
+
+struct Biff8CellHandle<'a> {
+    sheet: &'a mut Biff8Sheet,
+    row_index: u32,
+    column_index: u16,
+}
+
+impl SheetCreator for Biff8Book {
+    type Sheet<'a>
+        = &'a mut Biff8Sheet
+    where
+        Self: 'a;
+
+    fn create_sheet(&mut self, sheet_name: &str) -> Result<Self::Sheet<'_>> {
+        if self.sheets.iter().any(|sheet| sheet.name == sheet_name) {
+            return Err(ExcelError::Format(format!(
+                "worksheet name is already in use: {sheet_name}"
+            )));
+        }
+        self.sheets.push(Biff8Sheet::new(sheet_name));
+        Ok(self.sheets.last_mut().expect("just pushed"))
+    }
+}
+
+impl RowCreator for Biff8RowCreator<'_> {
+    type Row<'a>
+        = Biff8Row<'a>
+    where
+        Self: 'a;
+
+    fn create_row(&mut self, row_index: u32) -> Result<Self::Row<'_>> {
+        if row_index >= 65_536 {
+            return Err(ExcelError::Format(
+                "BIFF8 supports at most 65536 rows".to_owned(),
+            ));
+        }
+        Ok(Biff8Row {
+            sheet: self.sheet,
+            row_index,
+        })
+    }
+}
+
+impl CellCreator for Biff8Row<'_> {
+    type Cell<'a>
+        = Biff8CellHandle<'a>
+    where
+        Self: 'a;
+
+    fn create_cell(&mut self, column_index: u16) -> Result<Self::Cell<'_>> {
+        if column_index >= 256 {
+            return Err(ExcelError::Format(
+                "BIFF8 supports at most 256 columns".to_owned(),
+            ));
+        }
+        Ok(Biff8CellHandle {
+            sheet: self.sheet,
+            row_index: self.row_index,
+            column_index,
+        })
+    }
+}
+
+impl Biff8CellHandle<'_> {
+    fn set(self, cell: Biff8Cell) -> Result<()> {
+        self.sheet
+            .set(self.row_index, usize::from(self.column_index), cell)
+    }
+}
 pub use builder::abstract_excel_writer_parameter_builder::AbstractExcelWriterParameterBuilder;
 pub use builder::excel_writer_table_builder::ExcelWriterTableBuilder;
-pub use global_configuration::{
-    apply_global_configuration_to_write_options, global_configuration_from_write_options,
-};
 pub use excel_builder::{ExcelBuilder, ExcelBuilderImpl, FillConfig as BuilderFillConfig};
-pub use gzip_spill::{file_has_gzip_magic, GzipSpillSnapshot, GZIP_MAGIC};
 pub use executor::abstract_excel_write_executor::AbstractExcelWriteExecutor;
 pub use executor::excel_write_add_executor::ExcelWriteAddExecutor;
 pub use executor::excel_write_executor::ExcelWriteExecutor;
 pub use executor::excel_write_fill_executor::ExcelWriteFillExecutor;
+pub use global_configuration::{
+    apply_global_configuration_to_write_options, global_configuration_from_write_options,
+};
+pub use gzip_spill::{GZIP_MAGIC, GzipSpillSnapshot, file_has_gzip_magic};
 pub use handler::abstract_cell_write_handler::AbstractCellWriteHandler;
 pub use handler::abstract_row_write_handler::AbstractRowWriteHandler;
 pub use handler::abstract_sheet_write_handler::AbstractSheetWriteHandler;
@@ -60,7 +240,7 @@ pub use handler::abstract_workbook_write_handler::AbstractWorkbookWriteHandler;
 pub use handler::cell_write_handler::CellWriteHandler;
 pub use handler::default_write_handler_loader::DefaultWriteHandlerLoader;
 pub use handler::r#impl::impl_default_row_write_handler::{
-    new_default_row_write_handler, DefaultRowWriteHandler,
+    DefaultRowWriteHandler, new_default_row_write_handler,
 };
 pub use handler::r#impl::impl_dimension_workbook_write_handler::DimensionWorkbookWriteHandler;
 pub use handler::r#impl::impl_fill_style_cell_write_handler::FillStyleCellWriteHandler;
@@ -79,6 +259,11 @@ pub use merge::once_absolute_merge_strategy::OnceAbsoluteMergeStrategy as Mirror
 pub use metadata::collection_row_data::CollectionRowData;
 pub use metadata::map_row_data::MapRowData;
 pub use metadata::row_data::RowData as MirroredRowData;
+use metadata::style::write_cell_style::merge_write_cell_style;
+use metadata::style::write_font::merge_excel_font_style as merge_handler_font_style;
+pub use metadata::style::write_font::{
+    excel_font_style_from_write_font, merge_excel_font_style, merge_write_font,
+};
 pub use metadata::write_basic_parameter::WriteBasicParameter as MirroredWriteBasicParameter;
 pub use metadata::write_sheet::WriteSheet as MirroredWriteSheet;
 pub use metadata::write_table::WriteTable as MirroredWriteTable;
@@ -86,22 +271,15 @@ pub use metadata::write_workbook::WriteWorkbook as MirroredWriteWorkbook;
 pub use property::excel_write_head_property::ExcelWriteHeadProperty;
 pub use style::abstract_cell_style_strategy::AbstractCellStyleStrategy;
 pub use style::abstract_vertical_cell_style_strategy::AbstractVerticalCellStyleStrategy;
-pub use style::default_style::DefaultStyle;
-pub use style::horizontal_cell_style_strategy::HorizontalCellStyleStrategy;
-pub use style::vertical_cell_style_strategy::VerticalCellStyleStrategy;
 pub use style::column::longest_match_column_width_style_strategy::LongestMatchColumnWidthStyleStrategy;
 pub use style::column::simple_column_width_style_strategy::SimpleColumnWidthStyleStrategy;
+pub use style::default_style::DefaultStyle;
+pub use style::horizontal_cell_style_strategy::HorizontalCellStyleStrategy;
 pub use style::row::simple_row_height_style_strategy::SimpleRowHeightStyleStrategy;
-pub use metadata::style::write_font::{
-    excel_font_style_from_write_font, merge_excel_font_style, merge_write_font,
-};
-use metadata::style::write_cell_style::merge_write_cell_style;
-use metadata::style::write_font::merge_excel_font_style as merge_handler_font_style;
-use biff8::{
-    date_to_excel_serial, date_to_excel_serial_with_windowing, datetime_to_excel_serial,
-    datetime_to_excel_serial_with_windowing, Biff8Book, Biff8Cell, Biff8Merge, Biff8Sheet,
-    Biff8StyleRequest, Biff8StyleTable, Biff8Value,
-};
+pub use style::vertical_cell_style_strategy::VerticalCellStyleStrategy;
+pub use write::builder::excel_writer_builder::ExcelWriterBuilder as CompatibleExcelWriterBuilder;
+pub use write::builder::excel_writer_builder::ExcelWriterOutputStreamBuilder as CompatibleExcelWriterOutputStreamBuilder;
+pub use write::builder::excel_writer_sheet_builder::ExcelWriterSheetBuilder as CompatibleExcelWriterSheetBuilder;
 
 /// Cloneable, explicitly closeable output stream used by stateful writers.
 ///
@@ -415,6 +593,9 @@ impl LoopMergeStrategy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct WriteOptions {
+    /// Explicit output type overriding the file extension.
+    /// (Java `WriteWorkbook.excelType`)
+    pub excel_type: Option<easyexcel_core::support::ExcelTypeEnum>,
     /// Worksheet name.
     pub sheet_name: String,
     /// Optional logical worksheet number, starting from zero.
@@ -449,6 +630,12 @@ pub struct WriteOptions {
     pub compress_temp_files: bool,
     /// Whether column headers are written.
     pub need_head: bool,
+    /// Whether Java's built-in default style handler is enabled.
+    ///
+    /// This is distinct from [`Self::head_style`]: Java passes the flag to
+    /// `DefaultWriteHandlerLoader`, which decides whether `DefaultStyle`
+    /// participates in the actual handler chain.
+    pub use_default_style: bool,
     /// Whether header rows are frozen.
     pub freeze_head: bool,
     /// Explicit freeze pane position as `(row, column)`.
@@ -517,6 +704,7 @@ pub struct WriteOptions {
 impl Default for WriteOptions {
     fn default() -> Self {
         Self {
+            excel_type: None,
             sheet_name: "Sheet1".to_owned(),
             sheet_index: None,
             auto_trim: true,
@@ -527,6 +715,7 @@ impl Default for WriteOptions {
             constant_memory: false,
             compress_temp_files: false,
             need_head: true,
+            use_default_style: true,
             freeze_head: false,
             freeze_panes: None,
             include_column_indexes: None,
@@ -660,6 +849,17 @@ impl<T> WriteSheet<T> {
         self
     }
 
+    /// Registers a sheet-level converter that may receive absent `Option<T>` values.
+    #[must_use]
+    pub fn register_nullable_converter<V, C>(mut self, converter: C) -> Self
+    where
+        V: 'static,
+        C: NullableObjectConverter<V> + Send + Sync + 'static,
+    {
+        self.options.converters.register_nullable::<V, C>(converter);
+        self
+    }
+
     /// Adds a Java-style zero-based logical sheet number to this worksheet.
     #[must_use]
     pub const fn sheet_index(mut self, index: usize) -> Self {
@@ -776,6 +976,310 @@ struct StatefulSheetState {
     next_data_index: usize,
 }
 
+#[derive(Debug, Clone)]
+struct SharedHandlerUniqueValue(String);
+
+impl NotRepeatExecutor for SharedHandlerUniqueValue {
+    fn unique_value(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Shared ownership for one real handler instance.
+///
+/// Java Holder chains reference the same parent handler objects. Rust cannot
+/// clone `Box<dyn WriteHandler>`, so effective Sheet/Table chains clone this
+/// lightweight handle while all callbacks still mutate the original handler.
+#[derive(Clone)]
+struct SharedWriteHandler {
+    inner: Arc<Mutex<Box<dyn WriteHandler>>>,
+    order: i32,
+    unique_value: Option<SharedHandlerUniqueValue>,
+}
+
+impl SharedWriteHandler {
+    fn new(handler: Box<dyn WriteHandler>) -> Self {
+        let order = handler.order();
+        let unique_value = handler
+            .as_not_repeat_executor()
+            .map(|executor| SharedHandlerUniqueValue(executor.unique_value().to_owned()));
+        Self {
+            inner: Arc::new(Mutex::new(handler)),
+            order,
+            unique_value,
+        }
+    }
+
+    fn with_mut<R>(&self, action: impl FnOnce(&mut dyn WriteHandler) -> R) -> R {
+        let mut handler = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        action(handler.as_mut())
+    }
+
+    fn with_ref<R>(&self, action: impl FnOnce(&dyn WriteHandler) -> R) -> R {
+        let handler = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        action(handler.as_ref())
+    }
+}
+
+impl WriteHandler for SharedWriteHandler {
+    fn order(&self) -> i32 {
+        self.order
+    }
+
+    fn as_not_repeat_executor(&self) -> Option<&dyn NotRepeatExecutor> {
+        self.unique_value
+            .as_ref()
+            .map(|value| value as &dyn NotRepeatExecutor)
+    }
+
+    fn before_workbook_create(&mut self, context: &WriteWorkbookContext) -> Result<()> {
+        self.with_mut(|handler| handler.before_workbook_create(context))
+    }
+
+    fn after_workbook_create(&mut self, context: &WriteWorkbookContext) -> Result<()> {
+        self.with_mut(|handler| handler.after_workbook_create(context))
+    }
+
+    fn after_workbook_dispose(&mut self, context: &WriteWorkbookContext) -> Result<()> {
+        self.with_mut(|handler| handler.after_workbook_dispose(context))
+    }
+
+    fn before_sheet_create(&mut self, context: &WriteSheetContext) -> Result<()> {
+        self.with_mut(|handler| handler.before_sheet_create(context))
+    }
+
+    fn after_sheet_create(&mut self, context: &WriteSheetContext) -> Result<()> {
+        self.with_mut(|handler| handler.after_sheet_create(context))
+    }
+
+    fn after_sheet_dispose(&mut self, context: &WriteSheetContext) -> Result<()> {
+        self.with_mut(|handler| handler.after_sheet_dispose(context))
+    }
+
+    fn before_row_create(&mut self, context: &WriteRowContext) -> Result<()> {
+        self.with_mut(|handler| handler.before_row_create(context))
+    }
+
+    fn after_row_create(&mut self, context: &WriteRowContext) -> Result<()> {
+        self.with_mut(|handler| handler.after_row_create(context))
+    }
+
+    fn after_row_dispose(&mut self, context: &WriteRowContext) -> Result<()> {
+        self.with_mut(|handler| handler.after_row_dispose(context))
+    }
+
+    fn before_cell_create(&mut self, context: &mut WriteCellContext) -> Result<()> {
+        self.with_mut(|handler| handler.before_cell_create(context))
+    }
+
+    fn after_cell_create(&mut self, context: &WriteCellContext) -> Result<()> {
+        self.with_mut(|handler| handler.after_cell_create(context))
+    }
+
+    fn after_cell_data_converted(&mut self, context: &WriteCellContext) -> Result<()> {
+        self.with_mut(|handler| handler.after_cell_data_converted(context))
+    }
+
+    fn after_cell_dispose(&mut self, context: &WriteCellContext) -> Result<()> {
+        self.with_mut(|handler| handler.after_cell_dispose(context))
+    }
+
+    fn style_cell_style(&self, context: &WriteCellContext) -> Option<ExcelCellStyle> {
+        self.with_ref(|handler| handler.style_cell_style(context))
+    }
+
+    fn style_column_width(&self, column_index: usize) -> Option<u16> {
+        self.with_ref(|handler| handler.style_column_width(column_index))
+    }
+
+    fn style_head_row_height(&self) -> Option<u16> {
+        self.with_ref(|handler| handler.style_head_row_height())
+    }
+
+    fn style_content_row_height(&self) -> Option<u16> {
+        self.with_ref(|handler| handler.style_content_row_height())
+    }
+
+    fn style_auto_column_width(&self) -> bool {
+        self.with_ref(|handler| handler.style_auto_column_width())
+    }
+
+    fn style_once_absolute_merge(
+        &self,
+    ) -> Option<easyexcel_core::metadata::property::OnceAbsoluteMergeProperty> {
+        self.with_ref(|handler| handler.style_once_absolute_merge())
+    }
+
+    fn style_loop_merge(
+        &self,
+    ) -> Option<(easyexcel_core::metadata::property::LoopMergeProperty, usize)> {
+        self.with_ref(|handler| handler.style_loop_merge())
+    }
+}
+
+fn share_handlers(handlers: Vec<Box<dyn WriteHandler>>) -> Vec<SharedWriteHandler> {
+    handlers.into_iter().map(SharedWriteHandler::new).collect()
+}
+
+fn boxed_handlers(handlers: &[SharedWriteHandler]) -> Vec<Box<dyn WriteHandler>> {
+    handlers
+        .iter()
+        .cloned()
+        .map(|handler| Box::new(handler) as Box<dyn WriteHandler>)
+        .collect()
+}
+
+fn normalized_shared_handlers(mut handlers: Vec<SharedWriteHandler>) -> Vec<SharedWriteHandler> {
+    handlers.sort_by_key(SharedWriteHandler::order);
+    let mut unique_values = HashSet::new();
+    handlers.retain(|handler| {
+        handler
+            .unique_value
+            .as_ref()
+            .is_none_or(|value| unique_values.insert(value.unique_value().to_owned()))
+    });
+    handlers
+}
+
+/// Java `AbstractWriteHolder`'s own/effective execution-chain pair.
+///
+/// Workbook and sheet callbacks can select `own`, while row/cell callbacks
+/// always select `effective`. Child candidates are placed before the already
+/// normalized parent chain so stable ordering and `NotRepeatExecutor`
+/// de-duplication give the more specific holder precedence.
+#[derive(Clone, Default)]
+struct HandlerExecutionScope {
+    own: Vec<SharedWriteHandler>,
+    effective: Vec<SharedWriteHandler>,
+}
+
+impl HandlerExecutionScope {
+    fn root(handlers: &[SharedWriteHandler]) -> Self {
+        let own = normalized_shared_handlers(handlers.to_vec());
+        Self {
+            effective: own.clone(),
+            own,
+        }
+    }
+
+    fn child(own_handlers: &[SharedWriteHandler], parent: &Self) -> Self {
+        let own_candidates = own_handlers.to_vec();
+        let own = normalized_shared_handlers(own_candidates.clone());
+        let mut effective_candidates = own_candidates;
+        effective_candidates.extend(parent.effective.iter().cloned());
+        Self {
+            own,
+            effective: normalized_shared_handlers(effective_candidates),
+        }
+    }
+
+    fn own_boxed(&self) -> Vec<Box<dyn WriteHandler>> {
+        boxed_handlers(&self.own)
+    }
+
+    fn effective_boxed(&self) -> Vec<Box<dyn WriteHandler>> {
+        boxed_handlers(&self.effective)
+    }
+}
+
+/// Java `initAnnotationConfig` style handler.
+///
+/// Column widths, row heights and merges use their concrete Java-compatible
+/// strategy types. Cell style needs the current `Head`, so this handler keeps
+/// class metadata and resolves the field-level override from the callback.
+struct AnnotationCellStyleHandler {
+    metadata: ExcelWriteMetadata,
+}
+
+impl WriteHandler for AnnotationCellStyleHandler {
+    fn order(&self) -> i32 {
+        easyexcel_core::constant::order_constant::ANNOTATION_DEFINE_STYLE
+    }
+
+    fn style_cell_style(&self, context: &WriteCellContext) -> Option<ExcelCellStyle> {
+        let column = context.column?;
+        let (cell, font) = if context.is_head {
+            (
+                column.head_style.or(self.metadata.head_style),
+                column.head_font_style.or(self.metadata.head_font_style),
+            )
+        } else {
+            (
+                column.content_style.or(self.metadata.content_style),
+                column
+                    .content_font_style
+                    .or(self.metadata.content_font_style),
+            )
+        };
+        let mut cell = cell.unwrap_or_default();
+        if let Some(font) = font {
+            cell.font = Some(match cell.font {
+                Some(existing) => merge_handler_font_style(&font, existing),
+                None => font,
+            });
+        }
+        (cell != ExcelCellStyle::default()).then_some(cell)
+    }
+}
+
+fn load_annotation_handlers<T>(options: &WriteOptions) -> Result<Vec<Box<dyn WriteHandler>>>
+where
+    T: ExcelRow,
+{
+    if T::schema().is_empty() {
+        return Ok(Vec::new());
+    }
+    let metadata = T::write_metadata();
+    let columns = selected_columns(T::schema(), options)?;
+    let mut handlers: Vec<Box<dyn WriteHandler>> = Vec::new();
+
+    for (physical_index, _, column) in &columns {
+        if let Some(property) = column.loop_merge {
+            handlers.push(Box::new(MirroredLoopMergeStrategy::new(
+                property.each_row,
+                property.column_extend,
+                to_column(*physical_index)?,
+            )?));
+        }
+    }
+
+    let mut widths = SimpleColumnWidthStyleStrategy::new();
+    let mut has_width = false;
+    for (physical_index, _, column) in &columns {
+        if let Some(width) = column.column_width.or(metadata.column_width) {
+            widths.set_column_width(*physical_index, width);
+            has_width = true;
+        }
+    }
+    if has_width {
+        handlers.push(Box::new(widths));
+    }
+
+    handlers.push(Box::new(AnnotationCellStyleHandler {
+        metadata: *metadata,
+    }));
+
+    if metadata.head_row_height.is_some() || metadata.content_row_height.is_some() {
+        handlers.push(Box::new(SimpleRowHeightStyleStrategy::new(
+            metadata.head_row_height,
+            metadata.content_row_height,
+        )));
+    }
+
+    if let Some(property) = metadata.once_absolute_merge {
+        handlers.push(Box::new(OnceAbsoluteMergeStrategy::from_property(
+            property,
+        )?));
+    }
+    Ok(handlers)
+}
+
 /// Ensures a gzip spill writer exists for `sheet_name` when compress is on.
 fn ensure_gzip_spill<'a>(
     spills: &'a mut HashMap<String, gzip_spill::GzipSheetDataWriter>,
@@ -798,11 +1302,18 @@ fn ensure_gzip_spill<'a>(
 #[allow(clippy::struct_excessive_bools)]
 pub struct ExcelWriter {
     path: PathBuf,
+    excel_type: Option<easyexcel_core::support::ExcelTypeEnum>,
     output_stream: Option<Box<dyn Write + Send>>,
     close_stream: Option<Box<dyn FnOnce() -> std::io::Result<()> + Send>>,
     workbook: Workbook,
     xls_book: Biff8Book,
-    handlers: Vec<Box<dyn WriteHandler>>,
+    workbook_handlers: Vec<SharedWriteHandler>,
+    sheet_annotation_handlers: HashMap<String, Vec<SharedWriteHandler>>,
+    sheet_handlers: HashMap<String, Vec<SharedWriteHandler>>,
+    table_annotation_handlers: HashMap<(String, i32), Vec<SharedWriteHandler>>,
+    table_handlers: HashMap<(String, i32), Vec<SharedWriteHandler>>,
+    table_schemas: HashMap<(String, i32), &'static [ExcelColumn]>,
+    current_effective_handlers: Vec<SharedWriteHandler>,
     sheets: HashMap<String, StatefulSheetState>,
     sheet_indexes: HashMap<usize, String>,
     csv_writer: Option<csv::Writer<CsvEncodingWriter>>,
@@ -872,16 +1383,34 @@ impl ExcelWriter {
     #[must_use]
     pub fn with_handlers_and_options(
         path: impl Into<PathBuf>,
-        handlers: Vec<Box<dyn WriteHandler>>,
+        mut handlers: Vec<Box<dyn WriteHandler>>,
         options: WriteOptions,
     ) -> Self {
+        let path = path.into();
+        let excel_type = resolve_excel_type(&path, &options);
+        handlers.extend(DefaultWriteHandlerLoader::load_default_handler_for(
+            options.use_default_style,
+            excel_type,
+        ));
+        let converters =
+            easyexcel_core::converter::default_converter_loader::load_default_write_converter()
+                .merged_with(&options.converters);
+        let workbook_handlers = share_handlers(handlers);
+        let current_effective_handlers = HandlerExecutionScope::root(&workbook_handlers).effective;
         Self {
-            path: path.into(),
+            path,
+            excel_type: options.excel_type,
             output_stream: None,
             close_stream: None,
             workbook: Workbook::new(),
             xls_book: Biff8Book::default(),
-            handlers,
+            workbook_handlers: workbook_handlers.clone(),
+            sheet_annotation_handlers: HashMap::new(),
+            sheet_handlers: HashMap::new(),
+            table_annotation_handlers: HashMap::new(),
+            table_handlers: HashMap::new(),
+            table_schemas: HashMap::new(),
+            current_effective_handlers,
             sheets: HashMap::new(),
             sheet_indexes: HashMap::new(),
             csv_writer: None,
@@ -893,7 +1422,7 @@ impl ExcelWriter {
             auto_close_stream: options.auto_close_stream,
             write_excel_on_exception: options.write_excel_on_exception,
             password: options.password,
-            converters: options.converters,
+            converters,
             compress_temp_files: options.compress_temp_files,
             default_constant_memory: options.constant_memory || options.compress_temp_files,
             template_file: options.template_file,
@@ -912,21 +1441,39 @@ impl ExcelWriter {
     pub fn with_output_stream<W>(
         logical_path: impl Into<PathBuf>,
         output: ExcelOutputStream<W>,
-        handlers: Vec<Box<dyn WriteHandler>>,
+        mut handlers: Vec<Box<dyn WriteHandler>>,
         options: WriteOptions,
     ) -> Self
     where
         W: Write + Send + 'static,
     {
+        let path = logical_path.into();
+        let excel_type = resolve_excel_type(&path, &options);
+        handlers.extend(DefaultWriteHandlerLoader::load_default_handler_for(
+            options.use_default_style,
+            excel_type,
+        ));
+        let converters =
+            easyexcel_core::converter::default_converter_loader::load_default_write_converter()
+                .merged_with(&options.converters);
+        let workbook_handlers = share_handlers(handlers);
+        let current_effective_handlers = HandlerExecutionScope::root(&workbook_handlers).effective;
         let write_output = output.clone();
         let close_stream = Box::new(move || output.close());
         Self {
-            path: logical_path.into(),
+            path,
+            excel_type: options.excel_type,
             output_stream: Some(Box::new(write_output)),
             close_stream: Some(close_stream),
             workbook: Workbook::new(),
             xls_book: Biff8Book::default(),
-            handlers,
+            workbook_handlers: workbook_handlers.clone(),
+            sheet_annotation_handlers: HashMap::new(),
+            sheet_handlers: HashMap::new(),
+            table_annotation_handlers: HashMap::new(),
+            table_handlers: HashMap::new(),
+            table_schemas: HashMap::new(),
+            current_effective_handlers,
             sheets: HashMap::new(),
             sheet_indexes: HashMap::new(),
             csv_writer: None,
@@ -938,7 +1485,7 @@ impl ExcelWriter {
             auto_close_stream: options.auto_close_stream,
             write_excel_on_exception: options.write_excel_on_exception,
             password: options.password,
-            converters: options.converters,
+            converters,
             compress_temp_files: options.compress_temp_files,
             default_constant_memory: options.constant_memory || options.compress_temp_files,
             template_file: options.template_file,
@@ -950,6 +1497,46 @@ impl ExcelWriter {
             gzip_spills: HashMap::new(),
             last_gzip_spill: None,
         }
+    }
+
+    /// Registers an additional handler before the first write starts.
+    ///
+    /// This is used by Java-compatible sheet builders, where handlers are
+    /// attached after the workbook writer has been constructed but before
+    /// `doWrite` begins.
+    pub fn register_write_handler(&mut self, handler: Box<dyn WriteHandler>) -> Result<&mut Self> {
+        if self.started {
+            return Err(ExcelError::Unsupported(
+                "write handlers must be registered before the first write".to_owned(),
+            ));
+        }
+        self.workbook_handlers
+            .push(SharedWriteHandler::new(handler));
+        self.current_effective_handlers = self.workbook_handler_scope().effective;
+        Ok(self)
+    }
+
+    /// Prepends handlers owned by a more specific Java write holder.
+    ///
+    /// Java builds each effective handler list as `own handlers + parent
+    /// handlers` before the stable `order()` sort. Consequently an own
+    /// handler wins `NotRepeatExecutor` de-duplication when both handlers have
+    /// the same order and unique value. Sheet and table builders use this
+    /// method to preserve that precedence.
+    pub fn prepend_write_handlers(
+        &mut self,
+        handlers: Vec<Box<dyn WriteHandler>>,
+    ) -> Result<&mut Self> {
+        if self.started {
+            return Err(ExcelError::Unsupported(
+                "write handlers must be registered before the first write".to_owned(),
+            ));
+        }
+        let mut handlers = share_handlers(handlers);
+        handlers.append(&mut self.workbook_handlers);
+        self.workbook_handlers = handlers;
+        self.current_effective_handlers = self.workbook_handler_scope().effective;
+        Ok(self)
     }
 
     /// Writes a batch to a worksheet, appending when the sheet was used before.
@@ -970,16 +1557,204 @@ impl ExcelWriter {
                 "writer already finished".to_owned(),
             ));
         }
+        validate_excel_row_schema::<T>()?;
         self.start()?;
-        if is_csv_path(&self.path) {
-            self.write_csv_batch::<T, I>(rows, sheet)?;
-        } else if is_xls_path(&self.path) {
-            self.write_xls_batch::<T, I>(rows, sheet)?;
+        let sheet_name = self
+            .resolve_sheet_name(sheet.options())
+            .unwrap_or_else(|| sheet.options().sheet_name.clone());
+        self.ensure_sheet_annotation_handlers::<T>(&sheet_name, sheet.options())?;
+        let handler_scope = self.sheet_handler_scope(&sheet_name);
+        let mut handlers = handler_scope.effective_boxed();
+        if self.is_csv() {
+            self.write_csv_batch::<T, I>(rows, sheet, &mut handlers, false, false, false, None)?;
+        } else if self.is_xls() {
+            self.write_xls_batch::<T, I>(rows, sheet, &mut handlers, false, false, false, None)?;
         } else {
-            self.write_xlsx_batch::<T, I>(rows, sheet)?;
+            self.write_xlsx_batch::<T, I>(rows, sheet, &mut handlers, false, false, false, None)?;
         }
+        self.current_effective_handlers = handler_scope.effective;
         debug_assert!(self.resolve_sheet_name(sheet.options()).is_some());
         Ok(self)
+    }
+
+    /// Writes with handlers owned by this Sheet holder.
+    ///
+    /// Java stores these handlers on `WriteSheetHolder`, runs only their
+    /// workbook hooks as supplementary callbacks when the holder is first
+    /// initialized, then executes `sheet own + workbook parent` for sheet,
+    /// row, and cell events.
+    pub fn write_with_sheet_handlers<T, I>(
+        &mut self,
+        rows: I,
+        sheet: &WriteSheet<T>,
+        handlers: Vec<Box<dyn WriteHandler>>,
+    ) -> Result<&mut Self>
+    where
+        T: ExcelRow,
+        I: IntoIterator<Item = T>,
+    {
+        if self.finished {
+            return Err(ExcelError::Unsupported(
+                "writer already finished".to_owned(),
+            ));
+        }
+        validate_excel_row_schema::<T>()?;
+        self.start()?;
+        let sheet_name = self
+            .resolve_sheet_name(sheet.options())
+            .unwrap_or_else(|| sheet.options().sheet_name.clone());
+        let is_initialized = self.sheets.contains_key(&sheet_name);
+        if is_initialized && !handlers.is_empty() && !self.sheet_handlers.contains_key(&sheet_name)
+        {
+            return Err(ExcelError::Unsupported(format!(
+                "sheet handlers must be registered before sheet '{sheet_name}' is initialized"
+            )));
+        }
+        if !handlers.is_empty() {
+            if self.sheet_handlers.contains_key(&sheet_name) {
+                return Err(ExcelError::Unsupported(format!(
+                    "sheet handlers for '{sheet_name}' are already registered"
+                )));
+            }
+            let own_handlers = share_handlers(handlers);
+            if !is_initialized {
+                let parent = self.workbook_handler_scope();
+                let scope = HandlerExecutionScope::child(&own_handlers, &parent);
+                run_own_workbook_callbacks(&scope, &self.path)?;
+            }
+            self.sheet_handlers.insert(sheet_name.clone(), own_handlers);
+        }
+        self.write(rows, sheet)
+    }
+
+    fn workbook_handler_scope(&self) -> HandlerExecutionScope {
+        HandlerExecutionScope::root(&self.workbook_handlers)
+    }
+
+    fn sheet_handler_scope(&self, sheet_name: &str) -> HandlerExecutionScope {
+        let mut own_handlers = self
+            .sheet_annotation_handlers
+            .get(sheet_name)
+            .cloned()
+            .unwrap_or_default();
+        own_handlers.extend(
+            self.sheet_handlers
+                .get(sheet_name)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        HandlerExecutionScope::child(&own_handlers, &self.workbook_handler_scope())
+    }
+
+    fn table_handler_scope(&self, sheet_name: &str, table_no: i32) -> HandlerExecutionScope {
+        let table_key = (sheet_name.to_owned(), table_no);
+        let mut own_handlers = self
+            .table_annotation_handlers
+            .get(&table_key)
+            .cloned()
+            .unwrap_or_default();
+        own_handlers.extend(
+            self.table_handlers
+                .get(&table_key)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        HandlerExecutionScope::child(&own_handlers, &self.sheet_handler_scope(sheet_name))
+    }
+
+    fn ensure_sheet_annotation_handlers<T>(
+        &mut self,
+        sheet_name: &str,
+        options: &WriteOptions,
+    ) -> Result<()>
+    where
+        T: ExcelRow,
+    {
+        if self.sheet_annotation_handlers.contains_key(sheet_name) {
+            return Ok(());
+        }
+        self.sheet_annotation_handlers.insert(
+            sheet_name.to_owned(),
+            share_handlers(load_annotation_handlers::<T>(options)?),
+        );
+        Ok(())
+    }
+
+    fn ensure_table_annotation_handlers<T>(
+        &mut self,
+        sheet_name: &str,
+        table_no: i32,
+        options: &WriteOptions,
+    ) -> Result<()>
+    where
+        T: ExcelRow,
+    {
+        let table_key = (sheet_name.to_owned(), table_no);
+        if self.table_annotation_handlers.contains_key(&table_key) {
+            return Ok(());
+        }
+        self.table_annotation_handlers.insert(
+            table_key,
+            share_handlers(load_annotation_handlers::<T>(options)?),
+        );
+        Ok(())
+    }
+
+    fn initialize_existing_table_holder<T>(
+        &mut self,
+        sheet_name: &str,
+        table_no: i32,
+        options: &WriteOptions,
+    ) -> Result<()>
+    where
+        T: ExcelRow,
+    {
+        let own_handlers = self.table_handler_scope(sheet_name, table_no).own_boxed();
+        let parent_handlers = self.sheet_handler_scope(sheet_name).effective_boxed();
+        // The parent list must only describe merges that were actually installed
+        // by the parent holder. `T` is the table row type here; treating its
+        // metadata as parent metadata would suppress a table-only absolute merge.
+        let parent_merges = collect_handler_once_absolute_merges(&parent_handlers);
+        let table_merges = collect_once_absolute_merges::<T>(&own_handlers)
+            .into_iter()
+            .filter(|merge| !parent_merges.contains(merge))
+            .collect::<Vec<_>>();
+        if self.is_csv() {
+            return Ok(());
+        }
+        if self.is_xls() {
+            if self.xls_template.is_none() {
+                let sheet = self.xls_book.sheet_mut(sheet_name);
+                apply_biff8_column_widths::<T>(sheet, options, &own_handlers)?;
+                for merge in table_merges {
+                    apply_biff8_once_absolute_merge_property(sheet, merge)?;
+                }
+            }
+            return Ok(());
+        }
+        if let Some(package) = self.template_package.as_mut() {
+            apply_template_holder_layout::<T>(
+                package,
+                sheet_name,
+                options,
+                &own_handlers,
+                &parent_merges,
+            )?;
+        } else {
+            let worksheet = self
+                .workbook
+                .worksheet_from_name(sheet_name)
+                .map_err(format_error)?;
+            for (column, width) in &options.column_widths {
+                set_xlsx_column_width_chars(worksheet, *column, *width)?;
+            }
+            apply_annotation_column_widths::<T>(worksheet, options)?;
+            apply_handler_column_widths::<T>(worksheet, options, &own_handlers)?;
+            for merge in table_merges {
+                apply_once_absolute_merge_property(worksheet, merge)?;
+            }
+        }
+        Ok(())
     }
 
     /// Three-arg write with an explicit `WriteTable`, mirroring Java
@@ -1009,21 +1784,155 @@ impl ExcelWriter {
         T: ExcelRow,
         I: IntoIterator<Item = T>,
     {
+        self.write_with_table_handlers(rows, sheet, table, Vec::new(), Vec::new())
+    }
+
+    /// Writes through independent Sheet and Table holder handler chains.
+    pub fn write_with_table_handlers<T, I>(
+        &mut self,
+        rows: I,
+        sheet: &WriteSheet<T>,
+        table: &MirroredWriteTable,
+        sheet_handlers: Vec<Box<dyn WriteHandler>>,
+        table_handlers: Vec<Box<dyn WriteHandler>>,
+    ) -> Result<&mut Self>
+    where
+        T: ExcelRow,
+        I: IntoIterator<Item = T>,
+    {
         if self.finished {
             return Err(ExcelError::Unsupported(
                 "writer already finished".to_owned(),
             ));
         }
+        validate_excel_row_schema::<T>()?;
         self.start()?;
-        // Merge table-level options into the sheet before writing.
-        // (Java: ExcelBuilderImpl.addContent(Collection, WriteSheet, WriteTable))
-        let merged = crate::builder::excel_writer_table_builder::merge_table_options(
-            sheet.options(),
-            table,
-        );
-        // Rebuild a WriteSheet with merged options for this batch.
+        let merged =
+            crate::builder::excel_writer_table_builder::merge_table_options(sheet.options(), table);
         let sheet_with_table: WriteSheet<T> = WriteSheet::from_options(merged);
-        self.write(rows, &sheet_with_table)?;
+        let sheet_name = self
+            .resolve_sheet_name(sheet_with_table.options())
+            .unwrap_or_else(|| sheet_with_table.options().sheet_name.clone());
+        let sheet_is_new = !self.sheets.contains_key(&sheet_name);
+
+        if !sheet_handlers.is_empty() {
+            if !sheet_is_new && !self.sheet_handlers.contains_key(&sheet_name) {
+                return Err(ExcelError::Unsupported(format!(
+                    "sheet handlers must be registered before sheet '{sheet_name}' is initialized"
+                )));
+            }
+            if self.sheet_handlers.contains_key(&sheet_name) {
+                return Err(ExcelError::Unsupported(format!(
+                    "sheet handlers for '{sheet_name}' are already registered"
+                )));
+            }
+            let own = share_handlers(sheet_handlers);
+            if sheet_is_new {
+                let scope = HandlerExecutionScope::child(&own, &self.workbook_handler_scope());
+                run_own_workbook_callbacks(&scope, &self.path)?;
+            }
+            self.sheet_handlers.insert(sheet_name.clone(), own);
+        }
+
+        if sheet_is_new {
+            let holder_scope =
+                self.handler_holder_scope::<T>(sheet_with_table.options(), &sheet_name, None)?;
+            let sheet_context = holder_scope.sheet(WriteSheetContext::new(&sheet_name));
+            let mut sheet_chain = self.sheet_handler_scope(&sheet_name).effective_boxed();
+            before_sheet(&mut sheet_chain, &sheet_context)?;
+            after_sheet_create(&mut sheet_chain, &sheet_context)?;
+        }
+
+        let table_no = table.table_no.max(0);
+        let table_key = (sheet_name.clone(), table_no);
+        let table_is_new = !self.table_handlers.contains_key(&table_key);
+        if let Some(schema) = self.table_schemas.get(&table_key) {
+            if *schema != T::schema() {
+                return Err(ExcelError::Unsupported(format!(
+                    "table {table_no} on sheet '{sheet_name}' was initialized with a different schema"
+                )));
+            }
+        } else {
+            self.table_schemas.insert(table_key.clone(), T::schema());
+        }
+        if table_is_new {
+            self.ensure_table_annotation_handlers::<T>(
+                &sheet_name,
+                table_no,
+                sheet_with_table.options(),
+            )?;
+            let own = share_handlers(table_handlers);
+            let mut all_own = self
+                .table_annotation_handlers
+                .get(&table_key)
+                .cloned()
+                .unwrap_or_default();
+            all_own.extend(own.iter().cloned());
+            let execution_scope =
+                HandlerExecutionScope::child(&all_own, &self.sheet_handler_scope(&sheet_name));
+            run_own_workbook_callbacks(&execution_scope, &self.path)?;
+            let mut supplementary = execution_scope.own_boxed();
+            let holder_scope =
+                self.handler_holder_scope::<T>(sheet_with_table.options(), &sheet_name, None)?;
+            let sheet_context = holder_scope.sheet(WriteSheetContext::new(&sheet_name));
+            before_sheet(&mut supplementary, &sheet_context)?;
+            after_sheet_create(&mut supplementary, &sheet_context)?;
+            self.table_handlers.insert(table_key, own);
+        } else if !table_handlers.is_empty() {
+            return Err(ExcelError::Unsupported(format!(
+                "table handlers for '{sheet_name}' table {table_no} are already registered"
+            )));
+        }
+        if table_is_new && !sheet_is_new {
+            self.initialize_existing_table_holder::<T>(
+                &sheet_name,
+                table_no,
+                sheet_with_table.options(),
+            )?;
+        }
+
+        let handler_scope = self.table_handler_scope(&sheet_name, table_no);
+        let mut handlers = handler_scope.effective_boxed();
+        if self.is_csv() {
+            self.write_csv_batch::<T, I>(
+                rows,
+                &sheet_with_table,
+                &mut handlers,
+                sheet_is_new,
+                true,
+                table_is_new,
+                Some(table_no),
+            )?;
+        } else if self.is_xls() {
+            self.write_xls_batch::<T, I>(
+                rows,
+                &sheet_with_table,
+                &mut handlers,
+                sheet_is_new,
+                true,
+                table_is_new,
+                Some(table_no),
+            )?;
+        } else {
+            self.write_xlsx_batch::<T, I>(
+                rows,
+                &sheet_with_table,
+                &mut handlers,
+                sheet_is_new,
+                true,
+                table_is_new,
+                Some(table_no),
+            )?;
+        }
+        if let Some(state) = self.sheets.get_mut(&sheet_name) {
+            let mut options = sheet.options().clone();
+            options.sheet_name = sheet_name.clone();
+            options.converters = self.converters.merged_with(&options.converters);
+            options.compress_temp_files |= self.compress_temp_files;
+            options.constant_memory |= self.default_constant_memory;
+            state.options = options;
+        }
+        self.current_effective_handlers = handler_scope.effective;
         Ok(self)
     }
 
@@ -1112,7 +2021,7 @@ impl ExcelWriter {
         self.finished = true;
         let write_excel = !on_exception || self.write_excel_on_exception;
         let mut result = Ok(());
-        if is_csv_path(&self.path) {
+        if self.is_csv() {
             let writer = self
                 .csv_writer
                 .take()
@@ -1134,7 +2043,7 @@ impl ExcelWriter {
                     Err(error) => result = Err(error),
                 }
             }
-        } else if write_excel && is_xls_path(&self.path) {
+        } else if write_excel && self.is_xls() {
             let save_result = if let Some(package) = self.xls_template.take() {
                 if let Some(output) = self.output_stream.as_mut() {
                     package.save_to_writer(output.as_mut())
@@ -1173,7 +2082,9 @@ impl ExcelWriter {
             }
         }
         let context = WriteWorkbookContext::new(&self.path);
-        if let Err(error) = after_workbook(&mut self.handlers, &context) {
+        let mut handlers = boxed_handlers(&self.current_effective_handlers);
+        sort_handlers(&mut handlers);
+        if let Err(error) = after_workbook(&mut handlers, &context) {
             result = Err(error);
         }
         if self.auto_close_stream
@@ -1251,17 +2162,17 @@ impl ExcelWriter {
         if self.started {
             return Ok(());
         }
-        validate_stateful_backend(&self.path, self.password.as_deref())?;
+        validate_stateful_backend(self.is_csv(), self.password.as_deref())?;
         if template_write::has_template(
             self.template_file.as_deref(),
             self.template_bytes.as_deref(),
         ) {
-            if is_csv_path(&self.path) {
+            if self.is_csv() {
                 return Err(ExcelError::Unsupported(
                     "csv cannot use template.".to_owned(),
                 ));
             }
-            if is_xls_path(&self.path) {
+            if self.is_xls() {
                 // Java: withTemplate(.xls) → HSSFWorkbook(template) + append.
                 let bytes = template_write::load_template_bytes(
                     self.template_file.as_deref(),
@@ -1309,10 +2220,11 @@ impl ExcelWriter {
                 }
             }
         }
-        sort_handlers(&mut self.handlers);
+        let mut handlers = self.workbook_handler_scope().effective_boxed();
         let context = WriteWorkbookContext::new(&self.path);
-        before_workbook(&mut self.handlers, &context)?;
-        if is_csv_path(&self.path) {
+        before_workbook(&mut handlers, &context)?;
+        after_workbook_create(&mut handlers, &context)?;
+        if self.is_csv() {
             if self.output_stream.is_some() {
                 let capture = CapturedOutput::default();
                 self.csv_writer = Some(create_csv_record_writer(
@@ -1333,19 +2245,52 @@ impl ExcelWriter {
         Ok(())
     }
 
-    fn write_xls_batch<T, I>(&mut self, rows: I, sheet: &WriteSheet<T>) -> Result<()>
+    pub(crate) fn is_csv(&self) -> bool {
+        match self.excel_type {
+            Some(excel_type) => excel_type == easyexcel_core::support::ExcelTypeEnum::Csv,
+            None => is_csv_path(&self.path),
+        }
+    }
+
+    pub(crate) fn is_xls(&self) -> bool {
+        match self.excel_type {
+            Some(excel_type) => excel_type == easyexcel_core::support::ExcelTypeEnum::Xls,
+            None => is_xls_path(&self.path),
+        }
+    }
+
+    fn write_xls_batch<T, I>(
+        &mut self,
+        rows: I,
+        sheet: &WriteSheet<T>,
+        handlers: &mut [Box<dyn WriteHandler>],
+        skip_sheet_create_callbacks: bool,
+        use_incoming_options: bool,
+        initialize_holder_head: bool,
+        active_table_no: Option<i32>,
+    ) -> Result<()>
     where
         T: ExcelRow,
         I: IntoIterator<Item = T>,
     {
         if self.xls_template.is_some() {
-            return self.write_xls_batch_onto_template::<T, I>(rows, sheet);
+            return self.write_xls_batch_onto_template::<T, I>(
+                rows,
+                sheet,
+                handlers,
+                skip_sheet_create_callbacks,
+                use_incoming_options,
+                initialize_holder_head,
+                active_table_no,
+            );
         }
         let requested_name = sheet.options().sheet_name.clone();
         let existing_name = self.resolve_sheet_name(sheet.options());
         let sheet_name = existing_name.unwrap_or_else(|| requested_name.clone());
         let (state, is_new) = if let Some(state) = self.sheets.get(&sheet_name).cloned() {
-            validate_stateful_schema(&sheet_name, &state, T::schema())?;
+            if !use_incoming_options {
+                validate_stateful_schema(&sheet_name, &state, T::schema())?;
+            }
             (state, false)
         } else {
             let mut options = sheet.options().clone();
@@ -1361,32 +2306,49 @@ impl ExcelWriter {
                 true,
             )
         };
+        let mut batch_options = if use_incoming_options {
+            let mut options = sheet.options().clone();
+            options.converters = self.converters.merged_with(&options.converters);
+            options
+        } else {
+            state.options.clone()
+        };
+        batch_options.sheet_name = sheet_name.clone();
 
-        let sheet_context = WriteSheetContext::new(&sheet_name);
-        if is_new {
-            before_sheet(&mut self.handlers, &sheet_context)?;
+        let holder_scope =
+            self.handler_holder_scope::<T>(sheet.options(), &sheet_name, active_table_no)?;
+        let sheet_context = holder_scope.sheet(WriteSheetContext::new(&sheet_name));
+        if is_new && !skip_sheet_create_callbacks {
+            before_sheet(handlers, &sheet_context)?;
+            after_sheet_create(handlers, &sheet_context)?;
         }
         let progress = {
+            let next_row = if is_new {
+                relative_head_start_row(&batch_options)
+            } else {
+                state.next_row
+            };
             if is_new {
-                let biff_sheet = self.xls_book.sheet_mut(&sheet_name);
-                biff_sheet.next_row = state.next_row;
+                let biff_sheet = create_sheet(&mut self.xls_book, &sheet_name)?;
+                biff_sheet.next_row = next_row;
                 biff_sheet.next_data_index = state.next_data_index;
             }
             append_rows_to_biff8_sheet::<T, I>(
                 &mut self.xls_book,
                 &sheet_name,
-                &state.options,
+                &batch_options,
                 rows,
-                &mut self.handlers,
+                handlers,
                 WriteProgress {
-                    next_row: state.next_row,
+                    next_row,
                     next_data_index: state.next_data_index,
                 },
-                is_new,
+                is_new || initialize_holder_head,
+                Some(&holder_scope),
             )?
         };
         if is_new {
-            after_sheet(&mut self.handlers, &sheet_context)?;
+            after_sheet(handlers, &sheet_context)?;
         }
         self.sheets.insert(
             sheet_name.clone(),
@@ -1408,6 +2370,11 @@ impl ExcelWriter {
         &mut self,
         rows: I,
         sheet: &WriteSheet<T>,
+        handlers: &mut [Box<dyn WriteHandler>],
+        skip_sheet_create_callbacks: bool,
+        use_incoming_options: bool,
+        initialize_holder_head: bool,
+        active_table_no: Option<i32>,
     ) -> Result<()>
     where
         T: ExcelRow,
@@ -1432,7 +2399,9 @@ impl ExcelWriter {
         }
         let sheet_name = target_name;
         let (state, is_new) = if let Some(state) = self.sheets.get(&sheet_name).cloned() {
-            validate_stateful_schema(&sheet_name, &state, T::schema())?;
+            if !use_incoming_options {
+                validate_stateful_schema(&sheet_name, &state, T::schema())?;
+            }
             (state, false)
         } else {
             let mut options = sheet.options().clone();
@@ -1454,17 +2423,51 @@ impl ExcelWriter {
                 true,
             )
         };
-        let sheet_context = WriteSheetContext::new(&sheet_name);
-        if is_new {
-            before_sheet(&mut self.handlers, &sheet_context)?;
+        let mut batch_options = if use_incoming_options {
+            let mut options = sheet.options().clone();
+            options.converters = self.converters.merged_with(&options.converters);
+            options
+        } else {
+            state.options.clone()
+        };
+        batch_options.sheet_name = sheet_name.clone();
+        let holder_scope =
+            self.handler_holder_scope::<T>(sheet.options(), &sheet_name, active_table_no)?;
+        let sheet_context = holder_scope.sheet(WriteSheetContext::new(&sheet_name));
+        if is_new && !skip_sheet_create_callbacks {
+            before_sheet(handlers, &sheet_context)?;
+            after_sheet_create(handlers, &sheet_context)?;
         }
         let first_write = self.template_pending_rows.remove(&sheet_name).is_some() || is_new;
-        let write_head = first_write;
-        let append_rows = collect_template_append_rows::<T, I>(
-            &state.options,
-            rows,
+        let write_head = first_write || initialize_holder_head;
+        let start_row = self
+            .xls_template
+            .as_ref()
+            .expect("xls template must exist for BIFF preserve path")
+            .next_row_for_sheet(&sheet_name)?;
+        if first_write {
+            let head_merges =
+                automatic_dynamic_head_merge_ranges::<T>(&batch_options, start_row, write_head)?;
+            let package = self
+                .xls_template
+                .as_mut()
+                .expect("xls template must exist for BIFF preserve path");
+            for range in head_merges {
+                package.add_merge_range(&sheet_name, merge_range_to_biff8(range)?)?;
+            }
+        }
+        let (mut append_rows, original_rows, _converted_rows, absent_rows) =
+            collect_template_append_rows::<T, I>(&batch_options, rows, write_head, start_row)?;
+        let _ignore_styles = run_template_handler_callbacks::<T>(
+            &batch_options,
+            handlers,
+            &mut append_rows,
+            &original_rows,
+            &absent_rows,
             write_head,
             state.next_data_index,
+            start_row,
+            Some(&holder_scope),
         )?;
         let next_row = {
             let package = self
@@ -1474,13 +2477,15 @@ impl ExcelWriter {
             package.append_rows(&sheet_name, &append_rows)?
         };
         let head_rows = if write_head {
-            usize::try_from(head_rows_for_schema(T::schema(), &state.options)?).unwrap_or(0)
+            usize::try_from(head_rows_for_schema(T::schema(), &batch_options)?).unwrap_or(0)
         } else {
             0
         };
-        let data_added = append_rows.len().saturating_sub(head_rows);
+        let data_added = append_rows.len().saturating_sub(head_rows).saturating_sub(
+            usize::try_from(relative_head_start_row(&batch_options)).unwrap_or(usize::MAX),
+        );
         if is_new {
-            after_sheet(&mut self.handlers, &sheet_context)?;
+            after_sheet(handlers, &sheet_context)?;
         }
         self.sheets.insert(
             sheet_name.clone(),
@@ -1494,14 +2499,31 @@ impl ExcelWriter {
         Ok(())
     }
 
-    fn write_xlsx_batch<T, I>(&mut self, rows: I, sheet: &WriteSheet<T>) -> Result<()>
+    fn write_xlsx_batch<T, I>(
+        &mut self,
+        rows: I,
+        sheet: &WriteSheet<T>,
+        handlers: &mut [Box<dyn WriteHandler>],
+        skip_sheet_create_callbacks: bool,
+        use_incoming_options: bool,
+        initialize_holder_head: bool,
+        active_table_no: Option<i32>,
+    ) -> Result<()>
     where
         T: ExcelRow,
         I: IntoIterator<Item = T>,
     {
         let requested_name = sheet.options().sheet_name.clone();
         if self.template_package.is_some() {
-            return self.write_xlsx_batch_onto_template_package::<T, I>(rows, sheet);
+            return self.write_xlsx_batch_onto_template_package::<T, I>(
+                rows,
+                sheet,
+                handlers,
+                skip_sheet_create_callbacks,
+                use_incoming_options,
+                initialize_holder_head,
+                active_table_no,
+            );
         }
         if let Some(sheet_name) = self.resolve_sheet_name(sheet.options()) {
             if let Some(start_row) = self.template_pending_rows.remove(&sheet_name) {
@@ -1510,21 +2532,25 @@ impl ExcelWriter {
                 self.apply_workbook_spill_defaults(&mut options);
                 // Preserve the real template sheet name (index-based Java `.sheet()`).
                 options.sheet_name = sheet_name.clone();
+                let holder_scope =
+                    self.handler_holder_scope::<T>(sheet.options(), &sheet_name, active_table_no)?;
                 let worksheet = self
                     .workbook
                     .worksheet_from_name(&sheet_name)
                     .map_err(format_error)?;
-                let sheet_context = WriteSheetContext::new(&sheet_name);
-                before_sheet(&mut self.handlers, &sheet_context)?;
+                let sheet_context = holder_scope.sheet(WriteSheetContext::new(&sheet_name));
+                if !skip_sheet_create_callbacks {
+                    before_sheet(handlers, &sheet_context)?;
+                    after_sheet_create(handlers, &sheet_context)?;
+                }
                 let compress = options.compress_temp_files;
                 let progress = {
-                    let spill =
-                        ensure_gzip_spill(&mut self.gzip_spills, &sheet_name, compress)?;
-                    append_rows_to_worksheet_with_gzip::<T, I>(
+                    let spill = ensure_gzip_spill(&mut self.gzip_spills, &sheet_name, compress)?;
+                    append_rows_to_worksheet_with_gzip_and_context::<T, I>(
                         worksheet,
                         &options,
                         rows,
-                        &mut self.handlers,
+                        handlers,
                         WriteProgress {
                             next_row: start_row,
                             next_data_index: 0,
@@ -1532,12 +2558,13 @@ impl ExcelWriter {
                         true,
                         T::write_metadata(),
                         spill,
+                        Some(&holder_scope),
                     )?
                 };
-                after_sheet(&mut self.handlers, &sheet_context)?;
+                after_sheet(handlers, &sheet_context)?;
                 // Java LongestMatchColumnWidthStyleStrategy setColumnWidth after cells
-                apply_handler_column_widths::<T>(worksheet, &options, &self.handlers)?;
-                if options.auto_width || handlers_request_auto_width(&self.handlers) {
+                apply_handler_column_widths::<T>(worksheet, &options, handlers)?;
+                if options.auto_width || handlers_request_auto_width(handlers) {
                     worksheet.autofit();
                 }
                 self.sheets.insert(
@@ -1558,33 +2585,52 @@ impl ExcelWriter {
                 .get(&sheet_name)
                 .cloned()
                 .expect("resolved worksheet must exist");
-            validate_stateful_schema(&sheet_name, &state, T::schema())?;
+            if !use_incoming_options {
+                validate_stateful_schema(&sheet_name, &state, T::schema())?;
+            }
+            let mut batch_options = if use_incoming_options {
+                let mut options = sheet.options().clone();
+                options.converters = self.converters.merged_with(&options.converters);
+                self.apply_workbook_spill_defaults(&mut options);
+                options
+            } else {
+                state.options.clone()
+            };
+            batch_options.sheet_name = sheet_name.clone();
+            let holder_scope =
+                self.handler_holder_scope::<T>(sheet.options(), &sheet_name, active_table_no)?;
             let worksheet = self
                 .workbook
                 .worksheet_from_name(&sheet_name)
                 .map_err(format_error)?;
-            let compress = state.options.compress_temp_files;
+            let compress = batch_options.compress_temp_files;
+            let metadata = if use_incoming_options {
+                T::write_metadata()
+            } else {
+                &state.metadata
+            };
             let progress = {
                 let spill = ensure_gzip_spill(&mut self.gzip_spills, &sheet_name, compress)?;
-                append_rows_to_worksheet_with_gzip::<T, I>(
+                append_rows_to_worksheet_with_gzip_and_context::<T, I>(
                     worksheet,
-                    &state.options,
+                    &batch_options,
                     rows,
-                    &mut self.handlers,
+                    handlers,
                     WriteProgress {
                         next_row: state.next_row,
                         next_data_index: state.next_data_index,
                     },
-                    false,
-                    &state.metadata,
+                    initialize_holder_head,
+                    metadata,
                     spill,
+                    Some(&holder_scope),
                 )?
             };
-            if state.options.auto_width || handlers_request_auto_width(&self.handlers) {
+            if batch_options.auto_width || handlers_request_auto_width(handlers) {
                 worksheet.autofit();
             }
             // Re-apply measured LongestMatch widths after incremental append.
-            apply_handler_column_widths::<T>(worksheet, &state.options, &self.handlers)?;
+            apply_handler_column_widths::<T>(worksheet, &batch_options, handlers)?;
             let current = self
                 .sheets
                 .get_mut(&sheet_name)
@@ -1599,14 +2645,18 @@ impl ExcelWriter {
         self.apply_workbook_spill_defaults(&mut options);
         let sheet_name = options.sheet_name.clone();
         let compress = options.compress_temp_files;
+        let holder_scope =
+            self.handler_holder_scope::<T>(sheet.options(), &sheet_name, active_table_no)?;
         let progress = {
             let spill = ensure_gzip_spill(&mut self.gzip_spills, &sheet_name, compress)?;
             write_sheet_to_workbook_with_gzip::<T, I>(
                 &mut self.workbook,
                 &options,
                 rows,
-                &mut self.handlers,
+                handlers,
                 spill,
+                skip_sheet_create_callbacks,
+                Some(&holder_scope),
             )?
         };
         self.sheets.insert(
@@ -1632,6 +2682,11 @@ impl ExcelWriter {
         &mut self,
         rows: I,
         sheet: &WriteSheet<T>,
+        handlers: &mut [Box<dyn WriteHandler>],
+        skip_sheet_create_callbacks: bool,
+        use_incoming_options: bool,
+        initialize_holder_head: bool,
+        active_table_no: Option<i32>,
     ) -> Result<()>
     where
         T: ExcelRow,
@@ -1665,8 +2720,17 @@ impl ExcelWriter {
         let first_write = self.template_pending_rows.remove(&sheet_name).is_some()
             || !self.sheets.contains_key(&sheet_name);
         let mut options = if let Some(state) = self.sheets.get(&sheet_name) {
-            validate_stateful_schema(&sheet_name, state, T::schema())?;
-            state.options.clone()
+            if !use_incoming_options {
+                validate_stateful_schema(&sheet_name, state, T::schema())?;
+            }
+            if use_incoming_options {
+                let mut options = sheet.options().clone();
+                options.converters = self.converters.merged_with(&options.converters);
+                self.apply_workbook_spill_defaults(&mut options);
+                options
+            } else {
+                state.options.clone()
+            }
         } else {
             let mut options = sheet.options().clone();
             options.converters = self.converters.merged_with(&options.converters);
@@ -1676,27 +2740,86 @@ impl ExcelWriter {
         };
         options.sheet_name = sheet_name.clone();
 
-        let write_head = first_write;
+        let write_head = first_write || initialize_holder_head;
         let next_data_index = self
             .sheets
             .get(&sheet_name)
             .map(|state| state.next_data_index)
             .unwrap_or(0);
-        let append_rows =
-            collect_template_append_rows::<T, I>(&options, rows, write_head, next_data_index)?;
-        let sheet_context = WriteSheetContext::new(&sheet_name);
-        if first_write {
-            before_sheet(&mut self.handlers, &sheet_context)?;
+        let start_row = self
+            .template_package
+            .as_ref()
+            .expect("template package must exist for ZIP preserve path")
+            .next_row_for_sheet(&sheet_name)?
+            .saturating_sub(1);
+        let (mut append_rows, original_rows, converted_rows, absent_rows) =
+            collect_template_append_rows::<T, I>(&options, rows, write_head, start_row)?;
+        let mut row_heights = template_append_row_heights::<T>(
+            &options,
+            handlers,
+            write_head,
+            append_rows.len(),
+            &absent_rows,
+        )?;
+        let holder_scope =
+            self.handler_holder_scope::<T>(sheet.options(), &sheet_name, active_table_no)?;
+        let sheet_context = holder_scope.sheet(WriteSheetContext::new(&sheet_name));
+        if first_write && !skip_sheet_create_callbacks {
+            before_sheet(handlers, &sheet_context)?;
+            after_sheet_create(handlers, &sheet_context)?;
+        }
+        let effects = run_template_handler_callbacks::<T>(
+            &options,
+            handlers,
+            &mut append_rows,
+            &original_rows,
+            &absent_rows,
+            write_head,
+            next_data_index,
+            start_row,
+            Some(&holder_scope),
+        )?;
+        if row_heights.is_empty() && effects.requested_row_heights.iter().any(Option::is_some) {
+            row_heights.resize(effects.requested_row_heights.len(), None);
+        }
+        for (height, requested) in row_heights.iter_mut().zip(&effects.requested_row_heights) {
+            if requested.is_some() {
+                *height = *requested;
+            }
         }
         let next_row = {
             let package = self
                 .template_package
                 .as_mut()
                 .expect("template package must exist for ZIP preserve path");
-            package.append_rows(&sheet_name, &append_rows)?
+            if first_write {
+                apply_template_holder_layout::<T>(package, &sheet_name, &options, handlers, &[])?;
+                let head_merges =
+                    automatic_dynamic_head_merge_ranges::<T>(&options, start_row, write_head)?;
+                package.apply_sheet_layout(&sheet_name, &[], &head_merges)?;
+            }
+            let cell_styles = template_append_cell_styles::<T>(
+                package,
+                &options,
+                handlers,
+                &append_rows,
+                &original_rows,
+                &converted_rows,
+                &effects.ignore_styles,
+                &effects.requested_styles,
+                write_head,
+                next_data_index,
+            )?;
+            package.append_rows_with_layout_and_absent(
+                &sheet_name,
+                &append_rows,
+                &row_heights,
+                &cell_styles,
+                &absent_rows,
+            )?
         };
         if first_write {
-            after_sheet(&mut self.handlers, &sheet_context)?;
+            after_sheet(handlers, &sheet_context)?;
         }
         let added = append_rows.len();
         let head_rows = if write_head {
@@ -1704,7 +2827,9 @@ impl ExcelWriter {
         } else {
             0
         };
-        let data_added = added.saturating_sub(head_rows);
+        let data_added = added.saturating_sub(head_rows).saturating_sub(
+            usize::try_from(relative_head_start_row(&options)).unwrap_or(usize::MAX),
+        );
         self.sheets.insert(
             sheet_name.clone(),
             StatefulSheetState {
@@ -1719,7 +2844,16 @@ impl ExcelWriter {
         Ok(())
     }
 
-    fn write_csv_batch<T, I>(&mut self, rows: I, sheet: &WriteSheet<T>) -> Result<()>
+    fn write_csv_batch<T, I>(
+        &mut self,
+        rows: I,
+        sheet: &WriteSheet<T>,
+        handlers: &mut [Box<dyn WriteHandler>],
+        skip_sheet_create_callbacks: bool,
+        use_incoming_options: bool,
+        initialize_holder_head: bool,
+        active_table_no: Option<i32>,
+    ) -> Result<()>
     where
         T: ExcelRow,
         I: IntoIterator<Item = T>,
@@ -1734,7 +2868,9 @@ impl ExcelWriter {
         let sheet_name = existing_name.unwrap_or(requested_name);
 
         let (state, is_new) = if let Some(state) = self.sheets.get(&sheet_name).cloned() {
-            validate_stateful_schema(&sheet_name, &state, T::schema())?;
+            if !use_incoming_options {
+                validate_stateful_schema(&sheet_name, &state, T::schema())?;
+            }
             (state, false)
         } else {
             let mut options = sheet.options().clone();
@@ -1753,9 +2889,22 @@ impl ExcelWriter {
             )
         };
 
-        let sheet_context = WriteSheetContext::new(&sheet_name);
-        if is_new {
-            before_sheet(&mut self.handlers, &sheet_context)?;
+        let mut batch_options = if use_incoming_options {
+            let mut options = sheet.options().clone();
+            options.charset = self.csv_charset.clone();
+            options.with_bom = self.csv_with_bom;
+            options.converters = self.converters.merged_with(&options.converters);
+            options
+        } else {
+            state.options.clone()
+        };
+        batch_options.sheet_name = sheet_name.clone();
+        let holder_scope =
+            self.handler_holder_scope::<T>(sheet.options(), &sheet_name, active_table_no)?;
+        let sheet_context = holder_scope.sheet(WriteSheetContext::new(&sheet_name));
+        if is_new && !skip_sheet_create_callbacks {
+            before_sheet(handlers, &sheet_context)?;
+            after_sheet_create(handlers, &sheet_context)?;
         }
         let writer = self
             .csv_writer
@@ -1763,15 +2912,16 @@ impl ExcelWriter {
             .expect("stateful CSV writer must be initialized");
         let progress = append_csv_rows::<T, I>(
             writer,
-            &state.options,
+            &batch_options,
             rows,
-            &mut self.handlers,
+            handlers,
             state.next_row,
             state.next_data_index,
-            is_new,
+            is_new || initialize_holder_head,
+            Some(&holder_scope),
         )?;
         if is_new {
-            after_sheet(&mut self.handlers, &sheet_context)?;
+            after_sheet(handlers, &sheet_context)?;
         }
         self.sheets.insert(
             sheet_name.clone(),
@@ -1803,18 +2953,55 @@ impl ExcelWriter {
             })
     }
 
+    fn handler_holder_scope<T>(
+        &self,
+        options: &WriteOptions,
+        sheet_name: &str,
+        table_no: Option<i32>,
+    ) -> Result<HandlerHolderScope>
+    where
+        T: ExcelRow,
+    {
+        let sheet_no = options
+            .sheet_index
+            .or_else(|| {
+                self.sheet_indexes
+                    .iter()
+                    .find_map(|(index, name)| (name == sheet_name).then_some(*index))
+            })
+            .unwrap_or_else(|| {
+                (0..)
+                    .find(|index| !self.sheet_indexes.contains_key(index))
+                    .unwrap_or(self.sheet_indexes.len())
+            });
+        let mut effective_options = options.clone();
+        effective_options.converters = self.converters.merged_with(&options.converters);
+        HandlerHolderScope::new_resolved::<T>(
+            &self.path,
+            i32::try_from(sheet_no).unwrap_or(i32::MAX),
+            table_no,
+            &effective_options,
+        )
+    }
+
     fn remember_sheet_index(&mut self, index: Option<usize>, sheet_name: &str) {
-        if let Some(index) = index {
-            self.sheet_indexes.insert(index, sheet_name.to_owned());
+        if self.sheet_indexes.values().any(|name| name == sheet_name) {
+            return;
         }
+        let index = index.unwrap_or_else(|| {
+            (0..)
+                .find(|candidate| !self.sheet_indexes.contains_key(candidate))
+                .unwrap_or(self.sheet_indexes.len())
+        });
+        self.sheet_indexes.insert(index, sheet_name.to_owned());
     }
 }
 
-fn validate_stateful_backend(path: &Path, password: Option<&str>) -> Result<()> {
-    match path.extension().and_then(std::ffi::OsStr::to_str) {
-        Some(extension) if extension.eq_ignore_ascii_case("csv") && password.is_some() => Err(
-            ExcelError::Unsupported("password protection is not supported for CSV".to_owned()),
-        ),
+fn validate_stateful_backend(is_csv: bool, password: Option<&str>) -> Result<()> {
+    match (is_csv, password.is_some()) {
+        (true, true) => Err(ExcelError::Unsupported(
+            "password protection is not supported for CSV".to_owned(),
+        )),
         // XLS password is now supported via BIFF8 RC4 (Phase 5.3)
         _ => Ok(()),
     }
@@ -1828,6 +3015,21 @@ fn is_csv_path(path: &Path) -> bool {
 fn is_xls_path(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("xls"))
+}
+
+fn resolve_excel_type(
+    path: &Path,
+    options: &WriteOptions,
+) -> easyexcel_core::support::ExcelTypeEnum {
+    options.excel_type.unwrap_or_else(|| {
+        if is_csv_path(path) {
+            easyexcel_core::support::ExcelTypeEnum::Csv
+        } else if is_xls_path(path) {
+            easyexcel_core::support::ExcelTypeEnum::Xls
+        } else {
+            easyexcel_core::support::ExcelTypeEnum::Xlsx
+        }
+    })
 }
 
 fn uses_constant_memory_spill(options: &WriteOptions) -> bool {
@@ -1846,6 +3048,14 @@ fn validate_stateful_schema(
             "worksheet schema changed between writes: {sheet_name}"
         )))
     }
+}
+
+fn with_default_write_converters(options: &WriteOptions) -> WriteOptions {
+    let mut effective = options.clone();
+    effective.converters =
+        easyexcel_core::converter::default_converter_loader::load_default_write_converter()
+            .merged_with(&options.converters);
+    effective
 }
 
 /// Writes typed rows to a new BIFF8 (`.xls`) file.
@@ -1882,10 +3092,14 @@ where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
+    let effective_options = with_default_write_converters(options);
+    let options = &effective_options;
+    validate_excel_row_schema::<T>()?;
     validate_xls_options(options)?;
     sort_handlers(handlers);
     let workbook_context = WriteWorkbookContext::new(path);
     before_workbook(handlers, &workbook_context)?;
+    after_workbook_create(handlers, &workbook_context)?;
 
     if template_write::has_template(
         options.template_file.as_deref(),
@@ -1897,7 +3111,13 @@ where
     }
 
     let mut book = Biff8Book::default();
-    write_sheet_to_biff8_book::<T, I>(&mut book, options, rows, handlers)?;
+    let holder_scope = HandlerHolderScope::new_resolved::<T>(
+        path,
+        i32::try_from(options.sheet_index.unwrap_or(0)).unwrap_or(i32::MAX),
+        None,
+        options,
+    )?;
+    write_sheet_to_biff8_book::<T, I>(&mut book, options, rows, handlers, Some(&holder_scope))?;
     // Phase 5.3: BIFF8 RC4 encryption
     if let Some(password) = &options.password {
         let raw_bytes = book.to_cfb_bytes()?;
@@ -1928,28 +3148,32 @@ where
     I: IntoIterator<Item = T>,
     W: Write + Send,
 {
+    let effective_options = with_default_write_converters(options);
+    let options = &effective_options;
+    validate_excel_row_schema::<T>()?;
     validate_xls_options(options)?;
     sort_handlers(handlers);
     let workbook_context = WriteWorkbookContext::new(logical_path);
     before_workbook(handlers, &workbook_context)?;
+    after_workbook_create(handlers, &workbook_context)?;
 
     if template_write::has_template(
         options.template_file.as_deref(),
         options.template_bytes.as_deref(),
     ) {
-        write_xls_onto_template::<T, I>(
-            logical_path,
-            Some(&mut output),
-            options,
-            rows,
-            handlers,
-        )?;
+        write_xls_onto_template::<T, I>(logical_path, Some(&mut output), options, rows, handlers)?;
         after_workbook(handlers, &workbook_context)?;
         return Ok(());
     }
 
     let mut book = Biff8Book::default();
-    write_sheet_to_biff8_book::<T, I>(&mut book, options, rows, handlers)?;
+    let holder_scope = HandlerHolderScope::new_resolved::<T>(
+        logical_path,
+        i32::try_from(options.sheet_index.unwrap_or(0)).unwrap_or(i32::MAX),
+        None,
+        options,
+    )?;
+    write_sheet_to_biff8_book::<T, I>(&mut book, options, rows, handlers, Some(&holder_scope))?;
     book.write_to(&mut output)?;
     output.flush()?;
     after_workbook(handlers, &workbook_context)?;
@@ -1987,7 +3211,7 @@ where
     }
     let mut package = biff8::Biff8TemplatePackage::from_bytes(&bytes)?;
     let sheet_names = package.sheet_names();
-    let (_target_index, target_name, create_new) = template_write::resolve_package_target(
+    let (target_index, target_name, create_new) = template_write::resolve_package_target(
         &sheet_names,
         options.sheet_index,
         &options.sheet_name,
@@ -1999,9 +3223,32 @@ where
     }
     let mut write_options = options.clone();
     write_options.sheet_name = target_name.clone();
-    let append_rows = collect_template_append_rows::<T, I>(&write_options, rows, true, 0)?;
-    let sheet_context = WriteSheetContext::new(&target_name);
+    let start_row = package.next_row_for_sheet(&target_name)?;
+    for range in automatic_dynamic_head_merge_ranges::<T>(&write_options, start_row, true)? {
+        package.add_merge_range(&target_name, merge_range_to_biff8(range)?)?;
+    }
+    let (mut append_rows, original_rows, _converted_rows, absent_rows) =
+        collect_template_append_rows::<T, I>(&write_options, rows, true, start_row)?;
+    let holder_scope = HandlerHolderScope::new_resolved::<T>(
+        path,
+        i32::try_from(target_index).unwrap_or(i32::MAX),
+        None,
+        &write_options,
+    )?;
+    let sheet_context = holder_scope.sheet(WriteSheetContext::new(&target_name));
     before_sheet(handlers, &sheet_context)?;
+    after_sheet_create(handlers, &sheet_context)?;
+    let _ignore_styles = run_template_handler_callbacks::<T>(
+        &write_options,
+        handlers,
+        &mut append_rows,
+        &original_rows,
+        &absent_rows,
+        true,
+        0,
+        start_row,
+        Some(&holder_scope),
+    )?;
     package.append_rows(&target_name, &append_rows)?;
     after_sheet(handlers, &sheet_context)?;
     match output {
@@ -2027,6 +3274,7 @@ fn write_sheet_to_biff8_book<T, I>(
     options: &WriteOptions,
     rows: I,
     handlers: &mut [Box<dyn WriteHandler>],
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<WriteProgress>
 where
     T: ExcelRow,
@@ -2036,8 +3284,12 @@ where
     let mut write_options = options.clone();
     write_options.sheet_name = sheet_name.clone();
     book.use_1904_windowing = write_options.use_1904_windowing;
+    create_sheet(book, &sheet_name)?;
     let sheet_context = WriteSheetContext::new(&sheet_name);
+    let sheet_context =
+        holder_scope.map_or(sheet_context.clone(), |scope| scope.sheet(sheet_context));
     before_sheet(handlers, &sheet_context)?;
+    after_sheet_create(handlers, &sheet_context)?;
     let progress = append_rows_to_biff8_sheet::<T, I>(
         book,
         &sheet_name,
@@ -2045,10 +3297,11 @@ where
         rows,
         handlers,
         WriteProgress {
-            next_row: 0,
+            next_row: relative_head_start_row(&write_options),
             next_data_index: 0,
         },
         true,
+        holder_scope,
     )?;
     after_sheet(handlers, &sheet_context)?;
     Ok(progress)
@@ -2068,6 +3321,7 @@ fn append_rows_to_biff8_sheet<T, I>(
     handlers: &mut [Box<dyn WriteHandler>],
     progress: WriteProgress,
     write_head: bool,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<WriteProgress>
 where
     T: ExcelRow,
@@ -2078,14 +3332,14 @@ where
         next_data_index: mut data_index,
     } = progress;
     let global = WriteGlobalFlags::from(options);
-    let columns = selected_columns(T::schema(), options);
+    let columns = selected_columns(T::schema(), options)?;
     let metadata = T::write_metadata();
     let head_rows = head_rows_for_schema(T::schema(), options)?;
-    let annotation_loop_merges = annotation_loop_merges_from_columns(&columns)?;
+    let loop_merges = effective_loop_merges(&columns, options, handlers)?;
 
     if write_head {
         apply_biff8_column_widths::<T>(book.sheet_mut(sheet_name), options, handlers)?;
-        apply_biff8_once_absolute_merges::<T>(book.sheet_mut(sheet_name), handlers, row_index)?;
+        apply_biff8_once_absolute_merges::<T>(book.sheet_mut(sheet_name), handlers)?;
         for range in &options.merge_ranges {
             add_biff8_merge_range(book.sheet_mut(sheet_name), *range)?;
         }
@@ -2100,26 +3354,25 @@ where
             metadata,
             handlers,
             row_index,
+            holder_scope,
         )?;
         // Annotation `@HeadRowHeight` / `SimpleRowHeightStyleStrategy`
-        let head_height = metadata
-            .head_row_height
-            .or_else(|| collect_handler_head_row_height(handlers));
+        let head_height = collect_handler_head_row_height(handlers).or(metadata.head_row_height);
         if let Some(height) = head_height {
             let sheet = book.sheet_mut(sheet_name);
             for head_row in row_index..row_index + head_rows {
-                let row = u16::try_from(head_row).map_err(|_| {
-                    ExcelError::Format("BIFF8 row overflow".to_owned())
-                })?;
+                let row = u16::try_from(head_row)
+                    .map_err(|_| ExcelError::Format("BIFF8 row overflow".to_owned()))?;
                 sheet.set_row_height(row, height);
             }
         }
         if options.automatic_merge_head {
             if let Some(head) = &options.dynamic_head {
+                let head = selected_dynamic_head_paths(&columns, head)?;
                 merge_biff8_dynamic_head_groups(
                     book.sheet_mut(sheet_name),
                     &columns,
-                    head,
+                    &head,
                     row_index,
                 )?;
             }
@@ -2131,16 +3384,22 @@ where
 
     let row_list: Vec<T> = rows.into_iter().collect();
     for row in row_list {
-        let content_height = metadata
-            .content_row_height
-            .or_else(|| collect_handler_content_row_height(handlers));
+        if row.is_absent_row() {
+            row_index = row_index
+                .checked_add(1)
+                .ok_or_else(|| ExcelError::Format("BIFF8 row overflow".to_owned()))?;
+            data_index = data_index.saturating_add(1);
+            continue;
+        }
+        let content_height =
+            collect_handler_content_row_height(handlers).or(metadata.content_row_height);
         if let Some(height) = content_height {
-            let row_u16 = u16::try_from(row_index).map_err(|_| {
-                ExcelError::Format("BIFF8 row overflow".to_owned())
-            })?;
+            let row_u16 = u16::try_from(row_index)
+                .map_err(|_| ExcelError::Format("BIFF8 row overflow".to_owned()))?;
             book.sheet_mut(sheet_name).set_row_height(row_u16, height);
         }
-        let cells = row.to_row_with_converters(&options.converters)?;
+        let (original_cells, cells) =
+            convert_row_at(&row, &options.converters, sheet_name, row_index, &columns)?;
         let dynamic_columns = dynamic_columns_for_row(T::schema().is_empty(), cells.len(), options);
         let row_columns = dynamic_columns.as_deref().unwrap_or(&columns);
         let explicit_style = (!options.content_styles.is_empty())
@@ -2149,55 +3408,57 @@ where
             book.sheet_mut(sheet_name),
             row_index,
             data_index,
-            &options.loop_merges,
+            &loop_merges,
         )?;
-        apply_biff8_loop_merges(
-            book.sheet_mut(sheet_name),
-            row_index,
-            data_index,
-            &annotation_loop_merges,
-        )?;
-        let row_context = WriteRowContext {
-            sheet_name: sheet_name.to_owned(),
-            row_index,
-            is_head: false,
-        };
-        for handler in handlers.iter_mut() {
-            handler.before_row(&row_context)?;
-        }
+        let row_context = WriteRowContext::new(sheet_name, row_index, Some(data_index), false);
+        let row_context = holder_scope.map_or(row_context.clone(), |scope| scope.row(row_context));
+        begin_row_lifecycle(handlers, &row_context)?;
         for (physical_index, schema_index, column) in row_columns {
-            let value = cells.get(*schema_index).unwrap_or(&CellValue::Empty);
-            let mut context = WriteCellContext {
-                sheet_name: sheet_name.to_owned(),
-                row_index,
-                column_index: to_column(*physical_index)?,
-                field: (!column.field.is_empty()).then_some(column.field),
-                is_head: false,
-                relative_row_index: Some(data_index),
-                value: value.clone(),
-                skip: false,
-            };
-            for handler in handlers.iter_mut() {
-                handler.before_cell(&mut context)?;
+            let cell_data = cells.get(*schema_index);
+            let value = cell_data.map_or(CellValue::Empty, WriteCellData::effective_value);
+            let mut context =
+                WriteCellContext::new(sheet_name, row_index, to_column(*physical_index)?, value)
+                    .with_column(column)
+                    .with_original_value(
+                        original_cells
+                            .get(*schema_index)
+                            .unwrap_or(&CellValue::Empty)
+                            .clone(),
+                    )
+                    .with_relative_row_index(Some(data_index));
+            if let Some(scope) = holder_scope {
+                context = scope.cell(context);
             }
+            begin_cell_lifecycle(handlers, &mut context)?;
+            finish_cell_lifecycle(handlers, &context)?;
+            context.apply_cell_mutations();
             if !context.skip {
-                let handler_style = collect_handler_cell_style(handlers, &context);
                 let style_ctx = SheetStyleContext::content(explicit_style, metadata, global);
-                let format_ctx = style_ctx.column(column).with_handler_cell(handler_style);
-                let cell = cell_value_to_biff8_styled(
-                    &context.value,
-                    &mut book.styles,
-                    format_ctx,
-                )?;
-                book.sheet_mut(sheet_name)
-                    .set(row_index, *physical_index, cell)?;
-            }
-            for handler in handlers.iter_mut() {
-                handler.after_cell(&context)?;
+                let format_ctx = if context.ignore_fill_style {
+                    style_ctx.column(column).without_fill_style()
+                } else {
+                    let format_ctx = style_ctx
+                        .column(column)
+                        .with_handler_cell(effective_handler_cell_style(handlers, &context));
+                    cell_data.map_or(format_ctx, |cell| format_ctx.with_converted_cell(cell))
+                };
+                let cell =
+                    cell_value_to_biff8_styled(&context.value, &mut book.styles, format_ctx)?;
+                let mut row_creator = Biff8RowCreator {
+                    sheet: book.sheet_mut(sheet_name),
+                };
+                let mut row = create_row(&mut row_creator, row_index)?;
+                let column = u16::try_from(*physical_index).map_err(|_| {
+                    ExcelError::Format("BIFF8 supports at most 256 columns".to_owned())
+                })?;
+                create_cell(&mut row, column)?.set(cell)?;
             }
         }
-        for handler in handlers.iter_mut() {
-            handler.after_row(&row_context)?;
+        finish_row_lifecycle(handlers, &row_context)?;
+        if let Some(height) = row_context.row().requested_height() {
+            let row = u16::try_from(row_index)
+                .map_err(|_| ExcelError::Format("BIFF8 row overflow".to_owned()))?;
+            book.sheet_mut(sheet_name).set_row_height(row, height);
         }
         row_index = row_index
             .checked_add(1)
@@ -2223,36 +3484,51 @@ fn write_biff8_headers(
     metadata: &ExcelWriteMetadata,
     handlers: &mut [Box<dyn WriteHandler>],
     start_row: u32,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<()> {
     let global = WriteGlobalFlags::from(options);
     let style_ctx = SheetStyleContext::head(&options.head_style, metadata, global);
     if let Some(head) = &options.dynamic_head {
+        let head = selected_dynamic_head_paths(columns, head)?;
         let levels = head.iter().map(Vec::len).max().unwrap_or(0);
         for level in 0..levels {
             let row = start_row
-                .checked_add(u32::try_from(level).map_err(|_| {
-                    ExcelError::Format("dynamic head is too deep".to_owned())
-                })?)
+                .checked_add(
+                    u32::try_from(level)
+                        .map_err(|_| ExcelError::Format("dynamic head is too deep".to_owned()))?,
+                )
                 .ok_or_else(|| ExcelError::Format("BIFF8 row overflow".to_owned()))?;
-            for (col_idx, path) in head.iter().enumerate() {
-                let label = path.get(level).cloned().unwrap_or_default();
-                let (physical, column) = match columns.get(col_idx) {
-                    Some((physical, _, column)) => (*physical, *column),
-                    None => continue,
-                };
+            let row_context = WriteRowContext::new(sheet_name, row, Some(level), true);
+            let row_context =
+                holder_scope.map_or(row_context.clone(), |scope| scope.row(row_context));
+            begin_row_lifecycle(handlers, &row_context)?;
+            for ((physical, _, column), path) in columns.iter().zip(&head) {
+                let label = normalized_head_label(path, level).to_owned();
                 write_biff8_styled_text_cell(
                     book,
                     sheet_name,
                     row,
-                    physical,
+                    *physical,
                     label,
+                    column,
+                    Some(level),
                     style_ctx.column(column),
                     handlers,
                     true,
+                    holder_scope,
                 )?;
+            }
+            finish_row_lifecycle(handlers, &row_context)?;
+            if let Some(height) = row_context.row().requested_height() {
+                let row = u16::try_from(row)
+                    .map_err(|_| ExcelError::Format("BIFF8 row overflow".to_owned()))?;
+                book.sheet_mut(sheet_name).set_row_height(row, height);
             }
         }
     } else {
+        let row_context = WriteRowContext::new(sheet_name, start_row, Some(0), true);
+        let row_context = holder_scope.map_or(row_context.clone(), |scope| scope.row(row_context));
+        begin_row_lifecycle(handlers, &row_context)?;
         for (physical_index, _, column) in columns {
             write_biff8_styled_text_cell(
                 book,
@@ -2260,10 +3536,19 @@ fn write_biff8_headers(
                 start_row,
                 *physical_index,
                 column.name.to_owned(),
+                column,
+                Some(0),
                 style_ctx.column(column),
                 handlers,
                 true,
+                holder_scope,
             )?;
+        }
+        finish_row_lifecycle(handlers, &row_context)?;
+        if let Some(height) = row_context.row().requested_height() {
+            let row = u16::try_from(start_row)
+                .map_err(|_| ExcelError::Format("BIFF8 row overflow".to_owned()))?;
+            book.sheet_mut(sheet_name).set_row_height(row, height);
         }
     }
     Ok(())
@@ -2276,34 +3561,45 @@ fn write_biff8_styled_text_cell(
     row_index: u32,
     physical_index: usize,
     label: String,
+    column: &'static ExcelColumn,
+    relative_row_index: Option<usize>,
     format_ctx: CellFormatContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
     is_head: bool,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<()> {
     let column_index = to_column(physical_index)?;
-    let mut context = WriteCellContext {
-        sheet_name: sheet_name.to_owned(),
+    let mut context = WriteCellContext::new(
+        sheet_name,
         row_index,
         column_index,
-        field: None,
-        is_head,
-        relative_row_index: None,
-        value: CellValue::String(label.clone()),
-        skip: false,
-    };
-    for handler in handlers.iter_mut() {
-        handler.before_cell(&mut context)?;
+        CellValue::String(label.clone()),
+    )
+    .with_column(column)
+    .with_relative_row_index(relative_row_index);
+    if is_head {
+        context = context.with_head(label.clone()).without_original_value();
     }
+    if let Some(scope) = holder_scope {
+        context = scope.cell(context);
+    }
+    begin_cell_lifecycle(handlers, &mut context)?;
+    finish_cell_lifecycle(handlers, &context)?;
+    context.apply_cell_mutations();
     if !context.skip {
-        let handler_style = collect_handler_cell_style(handlers, &context);
-        let format_ctx = format_ctx.with_handler_cell(handler_style);
-        let cell =
-            cell_value_to_biff8_styled(&CellValue::String(label), &mut book.styles, format_ctx)?;
-        book.sheet_mut(sheet_name)
-            .set(row_index, physical_index, cell)?;
-    }
-    for handler in handlers.iter_mut() {
-        handler.after_cell(&context)?;
+        let format_ctx = if context.ignore_fill_style {
+            format_ctx.without_fill_style()
+        } else {
+            format_ctx.with_handler_cell(effective_handler_cell_style(handlers, &context))
+        };
+        let cell = cell_value_to_biff8_styled(&context.value, &mut book.styles, format_ctx)?;
+        let mut row_creator = Biff8RowCreator {
+            sheet: book.sheet_mut(sheet_name),
+        };
+        let mut row = create_row(&mut row_creator, row_index)?;
+        let column = u16::try_from(physical_index)
+            .map_err(|_| ExcelError::Format("BIFF8 supports at most 256 columns".to_owned()))?;
+        create_cell(&mut row, column)?.set(cell)?;
     }
     Ok(())
 }
@@ -2312,25 +3608,26 @@ fn cell_value_to_biff8(value: &CellValue, global: WriteGlobalFlags) -> Result<Bi
     match value {
         CellValue::Empty => Ok(Biff8Cell::general(Biff8Value::Blank)),
         CellValue::String(text) | CellValue::Error(text) | CellValue::Formula(text) => {
-            Ok(Biff8Cell::general(Biff8Value::Text(maybe_trim_cell_string(
-                text,
-                global.auto_trim,
-            ))))
+            Ok(Biff8Cell::general(Biff8Value::Text(
+                maybe_trim_cell_string(text, global.auto_trim),
+            )))
         }
         CellValue::Bool(flag) => Ok(Biff8Cell::general(Biff8Value::Bool(*flag))),
-        CellValue::Int(number) => {
+        CellValue::Int(number) =>
+        {
             #[allow(clippy::cast_precision_loss)]
             Ok(Biff8Cell::general(Biff8Value::Number(*number as f64)))
         }
         CellValue::Float(number) => Ok(Biff8Cell::general(Biff8Value::Number(*number))),
         CellValue::Decimal(number) => {
-            let number = number
-                .to_f64()
-                .filter(|value| value.is_finite())
-                .ok_or_else(|| {
-                    ExcelError::Format("decimal value exceeds BIFF8 numeric range".to_owned())
-                })?;
-            Ok(Biff8Cell::general(Biff8Value::Number(number)))
+            let numeric = finite_decimal_f64(number, "BIFF8")?;
+            if decimal_integer_requires_text(number)? {
+                Ok(Biff8Cell::general(Biff8Value::Text(
+                    number.to_plain_string(),
+                )))
+            } else {
+                Ok(Biff8Cell::general(Biff8Value::Number(numeric)))
+            }
         }
         CellValue::Date(date) => Ok(Biff8Cell::date_serial(date_to_excel_serial_with_windowing(
             *date,
@@ -2358,7 +3655,7 @@ fn cell_value_to_biff8(value: &CellValue, global: WriteGlobalFlags) -> Result<Bi
             // Write base value, image bytes handled by caller
             let _ = bytes;
             Ok(Biff8Cell::general(Biff8Value::Blank))
-        },
+        }
     }
 }
 
@@ -2380,7 +3677,13 @@ fn biff8_style_request(
     context: CellFormatContext<'_>,
 ) -> Biff8StyleRequest {
     let mut request = Biff8StyleRequest::default();
-    let mut annotation_cell = context.cell;
+    let mut annotation_cell = context.converted_cell;
+    if let Some(annotation_style) = context.cell {
+        annotation_cell = Some(merge_write_cell_style(
+            &annotation_style,
+            annotation_cell.unwrap_or_default(),
+        ));
+    }
     if let Some(handler_style) = context.handler_cell {
         annotation_cell = Some(merge_write_cell_style(
             &handler_style,
@@ -2487,16 +3790,14 @@ where
     T: ExcelRow,
 {
     for (column, width) in &options.column_widths {
-        let col = u8::try_from(*column).map_err(|_| {
-            ExcelError::Format("BIFF8 supports at most 256 columns".to_owned())
-        })?;
+        let col = u8::try_from(*column)
+            .map_err(|_| ExcelError::Format("BIFF8 supports at most 256 columns".to_owned()))?;
         sheet.set_column_width(col, *width);
     }
     let type_width = T::write_metadata().column_width;
-    for (physical_index, _, column) in selected_columns(T::schema(), options) {
-        let col = u8::try_from(physical_index).map_err(|_| {
-            ExcelError::Format("BIFF8 supports at most 256 columns".to_owned())
-        })?;
+    for (physical_index, _, column) in selected_columns(T::schema(), options)? {
+        let col = u8::try_from(physical_index)
+            .map_err(|_| ExcelError::Format("BIFF8 supports at most 256 columns".to_owned()))?;
         if sheet.column_widths.contains_key(&col) {
             continue;
         }
@@ -2516,10 +3817,9 @@ fn apply_biff8_handler_column_widths<T>(
 where
     T: ExcelRow,
 {
-    for (physical_index, _, _) in selected_columns(T::schema(), options) {
-        let col = u8::try_from(physical_index).map_err(|_| {
-            ExcelError::Format("BIFF8 supports at most 256 columns".to_owned())
-        })?;
+    for (physical_index, _, _) in selected_columns(T::schema(), options)? {
+        let col = u8::try_from(physical_index)
+            .map_err(|_| ExcelError::Format("BIFF8 supports at most 256 columns".to_owned()))?;
         if options
             .column_widths
             .iter()
@@ -2540,18 +3840,12 @@ where
 fn apply_biff8_once_absolute_merges<T>(
     sheet: &mut Biff8Sheet,
     handlers: &[Box<dyn WriteHandler>],
-    row_offset: u32,
 ) -> Result<()>
 where
     T: ExcelRow,
 {
-    if let Some(merge) = T::write_metadata().once_absolute_merge {
-        apply_biff8_once_absolute_merge_property(sheet, merge, row_offset)?;
-    }
-    for handler in handlers {
-        if let Some(merge) = handler.style_once_absolute_merge() {
-            apply_biff8_once_absolute_merge_property(sheet, merge, row_offset)?;
-        }
+    for merge in collect_once_absolute_merges::<T>(handlers) {
+        apply_biff8_once_absolute_merge_property(sheet, merge)?;
     }
     Ok(())
 }
@@ -2559,7 +3853,6 @@ where
 fn apply_biff8_once_absolute_merge_property(
     sheet: &mut Biff8Sheet,
     merge: easyexcel_core::OnceAbsoluteMergeProperty,
-    row_offset: u32,
 ) -> Result<()> {
     if merge.first_row_index < 0
         || merge.last_row_index < 0
@@ -2572,8 +3865,8 @@ fn apply_biff8_once_absolute_merge_property(
     add_biff8_merge_range(
         sheet,
         MergeRange::new(
-            (merge.first_row_index as u32).saturating_add(row_offset),
-            (merge.last_row_index as u32).saturating_add(row_offset),
+            merge.first_row_index as u32,
+            merge.last_row_index as u32,
             merge.first_column_index as u16,
             merge.last_column_index as u16,
         ),
@@ -2581,19 +3874,19 @@ fn apply_biff8_once_absolute_merge_property(
 }
 
 fn add_biff8_merge_range(sheet: &mut Biff8Sheet, range: MergeRange) -> Result<()> {
-    let first_row = u16::try_from(range.first_row).map_err(|_| {
-        ExcelError::Format("BIFF8 merge row exceeds 65536".to_owned())
-    })?;
-    let last_row = u16::try_from(range.last_row).map_err(|_| {
-        ExcelError::Format("BIFF8 merge row exceeds 65536".to_owned())
-    })?;
-    let first_col = u8::try_from(range.first_column).map_err(|_| {
-        ExcelError::Format("BIFF8 merge column exceeds 256".to_owned())
-    })?;
-    let last_col = u8::try_from(range.last_column).map_err(|_| {
-        ExcelError::Format("BIFF8 merge column exceeds 256".to_owned())
-    })?;
-    sheet.add_merge(Biff8Merge {
+    sheet.add_merge(merge_range_to_biff8(range)?)
+}
+
+fn merge_range_to_biff8(range: MergeRange) -> Result<Biff8Merge> {
+    let first_row = u16::try_from(range.first_row)
+        .map_err(|_| ExcelError::Format("BIFF8 merge row exceeds 65536".to_owned()))?;
+    let last_row = u16::try_from(range.last_row)
+        .map_err(|_| ExcelError::Format("BIFF8 merge row exceeds 65536".to_owned()))?;
+    let first_col = u8::try_from(range.first_column)
+        .map_err(|_| ExcelError::Format("BIFF8 merge column exceeds 256".to_owned()))?;
+    let last_col = u8::try_from(range.last_column)
+        .map_err(|_| ExcelError::Format("BIFF8 merge column exceeds 256".to_owned()))?;
+    Ok(Biff8Merge {
         first_row,
         last_row,
         first_col,
@@ -2634,35 +3927,8 @@ fn merge_biff8_dynamic_head_groups(
     head: &[Vec<String>],
     start_row: u32,
 ) -> Result<()> {
-    let levels = head.iter().map(Vec::len).max().unwrap_or(0);
-    for level in 0..levels {
-        #[allow(clippy::cast_possible_truncation)]
-        let row_index = start_row.saturating_add(level as u32);
-        let mut start = 0;
-        while start < head.len() {
-            let mut end = start;
-            while end + 1 < head.len()
-                && columns.get(end).zip(columns.get(end + 1)).is_some_and(
-                    |((left, _, _), (right, _, _))| left.checked_add(1) == Some(*right),
-                )
-                && same_dynamic_head_group(head, start, end + 1, level)
-            {
-                end += 1;
-            }
-            let label = head[start].get(level).map_or("", String::as_str);
-            if end > start && !label.is_empty() {
-                add_biff8_merge_range(
-                    sheet,
-                    MergeRange::new(
-                        row_index,
-                        row_index,
-                        to_column(columns[start].0)?,
-                        to_column(columns[end].0)?,
-                    ),
-                )?;
-            }
-            start = end + 1;
-        }
+    for range in dynamic_head_merge_ranges(columns, head, start_row)? {
+        add_biff8_merge_range(sheet, range)?;
     }
     Ok(())
 }
@@ -2695,9 +3961,13 @@ where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
+    let effective_options = with_default_write_converters(options);
+    let options = &effective_options;
+    validate_excel_row_schema::<T>()?;
     sort_handlers(handlers);
     let workbook_context = WriteWorkbookContext::new(path);
     before_workbook(handlers, &workbook_context)?;
+    after_workbook_create(handlers, &workbook_context)?;
 
     if template_write::has_template(
         options.template_file.as_deref(),
@@ -2706,7 +3976,19 @@ where
         write_xlsx_onto_template_package::<T, I>(path, None, options, rows, handlers)?;
     } else {
         let mut workbook = Workbook::new();
-        write_sheet_to_workbook::<T, I>(&mut workbook, options, rows, handlers)?;
+        let holder_scope = HandlerHolderScope::new_resolved::<T>(
+            path,
+            i32::try_from(options.sheet_index.unwrap_or(0)).unwrap_or(i32::MAX),
+            None,
+            options,
+        )?;
+        write_sheet_to_workbook::<T, I>(
+            &mut workbook,
+            options,
+            rows,
+            handlers,
+            Some(&holder_scope),
+        )?;
         save_workbook(&mut workbook, path, options.password.as_deref())?;
     }
     after_workbook(handlers, &workbook_context)?;
@@ -2735,9 +4017,13 @@ where
     I: IntoIterator<Item = T>,
     W: Write + Send,
 {
+    let effective_options = with_default_write_converters(options);
+    let options = &effective_options;
+    validate_excel_row_schema::<T>()?;
     sort_handlers(handlers);
     let workbook_context = WriteWorkbookContext::new(logical_path);
     before_workbook(handlers, &workbook_context)?;
+    after_workbook_create(handlers, &workbook_context)?;
 
     if template_write::has_template(
         options.template_file.as_deref(),
@@ -2752,7 +4038,19 @@ where
         )?;
     } else {
         let mut workbook = Workbook::new();
-        write_sheet_to_workbook::<T, I>(&mut workbook, options, rows, handlers)?;
+        let holder_scope = HandlerHolderScope::new_resolved::<T>(
+            logical_path,
+            i32::try_from(options.sheet_index.unwrap_or(0)).unwrap_or(i32::MAX),
+            None,
+            options,
+        )?;
+        write_sheet_to_workbook::<T, I>(
+            &mut workbook,
+            options,
+            rows,
+            handlers,
+            Some(&holder_scope),
+        )?;
         save_workbook_to_writer(&mut workbook, &mut output, options.password.as_deref())?;
     }
     after_workbook(handlers, &workbook_context)
@@ -2775,6 +4073,7 @@ where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
+    validate_excel_row_schema::<T>()?;
     validate_csv_options(options)?;
     let file = File::create(path)?;
     write_csv_to::<T, I>(path, Box::new(file), options, rows, handlers)
@@ -2801,6 +4100,7 @@ where
     I: IntoIterator<Item = T>,
     W: Write + Send + 'static,
 {
+    validate_excel_row_schema::<T>()?;
     validate_csv_options(options)?;
     write_csv_to::<T, I>(logical_path, Box::new(output), options, rows, handlers)
 }
@@ -2853,6 +4153,81 @@ fn take_captured_output(output: &CapturedOutput) -> Result<Vec<u8>> {
     Ok(std::mem::take(&mut *bytes))
 }
 
+struct PreparedWriteRow {
+    absent: bool,
+    original_cells: Vec<CellValue>,
+    cells: Vec<WriteCellData>,
+}
+
+fn convert_row_at<T>(
+    row: &T,
+    converters: &ConverterRegistry,
+    sheet_name: &str,
+    row_index: u32,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+) -> Result<(Vec<CellValue>, Vec<WriteCellData>)>
+where
+    T: ExcelRow,
+{
+    let selected_schema_indexes = (!T::schema().is_empty()).then(|| {
+        columns
+            .iter()
+            .map(|(_, schema_index, _)| *schema_index)
+            .collect::<Vec<_>>()
+    });
+    row.to_excel_write_row_selected(converters, selected_schema_indexes.as_deref())
+        .map_err(|error| {
+            let ExcelError::Data {
+                column,
+                field,
+                value,
+                message,
+                ..
+            } = error
+            else {
+                return error;
+            };
+            let physical_column = columns
+                .iter()
+                .find(|(_, _, candidate)| candidate.field == field)
+                .map(|(physical, _, _)| *physical)
+                .or(column);
+            ExcelError::Data {
+                sheet: sheet_name.to_owned(),
+                row: row_index,
+                column: physical_column,
+                field,
+                value,
+                message,
+            }
+        })
+}
+
+fn prepare_write_row<T>(
+    row: T,
+    converters: &ConverterRegistry,
+    sheet_name: &str,
+    row_index: u32,
+    columns: &[(usize, usize, &'static ExcelColumn)],
+) -> Result<PreparedWriteRow>
+where
+    T: ExcelRow,
+{
+    if row.is_absent_row() {
+        return Ok(PreparedWriteRow {
+            absent: true,
+            original_cells: Vec::new(),
+            cells: Vec::new(),
+        });
+    }
+    let (original_cells, cells) = convert_row_at(&row, converters, sheet_name, row_index, columns)?;
+    Ok(PreparedWriteRow {
+        absent: false,
+        original_cells,
+        cells,
+    })
+}
+
 fn write_csv_to<T, I>(
     path: &Path,
     output: Box<dyn Write + Send>,
@@ -2864,11 +4239,22 @@ where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
-    let columns = selected_columns(T::schema(), options);
-    let mut rows = rows
-        .into_iter()
-        .map(|row| row.to_row_with_converters(&options.converters));
-    write_csv_records(
+    let columns = selected_columns(T::schema(), options)?;
+    let first_data_row = head_rows_for_schema_state(T::schema().is_empty(), options)?;
+    let csv_converters =
+        easyexcel_core::converter::default_converter_loader::load_default_write_converter()
+            .merged_with(&options.converters)
+            .with_write_target(Some(easyexcel_core::CellDataType::String));
+    let mut rows = rows.into_iter().enumerate().map(|(offset, row)| {
+        prepare_write_row(
+            row,
+            &csv_converters,
+            &options.sheet_name,
+            first_data_row.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX)),
+            &columns,
+        )
+    });
+    write_csv_records::<T>(
         path,
         output,
         options,
@@ -2879,21 +4265,32 @@ where
     )
 }
 
-fn write_csv_records(
+fn write_csv_records<T>(
     path: &Path,
     output: Box<dyn Write + Send>,
     options: &WriteOptions,
     columns: &[(usize, usize, &'static ExcelColumn)],
     schema_is_empty: bool,
-    rows: &mut dyn Iterator<Item = Result<Vec<CellValue>>>,
+    rows: &mut dyn Iterator<Item = Result<PreparedWriteRow>>,
     handlers: &mut [Box<dyn WriteHandler>],
-) -> Result<()> {
+) -> Result<()>
+where
+    T: ExcelRow,
+{
     csv_encoding(&options.charset)?;
     sort_handlers(handlers);
     let workbook_context = WriteWorkbookContext::new(path);
     before_workbook(handlers, &workbook_context)?;
-    let sheet_context = WriteSheetContext::new(&options.sheet_name);
+    after_workbook_create(handlers, &workbook_context)?;
+    let holder_scope = HandlerHolderScope::new_resolved::<T>(
+        path,
+        i32::try_from(options.sheet_index.unwrap_or(0)).unwrap_or(i32::MAX),
+        None,
+        options,
+    )?;
+    let sheet_context = holder_scope.sheet(WriteSheetContext::new(&options.sheet_name));
     before_sheet(handlers, &sheet_context)?;
+    after_sheet_create(handlers, &sheet_context)?;
 
     let mut writer = create_csv_record_writer(output, &options.charset, options.with_bom)?;
     append_csv_records(
@@ -2906,6 +4303,7 @@ fn write_csv_records(
         0,
         0,
         true,
+        Some(&holder_scope),
     )?;
     finish_csv_record_writer(writer)?;
     after_sheet(handlers, &sheet_context)?;
@@ -2918,31 +4316,42 @@ fn append_csv_records(
     options: &WriteOptions,
     columns: &[(usize, usize, &'static ExcelColumn)],
     schema_is_empty: bool,
-    rows: &mut dyn Iterator<Item = Result<Vec<CellValue>>>,
+    rows: &mut dyn Iterator<Item = Result<PreparedWriteRow>>,
     handlers: &mut [Box<dyn WriteHandler>],
     mut row_index: u32,
     mut data_index: usize,
     write_head: bool,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<WriteProgress> {
+    let mut csv_workbook = CsvWorkbook::new(
+        "und",
+        options.use_1904_windowing,
+        options.use_scientific_format,
+        options.charset.clone(),
+        options.with_bom,
+    );
+    let csv_sheet = create_sheet(&mut csv_workbook, &options.sheet_name)?;
+    csv_sheet.set_next_row_index(row_index);
     let head_rows = head_rows_for_schema_state(schema_is_empty, options)?;
     if write_head && head_rows > 0 {
         if let Some(head) = &options.dynamic_head {
-            if head.len() != columns.len() {
-                return Err(ExcelError::Format(format!(
-                    "dynamic head column count {} does not match selected column count {}",
-                    head.len(),
-                    columns.len()
-                )));
-            }
+            let head = selected_dynamic_head_paths(columns, head)?;
             for level in 0..head_rows {
                 #[allow(clippy::cast_possible_truncation)]
                 let level = level as usize;
                 let labels = head
                     .iter()
-                    .map(|path| path.get(level).cloned().unwrap_or_default())
+                    .map(|path| normalized_head_label(path, level).to_owned())
                     .collect::<Vec<_>>();
-                let record =
-                    csv_header_record(row_index, columns, &labels, &options.sheet_name, handlers)?;
+                let record = csv_header_record(
+                    csv_sheet,
+                    row_index,
+                    columns,
+                    &labels,
+                    &options.sheet_name,
+                    handlers,
+                    holder_scope,
+                )?;
                 writer.write_record(record).map_err(format_error)?;
                 row_index += 1;
             }
@@ -2951,22 +4360,43 @@ fn append_csv_records(
                 .iter()
                 .map(|(_, _, column)| column.name.to_owned())
                 .collect::<Vec<_>>();
-            let record =
-                csv_header_record(row_index, columns, &labels, &options.sheet_name, handlers)?;
+            let record = csv_header_record(
+                csv_sheet,
+                row_index,
+                columns,
+                &labels,
+                &options.sheet_name,
+                handlers,
+                holder_scope,
+            )?;
             writer.write_record(record).map_err(format_error)?;
             row_index = 1;
         }
     }
-    for cells in rows {
-        let cells = cells?;
+    for prepared in rows {
+        let PreparedWriteRow {
+            absent,
+            original_cells,
+            cells,
+        } = prepared?;
+        if absent {
+            row_index = row_index.saturating_add(1);
+            data_index = data_index.saturating_add(1);
+            csv_sheet.set_next_row_index(row_index);
+            continue;
+        }
         let dynamic_columns = dynamic_columns_for_row(schema_is_empty, cells.len(), options);
         let row_columns = dynamic_columns.as_deref().unwrap_or(columns);
         let record = csv_data_record(
+            csv_sheet,
             row_index,
+            data_index,
             row_columns,
+            &original_cells,
             &cells,
             &options.sheet_name,
             handlers,
+            holder_scope,
         )?;
         writer.write_record(record).map_err(format_error)?;
         row_index += 1;
@@ -2986,15 +4416,32 @@ fn append_csv_rows<T, I>(
     row_index: u32,
     data_index: usize,
     write_head: bool,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<WriteProgress>
 where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
-    let columns = selected_columns(T::schema(), options);
-    let mut rows = rows
-        .into_iter()
-        .map(|row| row.to_row_with_converters(&options.converters));
+    let columns = selected_columns(T::schema(), options)?;
+    let head_rows = if write_head {
+        head_rows_for_schema_state(T::schema().is_empty(), options)?
+    } else {
+        0
+    };
+    let first_data_row = row_index.saturating_add(head_rows);
+    let csv_converters =
+        easyexcel_core::converter::default_converter_loader::load_default_write_converter()
+            .merged_with(&options.converters)
+            .with_write_target(Some(easyexcel_core::CellDataType::String));
+    let mut rows = rows.into_iter().enumerate().map(|(offset, row)| {
+        prepare_write_row(
+            row,
+            &csv_converters,
+            &options.sheet_name,
+            first_data_row.saturating_add(u32::try_from(offset).unwrap_or(u32::MAX)),
+            &columns,
+        )
+    });
     append_csv_records(
         writer,
         options,
@@ -3005,6 +4452,7 @@ where
         row_index,
         data_index,
         write_head,
+        holder_scope,
     )
 }
 
@@ -3017,7 +4465,9 @@ fn create_csv_record_writer(
     if with_bom {
         output.write_all(csv_bom(encoding))?;
     }
-    Ok(csv::WriterBuilder::new().from_writer(CsvEncodingWriter::new(output, encoding)))
+    Ok(csv::WriterBuilder::new()
+        .flexible(true)
+        .from_writer(CsvEncodingWriter::new(output, encoding)))
 }
 
 fn create_stateful_csv_writer(
@@ -3271,122 +4721,132 @@ fn save_encrypted_workbook_to(
 }
 
 fn csv_header_record(
+    csv_sheet: &mut CsvSheet,
     row_index: u32,
     columns: &[(usize, usize, &'static ExcelColumn)],
     labels: &[String],
     sheet_name: &str,
     handlers: &mut [Box<dyn WriteHandler>],
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<Vec<String>> {
-    let row_context = WriteRowContext {
-        sheet_name: sheet_name.to_owned(),
-        row_index,
-        is_head: true,
-    };
+    let relative = Some(usize::try_from(row_index).unwrap_or(usize::MAX));
+    let row_context = WriteRowContext::new(sheet_name, row_index, relative, true);
+    let row_context = holder_scope.map_or(row_context.clone(), |scope| scope.row(row_context));
     before_csv_row(handlers, &row_context)?;
-    let mut record = csv_record(columns);
+    let row = create_row(csv_sheet, row_index)?;
     for ((physical_index, _, column), label) in columns.iter().zip(labels) {
         let column_index = to_column(*physical_index)?;
-        let mut context = WriteCellContext {
-            sheet_name: sheet_name.to_owned(),
+        let mut context = WriteCellContext::new(
+            sheet_name,
             row_index,
             column_index,
-            field: (!column.field.is_empty()).then_some(column.field),
-            is_head: true,
-            relative_row_index: Some(usize::try_from(row_index).unwrap_or(0)),
-            value: CellValue::String(label.clone()),
-            skip: false,
-        };
-        before_csv_cell(handlers, &mut context)?;
-        if !context.skip {
-            record[*physical_index] = context.value.as_text();
+            CellValue::String(label.clone()),
+        )
+        .with_column(column)
+        .with_head(label.clone())
+        .without_original_value()
+        .with_relative_row_index(relative);
+        if let Some(scope) = holder_scope {
+            context = scope.cell(context);
         }
-        after_csv_cell(handlers, &context)?;
+        before_csv_cell(handlers, &mut context)?;
+        after_csv_cell(handlers, &mut context)?;
+        if !context.skip {
+            create_cell(row, column_index)?.set_value(context.value.clone());
+        }
     }
     after_csv_row(handlers, &row_context)?;
-    Ok(record)
+    let width = csv_record_width(columns);
+    Ok(csv_sheet
+        .take_last_row()
+        .expect("CSV row was just created")
+        .into_record(width))
 }
 
 fn csv_data_record(
+    csv_sheet: &mut CsvSheet,
     row_index: u32,
+    relative_row_index: usize,
     columns: &[(usize, usize, &'static ExcelColumn)],
-    cells: &[CellValue],
+    original_cells: &[CellValue],
+    cells: &[WriteCellData],
     sheet_name: &str,
     handlers: &mut [Box<dyn WriteHandler>],
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<Vec<String>> {
-    let row_context = WriteRowContext {
-        sheet_name: sheet_name.to_owned(),
-        row_index,
-        is_head: false,
-    };
+    let row_context = WriteRowContext::new(sheet_name, row_index, Some(relative_row_index), false);
+    let row_context = holder_scope.map_or(row_context.clone(), |scope| scope.row(row_context));
     before_csv_row(handlers, &row_context)?;
-    let mut record = csv_record(columns);
+    let row = create_row(csv_sheet, row_index)?;
     for (physical_index, schema_index, metadata) in columns {
         let column_index = to_column(*physical_index)?;
-        let mut context = WriteCellContext {
-            sheet_name: sheet_name.to_owned(),
+        let mut context = WriteCellContext::new(
+            sheet_name,
             row_index,
             column_index,
-            field: (!metadata.field.is_empty()).then_some(metadata.field),
-            is_head: false,
-            relative_row_index: None,
-            value: cells
+            cells
+                .get(*schema_index)
+                .map_or(CellValue::Empty, WriteCellData::effective_value),
+        )
+        .with_column(metadata)
+        .with_original_value(
+            original_cells
                 .get(*schema_index)
                 .unwrap_or(&CellValue::Empty)
                 .clone(),
-            skip: false,
-        };
-        before_csv_cell(handlers, &mut context)?;
-        if !context.skip {
-            record[*physical_index] = context.value.as_text();
+        )
+        .with_relative_row_index(Some(relative_row_index));
+        if let Some(scope) = holder_scope {
+            context = scope.cell(context);
         }
-        after_csv_cell(handlers, &context)?;
+        before_csv_cell(handlers, &mut context)?;
+        after_csv_cell(handlers, &mut context)?;
+        if !context.skip {
+            create_cell(row, column_index)?.set_value(context.value.clone());
+        }
     }
     after_csv_row(handlers, &row_context)?;
-    Ok(record)
+    let width = csv_record_width(columns);
+    Ok(csv_sheet
+        .take_last_row()
+        .expect("CSV row was just created")
+        .into_record(width))
 }
 
+fn csv_record_width(columns: &[(usize, usize, &'static ExcelColumn)]) -> usize {
+    columns
+        .iter()
+        .map(|(physical_index, _, _)| physical_index + 1)
+        .max()
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
 fn csv_record(columns: &[(usize, usize, &'static ExcelColumn)]) -> Vec<String> {
-    vec![
-        String::new();
-        columns
-            .iter()
-            .map(|(physical_index, _, _)| physical_index + 1)
-            .max()
-            .unwrap_or(0)
-    ]
+    vec![String::new(); csv_record_width(columns)]
 }
 
 fn before_csv_row(handlers: &mut [Box<dyn WriteHandler>], context: &WriteRowContext) -> Result<()> {
-    for handler in handlers.iter_mut() {
-        handler.before_row(context)?;
-    }
-    Ok(())
+    begin_row_lifecycle(handlers, context)
 }
 
 fn after_csv_row(handlers: &mut [Box<dyn WriteHandler>], context: &WriteRowContext) -> Result<()> {
-    for handler in handlers.iter_mut() {
-        handler.after_row(context)?;
-    }
-    Ok(())
+    finish_row_lifecycle(handlers, context)
 }
 
 fn before_csv_cell(
     handlers: &mut [Box<dyn WriteHandler>],
     context: &mut WriteCellContext,
 ) -> Result<()> {
-    for handler in handlers.iter_mut() {
-        handler.before_cell(context)?;
-    }
-    Ok(())
+    begin_cell_lifecycle(handlers, context)
 }
 
 fn after_csv_cell(
     handlers: &mut [Box<dyn WriteHandler>],
-    context: &WriteCellContext,
+    context: &mut WriteCellContext,
 ) -> Result<()> {
-    for handler in handlers.iter_mut() {
-        handler.after_cell(context)?;
-    }
+    finish_cell_lifecycle(handlers, context)?;
+    context.apply_cell_mutations();
     Ok(())
 }
 
@@ -3400,6 +4860,60 @@ pub struct WriteProgress {
     pub next_row: u32,
     /// Next 0-based data-row index (excludes header rows).
     pub next_data_index: usize,
+}
+
+/// Immutable Java-holder state shared by row/cell callback construction.
+#[derive(Debug, Clone)]
+struct HandlerHolderScope {
+    workbook: WriteWorkbookHolderView,
+    sheet_no: i32,
+    table_no: Option<i32>,
+    current_holder_state: WriteContextHolderState,
+}
+
+impl HandlerHolderScope {
+    fn new_resolved<T>(
+        path: &Path,
+        sheet_no: i32,
+        table_no: Option<i32>,
+        options: &WriteOptions,
+    ) -> Result<Self>
+    where
+        T: ExcelRow,
+    {
+        Ok(Self {
+            workbook: WriteWorkbookHolderView::new(path),
+            sheet_no,
+            table_no,
+            current_holder_state: resolved_write_context_holder_state::<T>(options, table_no)?,
+        })
+    }
+
+    fn live_context(&self, sheet_name: &str) -> WriteHolderContext {
+        let mut context = WriteHolderContext::new()
+            .with_workbook(self.workbook.clone())
+            .with_sheet(WriteSheetHolderView::new(sheet_name).with_sheet_no(self.sheet_no))
+            .with_current_holder_state(self.current_holder_state.clone());
+        if let Some(table_no) = self.table_no {
+            context = context.with_table(WriteTableHolderView::new(table_no, sheet_name));
+        }
+        context
+    }
+
+    fn row(&self, context: WriteRowContext) -> WriteRowContext {
+        let live_context = self.live_context(&context.sheet_name);
+        context.with_write_context(&live_context)
+    }
+
+    fn cell(&self, context: WriteCellContext) -> WriteCellContext {
+        let live_context = self.live_context(&context.sheet_name);
+        context.with_write_context(&live_context)
+    }
+
+    fn sheet(&self, context: WriteSheetContext) -> WriteSheetContext {
+        let live_context = self.live_context(context.sheet_name());
+        context.with_write_context(&live_context)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -3466,6 +4980,8 @@ impl<'a> SheetStyleContext<'a> {
             cell,
             font,
             handler_cell: None,
+            converted_cell: None,
+            converted_data_format: None,
             global: self.global,
         }
     }
@@ -3479,14 +4995,39 @@ struct CellFormatContext<'a> {
     /// Style contributed by registered WriteHandler strategies
     /// (Java `AbstractCellStyleStrategy` merge into `WriteCellData`).
     handler_cell: Option<ExcelCellStyle>,
+    /// Style returned by `Converter::convert_to_excel_data`.
+    converted_cell: Option<ExcelCellStyle>,
+    /// Owned runtime format carried by `WriteCellData::DataFormatData`.
+    converted_data_format: Option<&'a str>,
     global: WriteGlobalFlags,
 }
 
-impl CellFormatContext<'_> {
+impl<'a> CellFormatContext<'a> {
     /// Attaches a strategy-derived cell style (Java `WriteCellStyle.merge`).
     #[must_use]
     const fn with_handler_cell(mut self, handler_cell: Option<ExcelCellStyle>) -> Self {
         self.handler_cell = handler_cell;
+        self
+    }
+
+    /// Attaches converter-produced style metadata without flattening it into
+    /// the scalar value.
+    #[must_use]
+    fn with_converted_cell(mut self, cell: &'a WriteCellData) -> Self {
+        self.converted_cell = cell.write_cell_style().copied();
+        self.converted_data_format = cell.data_format_data().and_then(|data| data.format());
+        self
+    }
+
+    /// Mirrors Java `ignoreFillStyle`: retain non-style write flags while
+    /// suppressing explicit, annotation and strategy style materialization.
+    const fn without_fill_style(mut self) -> Self {
+        self.explicit = None;
+        self.cell = None;
+        self.font = None;
+        self.handler_cell = None;
+        self.converted_cell = None;
+        self.converted_data_format = None;
         self
     }
 }
@@ -3562,14 +5103,10 @@ impl ImageLayout {
             column_widths,
             head_rows,
             head_row_height: excel_row_height_pixels(
-                metadata
-                    .head_row_height
-                    .or_else(|| collect_handler_head_row_height(handlers)),
+                collect_handler_head_row_height(handlers).or(metadata.head_row_height),
             ),
             content_row_height: excel_row_height_pixels(
-                metadata
-                    .content_row_height
-                    .or_else(|| collect_handler_content_row_height(handlers)),
+                collect_handler_content_row_height(handlers).or(metadata.content_row_height),
             ),
         })
     }
@@ -3595,25 +5132,19 @@ fn excel_column_width_pixels(width: u16) -> u32 {
     }
 }
 
-
 /// Sets an OOXML column width that serializes as exact character units.
 ///
 /// Java / POI `Sheet.setColumnWidth(col, chars * 256)` becomes
 /// `width="{chars}"` in worksheet XML. `rust_xlsxwriter`'s
 /// [`Worksheet::set_column_width`] stores `chars * 7 + 5` pixels and round-trips
 /// to `~chars + 0.71`; using `chars * 7` pixels yields exact `width="{chars}"`.
-fn set_xlsx_column_width_chars(
-    worksheet: &mut Worksheet,
-    column: u16,
-    chars: u16,
-) -> Result<()> {
+fn set_xlsx_column_width_chars(worksheet: &mut Worksheet, column: u16, chars: u16) -> Result<()> {
     let pixels = u32::from(chars).saturating_mul(7);
     worksheet
         .set_column_width_pixels(column, pixels)
         .map_err(format_error)?;
     Ok(())
 }
-
 
 fn excel_row_height_pixels(height: Option<u16>) -> u32 {
     height.map_or(20, |height| (u32::from(height) * 4 + 1) / 3)
@@ -3624,13 +5155,16 @@ fn write_sheet_to_workbook<T, I>(
     options: &WriteOptions,
     rows: I,
     handlers: &mut [Box<dyn WriteHandler>],
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<WriteProgress>
 where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
     let mut spill = if options.compress_temp_files {
-        Some(gzip_spill::GzipSheetDataWriter::create_owned(&options.sheet_name)?)
+        Some(gzip_spill::GzipSheetDataWriter::create_owned(
+            &options.sheet_name,
+        )?)
     } else {
         None
     };
@@ -3640,6 +5174,8 @@ where
         rows,
         handlers,
         spill.as_mut(),
+        false,
+        holder_scope,
     )
 }
 
@@ -3650,28 +5186,27 @@ fn write_sheet_to_workbook_with_gzip<T, I>(
     rows: I,
     handlers: &mut [Box<dyn WriteHandler>],
     gzip_spill: Option<&mut gzip_spill::GzipSheetDataWriter>,
+    skip_sheet_create_callbacks: bool,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<WriteProgress>
 where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
-    let worksheet = if uses_constant_memory_spill(options) {
-        workbook.add_worksheet_with_constant_memory()
-    } else {
-        workbook.add_worksheet()
+    let mut sheet_creator = XlsxSheetCreator {
+        workbook,
+        constant_memory: uses_constant_memory_spill(options),
     };
-    worksheet
-        .set_name(&options.sheet_name)
-        .map_err(format_error)?;
+    let worksheet = create_sheet(&mut sheet_creator, &options.sheet_name)?;
     for (column, width) in &options.column_widths {
         set_xlsx_column_width_chars(worksheet, *column, *width)?;
     }
     apply_annotation_column_widths::<T>(worksheet, options)?;
     // Static strategy widths (e.g. SimpleColumnWidth) apply before cells.
     apply_handler_column_widths::<T>(worksheet, options, handlers)?;
-    apply_annotation_once_absolute_merge::<T>(worksheet)?;
+    apply_annotation_once_absolute_merge::<T>(worksheet, handlers)?;
     // Java `OnceAbsoluteMergeStrategy.afterSheetCreate` via registerWriteHandler
-    apply_handler_once_absolute_merge(worksheet, handlers, 0)?;
+    apply_handler_once_absolute_merge(worksheet, handlers)?;
     for range in &options.merge_ranges {
         worksheet
             .merge_range(
@@ -3695,9 +5230,14 @@ where
     }
 
     let sheet_context = WriteSheetContext::new(&options.sheet_name);
-    before_sheet(handlers, &sheet_context)?;
+    let sheet_context =
+        holder_scope.map_or(sheet_context.clone(), |scope| scope.sheet(sheet_context));
+    if !skip_sheet_create_callbacks {
+        before_sheet(handlers, &sheet_context)?;
+        after_sheet_create(handlers, &sheet_context)?;
+    }
 
-    let progress = append_rows_to_worksheet_with_gzip::<T, I>(
+    let progress = append_rows_to_worksheet_with_gzip_and_context::<T, I>(
         worksheet,
         options,
         rows,
@@ -3710,6 +5250,7 @@ where
         true,
         T::write_metadata(),
         gzip_spill,
+        holder_scope,
     )?;
     after_sheet(handlers, &sheet_context)?;
     // Optional autofit first; byte-length widths reapplied so LongestMatch
@@ -3761,7 +5302,7 @@ where
 
     let mut package = template_write::TemplatePackage::from_bytes(&bytes)?;
     let sheet_names = package.sheet_names()?;
-    let (_target_index, target_name, create_new) = template_write::resolve_package_target(
+    let (target_index, target_name, create_new) = template_write::resolve_package_target(
         &sheet_names,
         options.sheet_index,
         &options.sheet_name,
@@ -3772,12 +5313,435 @@ where
 
     let mut write_options = options.clone();
     write_options.sheet_name = target_name.clone();
-    let append_rows = collect_template_append_rows::<T, I>(&write_options, rows, true, 0)?;
-    let sheet_context = WriteSheetContext::new(&target_name);
+    apply_template_holder_layout::<T>(&mut package, &target_name, &write_options, handlers, &[])?;
+    let start_row = package.next_row_for_sheet(&target_name)?.saturating_sub(1);
+    let head_merges = automatic_dynamic_head_merge_ranges::<T>(&write_options, start_row, true)?;
+    package.apply_sheet_layout(&target_name, &[], &head_merges)?;
+    let (mut append_rows, original_rows, converted_rows, absent_rows) =
+        collect_template_append_rows::<T, I>(&write_options, rows, true, start_row)?;
+    let mut row_heights = template_append_row_heights::<T>(
+        &write_options,
+        handlers,
+        true,
+        append_rows.len(),
+        &absent_rows,
+    )?;
+    let holder_scope = HandlerHolderScope::new_resolved::<T>(
+        path,
+        i32::try_from(target_index).unwrap_or(i32::MAX),
+        None,
+        &write_options,
+    )?;
+    let sheet_context = holder_scope.sheet(WriteSheetContext::new(&target_name));
     before_sheet(handlers, &sheet_context)?;
-    package.append_rows(&target_name, &append_rows)?;
+    after_sheet_create(handlers, &sheet_context)?;
+    let effects = run_template_handler_callbacks::<T>(
+        &write_options,
+        handlers,
+        &mut append_rows,
+        &original_rows,
+        &absent_rows,
+        true,
+        0,
+        start_row,
+        Some(&holder_scope),
+    )?;
+    if row_heights.is_empty() && effects.requested_row_heights.iter().any(Option::is_some) {
+        row_heights.resize(effects.requested_row_heights.len(), None);
+    }
+    for (height, requested) in row_heights.iter_mut().zip(&effects.requested_row_heights) {
+        if requested.is_some() {
+            *height = *requested;
+        }
+    }
+    let cell_styles = template_append_cell_styles::<T>(
+        &mut package,
+        &write_options,
+        handlers,
+        &append_rows,
+        &original_rows,
+        &converted_rows,
+        &effects.ignore_styles,
+        &effects.requested_styles,
+        true,
+        0,
+    )?;
+    package.append_rows_with_layout_and_absent(
+        &target_name,
+        &append_rows,
+        &row_heights,
+        &cell_styles,
+        &absent_rows,
+    )?;
     after_sheet(handlers, &sheet_context)?;
     save_template_package(&package, path, output, options.password.as_deref())
+}
+
+/// Resolves Java annotation/handler row-height precedence for template rows.
+fn template_append_row_heights<T>(
+    options: &WriteOptions,
+    handlers: &[Box<dyn WriteHandler>],
+    write_head: bool,
+    row_count: usize,
+    absent_rows: &[bool],
+) -> Result<Vec<Option<u16>>>
+where
+    T: ExcelRow,
+{
+    let head_start = if write_head {
+        usize::try_from(relative_head_start_row(options)).unwrap_or(usize::MAX)
+    } else {
+        0
+    }
+    .min(row_count);
+    let head_end = head_start
+        .saturating_add(if write_head {
+            usize::try_from(head_rows_for_schema(T::schema(), options)?).unwrap_or(0)
+        } else {
+            0
+        })
+        .min(row_count);
+    let metadata = T::write_metadata();
+    let head_height = collect_handler_head_row_height(handlers).or(metadata.head_row_height);
+    let content_height =
+        collect_handler_content_row_height(handlers).or(metadata.content_row_height);
+    if head_height.is_none() && content_height.is_none() {
+        return Ok(Vec::new());
+    }
+    Ok((0..row_count)
+        .map(|index| {
+            if absent_rows.get(index).copied().unwrap_or(false) {
+                None
+            } else if (head_start..head_end).contains(&index) {
+                head_height
+            } else {
+                content_height
+            }
+        })
+        .collect())
+}
+
+struct TemplateHandlerEffects {
+    ignore_styles: Vec<Vec<bool>>,
+    requested_styles: Vec<Vec<Option<ExcelCellStyle>>>,
+    requested_row_heights: Vec<Option<u16>>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_template_handler_callbacks<T>(
+    options: &WriteOptions,
+    handlers: &mut [Box<dyn WriteHandler>],
+    rows: &mut [Vec<(usize, CellValue)>],
+    original_rows: &[Vec<(usize, CellValue)>],
+    absent_rows: &[bool],
+    write_head: bool,
+    next_data_index: usize,
+    start_row: u32,
+    holder_scope: Option<&HandlerHolderScope>,
+) -> Result<TemplateHandlerEffects>
+where
+    T: ExcelRow,
+{
+    let columns = selected_columns(T::schema(), options)?;
+    let head_start = if write_head {
+        usize::try_from(relative_head_start_row(options)).unwrap_or(usize::MAX)
+    } else {
+        0
+    }
+    .min(rows.len());
+    let head_end = head_start
+        .saturating_add(if write_head {
+            usize::try_from(head_rows_for_schema(T::schema(), options)?).unwrap_or(0)
+        } else {
+            0
+        })
+        .min(rows.len());
+    let mut ignored_styles = Vec::with_capacity(rows.len());
+    let mut requested_styles = Vec::with_capacity(rows.len());
+    let mut requested_row_heights = Vec::with_capacity(rows.len());
+    for (row_offset, row) in rows.iter_mut().enumerate() {
+        if absent_rows.get(row_offset).copied().unwrap_or(false) {
+            ignored_styles.push(Vec::new());
+            requested_styles.push(Vec::new());
+            requested_row_heights.push(None);
+            continue;
+        }
+        let is_head = (head_start..head_end).contains(&row_offset);
+        let row_index = start_row.saturating_add(u32::try_from(row_offset).unwrap_or(u32::MAX));
+        let relative_row_index = if is_head {
+            Some(row_offset.saturating_sub(head_start))
+        } else {
+            Some(next_data_index + row_offset.saturating_sub(head_end))
+        };
+        let row_context =
+            WriteRowContext::new(&options.sheet_name, row_index, relative_row_index, is_head);
+        let row_context = holder_scope.map_or(row_context.clone(), |scope| scope.row(row_context));
+        begin_row_lifecycle(handlers, &row_context)?;
+        let mut emitted = Vec::with_capacity(row.len());
+        let mut row_ignored_styles = Vec::with_capacity(row.len());
+        let mut row_requested_styles = Vec::with_capacity(row.len());
+        for (physical_index, value) in row.iter() {
+            let column = columns
+                .iter()
+                .find(|(index, _, _)| index == physical_index)
+                .map(|(_, _, column)| *column);
+            let mut context = WriteCellContext::new(
+                &options.sheet_name,
+                row_index,
+                u16::try_from(*physical_index).map_err(|_| {
+                    ExcelError::Format("template column index exceeds XLSX limit".to_owned())
+                })?,
+                value.clone(),
+            )
+            .with_relative_row_index(relative_row_index);
+            if let Some(column) = column {
+                context = context.with_column(column);
+            }
+            if is_head {
+                context = context.with_head(value.as_text()).without_original_value();
+            } else if let Some(original_value) = original_rows
+                .get(row_offset)
+                .and_then(|row| row.iter().find(|(index, _)| index == physical_index))
+                .map(|(_, value)| value.clone())
+            {
+                context = context.with_original_value(original_value);
+            }
+            if let Some(scope) = holder_scope {
+                context = scope.cell(context);
+            }
+            begin_cell_lifecycle(handlers, &mut context)?;
+            finish_cell_lifecycle(handlers, &context)?;
+            context.apply_cell_mutations();
+            if !context.skip {
+                emitted.push((*physical_index, context.value.clone()));
+                row_ignored_styles.push(context.ignore_fill_style);
+                row_requested_styles.push(context.cell().requested_style());
+            }
+        }
+        *row = emitted;
+        ignored_styles.push(row_ignored_styles);
+        requested_styles.push(row_requested_styles);
+        finish_row_lifecycle(handlers, &row_context)?;
+        requested_row_heights.push(row_context.row().requested_height());
+    }
+    Ok(TemplateHandlerEffects {
+        ignore_styles: ignored_styles,
+        requested_styles,
+        requested_row_heights,
+    })
+}
+
+/// Compiles annotation, explicit and strategy styles with `rust_xlsxwriter`,
+/// imports their OOXML records into the preserved template, and returns a
+/// style-index matrix aligned with `rows`.
+fn template_append_cell_styles<T>(
+    package: &mut template_write::TemplatePackage,
+    options: &WriteOptions,
+    handlers: &[Box<dyn WriteHandler>],
+    rows: &[Vec<(usize, CellValue)>],
+    original_rows: &[Vec<(usize, CellValue)>],
+    converted_rows: &[Vec<(usize, WriteCellData)>],
+    ignore_styles: &[Vec<bool>],
+    requested_styles: &[Vec<Option<ExcelCellStyle>>],
+    write_head: bool,
+    next_data_index: usize,
+) -> Result<Vec<Vec<Option<u32>>>>
+where
+    T: ExcelRow,
+{
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let columns = selected_columns(T::schema(), options)?;
+    let metadata = T::write_metadata();
+    let global = WriteGlobalFlags::from(options);
+    let head_start = if write_head {
+        usize::try_from(relative_head_start_row(options)).unwrap_or(usize::MAX)
+    } else {
+        0
+    }
+    .min(rows.len());
+    let head_end = head_start
+        .saturating_add(if write_head {
+            usize::try_from(head_rows_for_schema(T::schema(), options)?).unwrap_or(0)
+        } else {
+            0
+        })
+        .min(rows.len());
+    let start_row = package
+        .next_row_for_sheet(&options.sheet_name)?
+        .saturating_sub(1);
+    let mut formats = Vec::new();
+    let mut format_by_key = HashMap::new();
+    let mut local_styles = Vec::with_capacity(rows.len());
+
+    for (row_offset, row) in rows.iter().enumerate() {
+        let is_head = (head_start..head_end).contains(&row_offset);
+        let relative_row_index = if is_head {
+            Some(row_offset.saturating_sub(head_start))
+        } else {
+            Some(next_data_index + row_offset.saturating_sub(head_end))
+        };
+        let explicit = if is_head {
+            Some(&options.head_style)
+        } else if options.content_styles.is_empty() {
+            None
+        } else {
+            Some(
+                &options.content_styles
+                    [relative_row_index.unwrap_or(0) % options.content_styles.len()],
+            )
+        };
+        let mut row_styles = Vec::with_capacity(row.len());
+        for (cell_offset, (physical_index, value)) in row.iter().enumerate() {
+            let column = columns
+                .iter()
+                .find(|(index, _, _)| index == physical_index)
+                .map(|(_, _, column)| *column);
+            let (annotation_cell, annotation_font, field) = match column {
+                Some(column) if is_head => (
+                    column.head_style.or(metadata.head_style),
+                    column.head_font_style.or(metadata.head_font_style),
+                    Some(column.field),
+                ),
+                Some(column) => (
+                    column.content_style.or(metadata.content_style),
+                    column.content_font_style.or(metadata.content_font_style),
+                    Some(column.field),
+                ),
+                None if is_head => (metadata.head_style, metadata.head_font_style, None),
+                None => (metadata.content_style, metadata.content_font_style, None),
+            };
+            let mut context = WriteCellContext::new(
+                &options.sheet_name,
+                start_row.saturating_add(u32::try_from(row_offset).unwrap_or(u32::MAX)),
+                u16::try_from(*physical_index).map_err(|_| {
+                    ExcelError::Format("template column index exceeds XLSX limit".to_owned())
+                })?,
+                value.clone(),
+            )
+            .with_relative_row_index(relative_row_index);
+            if let Some(column) = column {
+                context = context.with_column(column);
+            } else {
+                context.field = field;
+            }
+            if is_head {
+                context = context.with_head(value.as_text()).without_original_value();
+            } else if let Some(original_value) = original_rows
+                .get(row_offset)
+                .and_then(|row| row.iter().find(|(index, _)| index == physical_index))
+                .map(|(_, value)| value.clone())
+            {
+                context = context.with_original_value(original_value);
+            }
+            context.activate_original_value();
+            context.refresh_converted_data();
+            context.ignore_fill_style = ignore_styles
+                .get(row_offset)
+                .and_then(|row| row.get(cell_offset))
+                .copied()
+                .unwrap_or(false);
+            if context.ignore_fill_style {
+                row_styles.push(None);
+                continue;
+            }
+            let handler_cell = collect_handler_cell_style(handlers, &context);
+            let handler_cell = requested_styles
+                .get(row_offset)
+                .and_then(|row| row.get(cell_offset))
+                .copied()
+                .flatten()
+                .map_or(handler_cell, |requested| {
+                    Some(match handler_cell {
+                        Some(current) => merge_write_cell_style(&requested, current),
+                        None => requested,
+                    })
+                });
+            let converted_cell = converted_rows
+                .get(row_offset)
+                .and_then(|row| row.iter().find(|(index, _)| index == physical_index))
+                .map(|(_, cell)| cell);
+            let annotation_cell =
+                annotation_cell.filter(|style| *style != ExcelCellStyle::default());
+            let annotation_font = annotation_font.filter(|font| *font != ExcelFontStyle::default());
+            let handler_cell = handler_cell.filter(|style| *style != ExcelCellStyle::default());
+            let explicit = explicit.filter(|style| **style != CellStyle::default());
+            if explicit.is_none()
+                && annotation_cell.is_none()
+                && annotation_font.is_none()
+                && handler_cell.is_none()
+                && converted_cell
+                    .and_then(WriteCellData::write_cell_style)
+                    .is_none()
+                && converted_cell
+                    .and_then(WriteCellData::data_format_data)
+                    .and_then(|data| data.format())
+                    .is_none()
+            {
+                row_styles.push(None);
+                continue;
+            }
+            let converted_style = converted_cell.and_then(WriteCellData::write_cell_style);
+            let converted_format = converted_cell
+                .and_then(WriteCellData::data_format_data)
+                .and_then(|data| data.format());
+            let key = format!(
+                "{explicit:?}|{annotation_cell:?}|{annotation_font:?}|{handler_cell:?}|\
+                 {converted_style:?}|{converted_format:?}|{global:?}"
+            );
+            let local_index = if let Some(index) = format_by_key.get(&key).copied() {
+                index
+            } else {
+                let index = formats.len();
+                let format_context = CellFormatContext {
+                    explicit,
+                    cell: annotation_cell,
+                    font: annotation_font,
+                    handler_cell: None,
+                    converted_cell: None,
+                    converted_data_format: None,
+                    global,
+                }
+                .with_handler_cell(handler_cell);
+                let format_context = converted_cell.map_or(format_context, |cell| {
+                    format_context.with_converted_cell(cell)
+                });
+                formats.push(cell_format(format_context));
+                format_by_key.insert(key, index);
+                index
+            };
+            row_styles.push(Some(local_index));
+        }
+        local_styles.push(row_styles);
+    }
+    if formats.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut compiler = create_work_book(XlsxWorkBookCreator)?;
+    let mut sheet_creator = XlsxSheetCreator {
+        workbook: &mut compiler,
+        constant_memory: false,
+    };
+    let worksheet = create_sheet(&mut sheet_creator, "Sheet1")?;
+    for (index, format) in formats.iter().enumerate() {
+        let row = u32::try_from(index)
+            .map_err(|_| ExcelError::Format("too many template styles".to_owned()))?;
+        worksheet
+            .write_blank(row, 0, format)
+            .map_err(format_error)?;
+    }
+    let compiled = compiler.save_to_buffer().map_err(format_error)?;
+    let mapped = package.import_compiled_styles(&compiled, formats.len())?;
+    Ok(local_styles
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|index| index.map(|index| mapped[index]))
+                .collect()
+        })
+        .collect())
 }
 
 /// Builds sparse `(physical_column, value)` rows for ZIP `sheetData` append.
@@ -3785,28 +5749,44 @@ fn collect_template_append_rows<T, I>(
     options: &WriteOptions,
     rows: I,
     write_head: bool,
-    _next_data_index: usize,
-) -> Result<Vec<Vec<(usize, CellValue)>>>
+    start_row: u32,
+) -> Result<(
+    Vec<Vec<(usize, CellValue)>>,
+    Vec<Vec<(usize, CellValue)>>,
+    Vec<Vec<(usize, WriteCellData)>>,
+    Vec<bool>,
+)>
 where
     T: ExcelRow,
     I: IntoIterator<Item = T>,
 {
-    let columns = selected_columns(T::schema(), options);
+    let columns = selected_columns(T::schema(), options)?;
     let mut output = Vec::new();
+    let mut original_output = Vec::new();
+    let mut converted_output = Vec::new();
+    let mut absent_rows = Vec::new();
     let head_rows = head_rows_for_schema(T::schema(), options)?;
+    if write_head {
+        for _ in 0..relative_head_start_row(options) {
+            output.push(Vec::new());
+            original_output.push(Vec::new());
+            converted_output.push(Vec::new());
+            absent_rows.push(true);
+        }
+    }
     if write_head && head_rows > 0 {
         if let Some(head) = &options.dynamic_head {
+            let head = selected_dynamic_head_paths(&columns, head)?;
             for level in 0..usize::try_from(head_rows).unwrap_or(0) {
                 let mut row = Vec::with_capacity(columns.len());
-                for (physical_index, _, _) in &columns {
-                    let label = head
-                        .get(*physical_index)
-                        .and_then(|path| path.get(level))
-                        .cloned()
-                        .unwrap_or_default();
+                for ((physical_index, _, _), path) in columns.iter().zip(&head) {
+                    let label = normalized_head_label(path, level).to_owned();
                     row.push((*physical_index, CellValue::String(label)));
                 }
                 output.push(row);
+                original_output.push(Vec::new());
+                converted_output.push(Vec::new());
+                absent_rows.push(false);
             }
         } else {
             let mut row = Vec::with_capacity(columns.len());
@@ -3814,23 +5794,54 @@ where
                 row.push((*physical_index, CellValue::String(column.name.to_owned())));
             }
             output.push(row);
+            original_output.push(Vec::new());
+            converted_output.push(Vec::new());
+            absent_rows.push(false);
         }
     }
     for row in rows {
-        let cells = row.to_row_with_converters(&options.converters)?;
+        if row.is_absent_row() {
+            output.push(Vec::new());
+            original_output.push(Vec::new());
+            converted_output.push(Vec::new());
+            absent_rows.push(true);
+            continue;
+        }
+        let row_index = start_row.saturating_add(u32::try_from(output.len()).unwrap_or(u32::MAX));
+        let (original_cells, cells) = convert_row_at(
+            &row,
+            &options.converters,
+            &options.sheet_name,
+            row_index,
+            &columns,
+        )?;
         let dynamic_columns = dynamic_columns_for_row(T::schema().is_empty(), cells.len(), options);
         let row_columns = dynamic_columns.as_deref().unwrap_or(&columns);
         let mut sparse = Vec::with_capacity(row_columns.len());
+        let mut original_sparse = Vec::with_capacity(row_columns.len());
+        let mut converted_sparse = Vec::with_capacity(row_columns.len());
         for (physical_index, schema_index, _) in row_columns {
-            let value = cells
+            let cell = cells
                 .get(*schema_index)
                 .cloned()
-                .unwrap_or(CellValue::Empty);
+                .unwrap_or_else(|| WriteCellData::new(CellValue::Empty));
+            let value = cell.effective_value();
             sparse.push((*physical_index, value));
+            converted_sparse.push((*physical_index, cell));
+            original_sparse.push((
+                *physical_index,
+                original_cells
+                    .get(*schema_index)
+                    .cloned()
+                    .unwrap_or(CellValue::Empty),
+            ));
         }
         output.push(sparse);
+        original_output.push(original_sparse);
+        converted_output.push(converted_sparse);
+        absent_rows.push(false);
     }
-    Ok(output)
+    Ok((output, original_output, converted_output, absent_rows))
 }
 
 /// Persists a template package to a path or stream, optionally encrypting.
@@ -3904,11 +5915,8 @@ where
         options.template_bytes.as_deref(),
     )?;
     let sheets = template_write::load_template_sheets(&bytes)?;
-    let (target_index, target_name, create_new) = template_write::resolve_template_target(
-        &sheets,
-        options.sheet_index,
-        &options.sheet_name,
-    );
+    let (target_index, target_name, create_new) =
+        template_write::resolve_template_target(&sheets, options.sheet_index, &options.sheet_name);
     template_write::seed_workbook_from_template(workbook, &sheets)?;
 
     let mut write_options = options.clone();
@@ -3916,7 +5924,7 @@ where
 
     if create_new {
         // Java creates a new sheet when the requested name/index is absent.
-        return write_sheet_to_workbook::<T, I>(workbook, &write_options, rows, handlers);
+        return write_sheet_to_workbook::<T, I>(workbook, &write_options, rows, handlers, None);
     }
 
     let start_row = sheets
@@ -3931,8 +5939,8 @@ where
     }
     apply_annotation_column_widths::<T>(worksheet, &write_options)?;
     apply_handler_column_widths::<T>(worksheet, &write_options, handlers)?;
-    apply_annotation_once_absolute_merge_at::<T>(worksheet, start_row)?;
-    apply_handler_once_absolute_merge(worksheet, handlers, start_row)?;
+    apply_annotation_once_absolute_merge::<T>(worksheet, handlers)?;
+    apply_handler_once_absolute_merge(worksheet, handlers)?;
     for range in &write_options.merge_ranges {
         let offset = start_row;
         worksheet
@@ -3949,6 +5957,7 @@ where
 
     let sheet_context = WriteSheetContext::new(&target_name);
     before_sheet(handlers, &sheet_context)?;
+    after_sheet_create(handlers, &sheet_context)?;
     let mut spill = if write_options.compress_temp_files {
         Some(gzip_spill::GzipSheetDataWriter::create_owned(&target_name)?)
     } else {
@@ -4000,14 +6009,7 @@ where
     I: IntoIterator<Item = T>,
 {
     append_rows_to_worksheet_with_gzip::<T, I>(
-        worksheet,
-        options,
-        rows,
-        handlers,
-        progress,
-        write_head,
-        metadata,
-        None,
+        worksheet, options, rows, handlers, progress, write_head, metadata, None,
     )
 }
 
@@ -4024,7 +6026,28 @@ pub fn append_rows_to_worksheet_with_gzip<T, I>(
     progress: WriteProgress,
     write_head: bool,
     metadata: &ExcelWriteMetadata,
+    gzip_spill: Option<&mut gzip_spill::GzipSheetDataWriter>,
+) -> Result<WriteProgress>
+where
+    T: ExcelRow,
+    I: IntoIterator<Item = T>,
+{
+    append_rows_to_worksheet_with_gzip_and_context::<T, I>(
+        worksheet, options, rows, handlers, progress, write_head, metadata, gzip_spill, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_rows_to_worksheet_with_gzip_and_context<T, I>(
+    worksheet: &mut Worksheet,
+    options: &WriteOptions,
+    rows: I,
+    handlers: &mut [Box<dyn WriteHandler>],
+    progress: WriteProgress,
+    write_head: bool,
+    metadata: &ExcelWriteMetadata,
     mut gzip_spill: Option<&mut gzip_spill::GzipSheetDataWriter>,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<WriteProgress>
 where
     T: ExcelRow,
@@ -4035,8 +6058,8 @@ where
         next_data_index: mut data_index,
     } = progress;
     let global = WriteGlobalFlags::from(options);
-    let columns = selected_columns(T::schema(), options);
-    let annotation_loop_merges = annotation_loop_merges_from_columns(&columns)?;
+    let columns = selected_columns(T::schema(), options)?;
+    let loop_merges = effective_loop_merges(&columns, options, handlers)?;
     let head_rows = head_rows_for_schema(T::schema(), options)?;
     let image_layout = ImageLayout::new(&columns, options, metadata, head_rows, handlers)?;
     if write_head && head_rows > 0 {
@@ -4050,6 +6073,8 @@ where
                 handlers,
                 &image_layout,
                 row_index,
+                options.automatic_merge_head,
+                holder_scope,
             )?;
         } else {
             write_headers_with_handlers(
@@ -4060,12 +6085,11 @@ where
                 handlers,
                 &image_layout,
                 row_index,
+                holder_scope,
             )?;
         }
         // Annotation `@HeadRowHeight` or registered `SimpleRowHeightStyleStrategy`
-        let head_height = metadata
-            .head_row_height
-            .or_else(|| collect_handler_head_row_height(handlers));
+        let head_height = collect_handler_head_row_height(handlers).or(metadata.head_row_height);
         if let Some(height) = head_height {
             for head_row in row_index..row_index + head_rows {
                 worksheet
@@ -4076,35 +6100,52 @@ where
         row_index += head_rows;
     }
     for row in rows {
+        if row.is_absent_row() {
+            row_index = row_index
+                .checked_add(1)
+                .ok_or_else(|| ExcelError::Format("XLSX row overflow".to_owned()))?;
+            data_index = data_index.saturating_add(1);
+            continue;
+        }
         // Annotation `@ContentRowHeight` or registered `SimpleRowHeightStyleStrategy`
-        let content_height = metadata
-            .content_row_height
-            .or_else(|| collect_handler_content_row_height(handlers));
+        let content_height =
+            collect_handler_content_row_height(handlers).or(metadata.content_row_height);
         if let Some(height) = content_height {
             worksheet
                 .set_row_height(row_index, height)
                 .map_err(format_error)?;
         }
-        let cells = row.to_row_with_converters(&options.converters)?;
+        let (original_cells, cells) = convert_row_at(
+            &row,
+            &options.converters,
+            &options.sheet_name,
+            row_index,
+            &columns,
+        )?;
         if let Some(spill) = gzip_spill.as_mut() {
-            spill.write_row(&cells)?;
+            let values = cells
+                .iter()
+                .map(WriteCellData::effective_value)
+                .collect::<Vec<_>>();
+            spill.write_row(&values)?;
         }
         let dynamic_columns = dynamic_columns_for_row(T::schema().is_empty(), cells.len(), options);
         let row_columns = dynamic_columns.as_deref().unwrap_or(&columns);
         let style = (!options.content_styles.is_empty())
             .then(|| &options.content_styles[data_index % options.content_styles.len()]);
-        apply_loop_merges(worksheet, row_index, data_index, &options.loop_merges)?;
-        apply_loop_merges(worksheet, row_index, data_index, &annotation_loop_merges)?;
+        apply_loop_merges(worksheet, row_index, data_index, &loop_merges)?;
         write_data_row_with_handlers(
             worksheet,
             row_index,
             data_index,
             row_columns,
+            &original_cells,
             &cells,
             &options.sheet_name,
             SheetStyleContext::content(style, metadata, global),
             handlers,
             &image_layout,
+            holder_scope,
         )?;
         row_index += 1;
         data_index += 1;
@@ -4150,55 +6191,166 @@ fn apply_loop_merges(
 
 fn sort_handlers(handlers: &mut [Box<dyn WriteHandler>]) {
     handlers.sort_by_key(|handler| handler.order());
+    let mut unique_values = HashSet::new();
+    for handler in handlers {
+        let duplicate = handler
+            .as_not_repeat_executor()
+            .is_some_and(|executor| !unique_values.insert(executor.unique_value().to_owned()));
+        if duplicate {
+            *handler = Box::new(NoopWriteHandler);
+        }
+    }
+}
+
+struct NoopWriteHandler;
+
+impl WriteHandler for NoopWriteHandler {}
+
+fn begin_row_lifecycle(
+    handlers: &mut [Box<dyn WriteHandler>],
+    context: &WriteRowContext,
+) -> Result<()> {
+    easyexcel_core::util::write_handler_utils::before_row_create(handlers, context)?;
+    easyexcel_core::util::write_handler_utils::after_row_create(handlers, context)?;
+    Ok(())
+}
+
+fn finish_row_lifecycle(
+    handlers: &mut [Box<dyn WriteHandler>],
+    context: &WriteRowContext,
+) -> Result<()> {
+    easyexcel_core::util::write_handler_utils::after_row_dispose(handlers, context)
+}
+
+fn begin_cell_lifecycle(
+    handlers: &mut [Box<dyn WriteHandler>],
+    context: &mut WriteCellContext,
+) -> Result<()> {
+    easyexcel_core::util::write_handler_utils::before_cell_create(handlers, context)?;
+    context.apply_cell_mutations();
+    easyexcel_core::util::write_handler_utils::after_cell_create(handlers, context)?;
+    context.apply_cell_mutations();
+    easyexcel_core::util::write_handler_utils::after_cell_data_converted(handlers, context)?;
+    context.apply_cell_mutations();
+    context.sync_cell_handle();
+    Ok(())
+}
+
+fn finish_cell_lifecycle(
+    handlers: &mut [Box<dyn WriteHandler>],
+    context: &WriteCellContext,
+) -> Result<()> {
+    easyexcel_core::util::write_handler_utils::after_cell_dispose(handlers, context)
 }
 
 fn before_workbook(
     handlers: &mut [Box<dyn WriteHandler>],
     context: &WriteWorkbookContext,
 ) -> Result<()> {
-    for handler in handlers.iter_mut() {
-        handler.before_workbook(context)?;
-    }
-    Ok(())
+    easyexcel_core::util::write_handler_utils::before_workbook_create(handlers, context)
+}
+
+fn after_workbook_create(
+    handlers: &mut [Box<dyn WriteHandler>],
+    context: &WriteWorkbookContext,
+) -> Result<()> {
+    easyexcel_core::util::write_handler_utils::after_workbook_create(handlers, context)
 }
 
 fn after_workbook(
     handlers: &mut [Box<dyn WriteHandler>],
     context: &WriteWorkbookContext,
 ) -> Result<()> {
-    for handler in handlers.iter_mut() {
-        handler.after_workbook(context)?;
-    }
-    Ok(())
+    easyexcel_core::util::write_handler_utils::after_workbook_dispose(handlers, context)
+}
+
+fn run_own_workbook_callbacks(scope: &HandlerExecutionScope, path: &Path) -> Result<()> {
+    let mut own = scope.own_boxed();
+    let context = WriteWorkbookContext::new(path);
+    before_workbook(&mut own, &context)?;
+    after_workbook_create(&mut own, &context)
 }
 
 fn before_sheet(handlers: &mut [Box<dyn WriteHandler>], context: &WriteSheetContext) -> Result<()> {
-    for handler in handlers.iter_mut() {
-        handler.before_sheet(context)?;
-    }
-    Ok(())
+    easyexcel_core::util::write_handler_utils::before_sheet_create(handlers, context)
+}
+
+fn after_sheet_create(
+    handlers: &mut [Box<dyn WriteHandler>],
+    context: &WriteSheetContext,
+) -> Result<()> {
+    easyexcel_core::util::write_handler_utils::after_sheet_create(handlers, context)
 }
 
 fn after_sheet(handlers: &mut [Box<dyn WriteHandler>], context: &WriteSheetContext) -> Result<()> {
     for handler in handlers.iter_mut() {
-        handler.after_sheet(context)?;
+        handler.after_sheet_dispose(context)?;
     }
     Ok(())
 }
 
-fn ordered_columns(schema: &'static [ExcelColumn]) -> Vec<(usize, usize, &'static ExcelColumn)> {
+fn validate_excel_row_schema<T>() -> Result<()>
+where
+    T: ExcelRow,
+{
+    validate_schema(T::schema())
+}
+
+fn validate_schema(schema: &'static [ExcelColumn]) -> Result<()> {
+    let mut indexed_fields = HashMap::new();
+    for column in schema {
+        let Some(index) = column.index else {
+            continue;
+        };
+        if let Some(previous_field) = indexed_fields.insert(index, column.field) {
+            return Err(ExcelError::Format(format!(
+                "The index of '{previous_field}' and '{}' must be inconsistent",
+                column.field
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn ordered_columns(
+    schema: &'static [ExcelColumn],
+) -> Result<Vec<(usize, usize, &'static ExcelColumn)>> {
+    validate_schema(schema)?;
+    // Java `ClassUtils.buildSortedAllFieldMap` first groups non-indexed fields
+    // by `@ExcelProperty.order` (preserving declaration order inside a group),
+    // then inserts them into the first free physical indexes while skipping
+    // every forced `@ExcelProperty.index`. Forced indexes are anchors, not a
+    // secondary sort key.
+    let forced_indexes = schema
+        .iter()
+        .filter_map(|column| column.index)
+        .collect::<HashSet<_>>();
+    let mut automatic = schema
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.index.is_none())
+        .collect::<Vec<_>>();
+    automatic.sort_by_key(|(schema_index, column)| (column.order, *schema_index));
+
     let mut columns = schema
         .iter()
         .enumerate()
-        .map(|(schema_index, column)| {
-            let physical_index = column.index.unwrap_or(schema_index);
-            (physical_index, schema_index, column)
+        .filter_map(|(schema_index, column)| {
+            column
+                .index
+                .map(|physical_index| (physical_index, schema_index, column))
         })
         .collect::<Vec<_>>();
-    columns.sort_by_key(|(physical_index, schema_index, column)| {
-        (*physical_index, column.order, *schema_index)
-    });
-    columns
+    let mut next_automatic_index = 0usize;
+    for (schema_index, column) in automatic {
+        while forced_indexes.contains(&next_automatic_index) {
+            next_automatic_index = next_automatic_index.saturating_add(1);
+        }
+        columns.push((next_automatic_index, schema_index, column));
+        next_automatic_index = next_automatic_index.saturating_add(1);
+    }
+    columns.sort_by_key(|(physical_index, _, _)| *physical_index);
+    Ok(columns)
 }
 
 fn apply_annotation_column_widths<T>(
@@ -4209,7 +6361,7 @@ where
     T: ExcelRow,
 {
     let type_width = T::write_metadata().column_width;
-    for (physical_index, _, column) in selected_columns(T::schema(), options) {
+    for (physical_index, _, column) in selected_columns(T::schema(), options)? {
         if options
             .column_widths
             .iter()
@@ -4224,6 +6376,112 @@ where
     Ok(())
 }
 
+fn apply_template_holder_layout<T>(
+    package: &mut template_write::TemplatePackage,
+    sheet_name: &str,
+    options: &WriteOptions,
+    handlers: &[Box<dyn WriteHandler>],
+    excluded_merges: &[easyexcel_core::OnceAbsoluteMergeProperty],
+) -> Result<()>
+where
+    T: ExcelRow,
+{
+    let explicit_columns = options
+        .column_widths
+        .iter()
+        .map(|(column, _)| *column)
+        .collect::<HashSet<_>>();
+    let mut widths = options
+        .column_widths
+        .iter()
+        .copied()
+        .collect::<HashMap<_, _>>();
+    let type_width = T::write_metadata().column_width;
+    for (physical_index, _, column) in selected_columns(T::schema(), options)? {
+        let physical_index = to_column(physical_index)?;
+        if !explicit_columns.contains(&physical_index) {
+            if let Some(width) = column.column_width.or(type_width) {
+                widths.entry(physical_index).or_insert(width);
+            }
+            for handler in handlers {
+                if let Some(width) = handler.style_column_width(usize::from(physical_index)) {
+                    widths.insert(physical_index, width);
+                }
+            }
+        }
+    }
+    let mut widths = widths.into_iter().collect::<Vec<_>>();
+    widths.sort_unstable_by_key(|(column, _)| *column);
+
+    let mut merges = Vec::new();
+    if let Some(merge) = T::write_metadata().once_absolute_merge
+        && !excluded_merges.contains(&merge)
+    {
+        if let Some(range) = absolute_merge_range(merge) {
+            merges.push(range);
+        }
+    }
+    for handler in handlers {
+        if let Some(merge) = handler.style_once_absolute_merge()
+            && !excluded_merges.contains(&merge)
+            && let Some(range) = absolute_merge_range(merge)
+            && !merges.contains(&range)
+        {
+            merges.push(range);
+        }
+    }
+    package.apply_sheet_layout(sheet_name, &widths, &merges)
+}
+
+fn collect_once_absolute_merges<T>(
+    handlers: &[Box<dyn WriteHandler>],
+) -> Vec<easyexcel_core::OnceAbsoluteMergeProperty>
+where
+    T: ExcelRow,
+{
+    let mut merges = Vec::new();
+    if let Some(merge) = T::write_metadata().once_absolute_merge {
+        merges.push(merge);
+    }
+    for merge in collect_handler_once_absolute_merges(handlers) {
+        if !merges.contains(&merge) {
+            merges.push(merge);
+        }
+    }
+    merges
+}
+
+fn collect_handler_once_absolute_merges(
+    handlers: &[Box<dyn WriteHandler>],
+) -> Vec<easyexcel_core::OnceAbsoluteMergeProperty> {
+    let mut merges = Vec::new();
+    for handler in handlers {
+        if let Some(merge) = handler.style_once_absolute_merge()
+            && !merges.contains(&merge)
+        {
+            merges.push(merge);
+        }
+    }
+    merges
+}
+
+fn absolute_merge_range(merge: easyexcel_core::OnceAbsoluteMergeProperty) -> Option<MergeRange> {
+    if merge.first_row_index < 0
+        || merge.last_row_index < 0
+        || merge.first_column_index < 0
+        || merge.last_column_index < 0
+    {
+        return None;
+    }
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+    Some(MergeRange::new(
+        merge.first_row_index as u32,
+        merge.last_row_index as u32,
+        merge.first_column_index as u16,
+        merge.last_column_index as u16,
+    ))
+}
+
 /// Applies column widths from registered strategies
 /// (Java `SimpleColumnWidthStyleStrategy` / `AbstractColumnWidthStyleStrategy`).
 fn apply_handler_column_widths<T>(
@@ -4234,7 +6492,7 @@ fn apply_handler_column_widths<T>(
 where
     T: ExcelRow,
 {
-    for (physical_index, _, _) in selected_columns(T::schema(), options) {
+    for (physical_index, _, _) in selected_columns(T::schema(), options)? {
         let column = to_column(physical_index)?;
         // Explicit `WriteOptions::column_widths` wins over strategies.
         if options
@@ -4297,18 +6555,30 @@ fn collect_handler_cell_style(
     merged
 }
 
-/// Applies type-level `@OnceAbsoluteMerge` metadata when all indexes are non-negative.
-fn apply_annotation_once_absolute_merge<T>(worksheet: &mut Worksheet) -> Result<()>
-where
-    T: ExcelRow,
-{
-    apply_annotation_once_absolute_merge_at::<T>(worksheet, 0)
+/// Combines registered strategy styles with a mutation requested through the
+/// logical POI-equivalent cell handle. The explicit handle request runs last,
+/// matching a custom Java handler that mutates the POI cell in
+/// `afterCellDispose`.
+fn effective_handler_cell_style(
+    handlers: &[Box<dyn WriteHandler>],
+    context: &WriteCellContext,
+) -> Option<ExcelCellStyle> {
+    let merged = collect_handler_cell_style(handlers, context);
+    context
+        .cell()
+        .requested_style()
+        .map_or(merged, |requested| {
+            Some(match merged {
+                Some(current) => merge_write_cell_style(&requested, current),
+                None => requested,
+            })
+        })
 }
 
-/// Applies `@OnceAbsoluteMerge` with a row offset (template append writes).
-fn apply_annotation_once_absolute_merge_at<T>(
+/// Applies type-level `@OnceAbsoluteMerge` metadata when all indexes are non-negative.
+fn apply_annotation_once_absolute_merge<T>(
     worksheet: &mut Worksheet,
-    row_offset: u32,
+    handlers: &[Box<dyn WriteHandler>],
 ) -> Result<()>
 where
     T: ExcelRow,
@@ -4316,7 +6586,13 @@ where
     let Some(merge) = T::write_metadata().once_absolute_merge else {
         return Ok(());
     };
-    apply_once_absolute_merge_property(worksheet, merge, row_offset)
+    if handlers
+        .iter()
+        .any(|handler| handler.style_once_absolute_merge() == Some(merge))
+    {
+        return Ok(());
+    }
+    apply_once_absolute_merge_property(worksheet, merge)
 }
 
 /// Applies registered [`OnceAbsoluteMergeStrategy`] regions
@@ -4324,11 +6600,10 @@ where
 fn apply_handler_once_absolute_merge(
     worksheet: &mut Worksheet,
     handlers: &[Box<dyn WriteHandler>],
-    row_offset: u32,
 ) -> Result<()> {
     for handler in handlers {
         if let Some(merge) = handler.style_once_absolute_merge() {
-            apply_once_absolute_merge_property(worksheet, merge, row_offset)?;
+            apply_once_absolute_merge_property(worksheet, merge)?;
         }
     }
     Ok(())
@@ -4338,7 +6613,6 @@ fn apply_handler_once_absolute_merge(
 fn apply_once_absolute_merge_property(
     worksheet: &mut Worksheet,
     merge: easyexcel_core::OnceAbsoluteMergeProperty,
-    row_offset: u32,
 ) -> Result<()> {
     if merge.first_row_index < 0
         || merge.last_row_index < 0
@@ -4350,9 +6624,9 @@ fn apply_once_absolute_merge_property(
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     worksheet
         .merge_range(
-            (merge.first_row_index as u32).saturating_add(row_offset),
+            merge.first_row_index as u32,
             merge.first_column_index as u16,
-            (merge.last_row_index as u32).saturating_add(row_offset),
+            merge.last_row_index as u32,
             merge.last_column_index as u16,
             "",
             &Format::new(),
@@ -4379,16 +6653,43 @@ fn annotation_loop_merges_from_columns(
     Ok(strategies)
 }
 
+fn effective_loop_merges(
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    options: &WriteOptions,
+    handlers: &[Box<dyn WriteHandler>],
+) -> Result<Vec<LoopMergeStrategy>> {
+    let mut strategies = options.loop_merges.clone();
+    for strategy in annotation_loop_merges_from_columns(columns)? {
+        if !strategies.contains(&strategy) {
+            strategies.push(strategy);
+        }
+    }
+    for handler in handlers {
+        let Some((property, column_index)) = handler.style_loop_merge() else {
+            continue;
+        };
+        let strategy = LoopMergeStrategy::new(
+            property.each_row,
+            property.column_extend,
+            to_column(column_index)?,
+        )?;
+        if !strategies.contains(&strategy) {
+            strategies.push(strategy);
+        }
+    }
+    Ok(strategies)
+}
+
 fn selected_columns(
     schema: &'static [ExcelColumn],
     options: &WriteOptions,
-) -> Vec<(usize, usize, &'static ExcelColumn)> {
+) -> Result<Vec<(usize, usize, &'static ExcelColumn)>> {
     if schema.is_empty()
         && let Some(head) = &options.dynamic_head
     {
-        return selected_dynamic_columns(head.len(), options);
+        return Ok(selected_dynamic_columns(head.len(), options));
     }
-    let mut columns = ordered_columns(schema)
+    let mut columns = ordered_columns(schema)?
         .into_iter()
         .filter(|(physical_index, _, column)| {
             let included_by_index = options
@@ -4428,7 +6729,7 @@ fn selected_columns(
             *physical_index = output_index;
         }
     }
-    columns
+    Ok(columns)
 }
 
 const DYNAMIC_COLUMN: ExcelColumn = ExcelColumn::new("", "", None, i32::MAX, None);
@@ -4477,8 +6778,33 @@ fn dynamic_columns_for_row(
     column_count: usize,
     options: &WriteOptions,
 ) -> Option<Vec<(usize, usize, &'static ExcelColumn)>> {
-    (schema_is_empty && options.dynamic_head.is_none())
-        .then(|| selected_dynamic_columns(column_count, options))
+    if !schema_is_empty {
+        return None;
+    }
+    let Some(head) = &options.dynamic_head else {
+        return Some(selected_dynamic_columns(column_count, options));
+    };
+
+    // Java `ExcelWriteAddExecutor.addBasicTypeToExcel` consumes basic row
+    // values sequentially while iterating the effective head map. When the
+    // row is shorter it stops creating cells; when it is longer it appends the
+    // remaining values after the greatest head column (issue #1702).
+    let mut columns = selected_dynamic_columns(head.len(), options);
+    columns.truncate(column_count);
+    for (data_index, (_, schema_index, _)) in columns.iter_mut().enumerate() {
+        *schema_index = data_index;
+    }
+
+    let mut next_physical_index = columns
+        .iter()
+        .map(|(physical_index, _, _)| *physical_index)
+        .max()
+        .map_or(0, |index| index.saturating_add(1));
+    for data_index in columns.len()..column_count {
+        columns.push((next_physical_index, data_index, &DYNAMIC_COLUMN));
+        next_physical_index = next_physical_index.saturating_add(1);
+    }
+    Some(columns)
 }
 
 fn head_rows_for_schema(schema: &[ExcelColumn], options: &WriteOptions) -> Result<u32> {
@@ -4506,6 +6832,153 @@ fn dynamic_head_rows(options: &WriteOptions) -> Result<u32> {
     }
     let levels = head.iter().map(Vec::len).max().unwrap_or(0);
     head_level_to_row(levels)
+}
+
+fn selected_dynamic_head_paths(
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    head: &[Vec<String>],
+) -> Result<Vec<Vec<String>>> {
+    columns
+        .iter()
+        .map(|(_, source_index, _)| {
+            head.get(*source_index).cloned().ok_or_else(|| {
+                ExcelError::Format(format!(
+                    "dynamic head source column {source_index} is absent"
+                ))
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn resolved_write_context_holder_state<T>(
+    options: &WriteOptions,
+    table_no: Option<i32>,
+) -> Result<WriteContextHolderState>
+where
+    T: ExcelRow,
+{
+    let selected_columns = selected_columns(T::schema(), options)?;
+    let selected_head = options
+        .dynamic_head
+        .as_deref()
+        .map(|head| selected_dynamic_head_paths(&selected_columns, head))
+        .transpose()?;
+    let indexed_columns = selected_columns
+        .iter()
+        .map(|(column_index, _, column)| (*column_index, *column))
+        .collect::<Vec<_>>();
+    let head_property = ExcelWriteHeadProperty::from_columns(
+        (!T::schema().is_empty()).then(|| type_name::<T>().to_owned()),
+        &indexed_columns,
+        selected_head.as_deref(),
+        *T::write_metadata(),
+    )?;
+
+    Ok(WriteContextHolderState {
+        holder_type: if table_no.is_some() {
+            Holder::Table
+        } else {
+            Holder::Sheet
+        },
+        excel_write_head_property: head_property,
+        converter_map:
+            easyexcel_core::converter::default_converter_loader::load_default_write_converter()
+                .merged_with(&options.converters),
+        need_head: options.need_head,
+        automatic_merge_head: options.automatic_merge_head,
+        relative_head_row_index: options.relative_head_row_index,
+        order_by_include_column: options.order_by_include_column,
+        include_column_indexes: options.include_column_indexes.clone(),
+        include_column_field_names: options.include_column_field_names.clone(),
+        exclude_column_indexes: options.exclude_column_indexes.clone(),
+        exclude_column_field_names: options.exclude_column_field_names.clone(),
+    })
+}
+
+fn normalized_head_label(path: &[String], level: usize) -> &str {
+    path.get(level)
+        .or_else(|| path.last())
+        .map_or("", String::as_str)
+}
+
+/// Exact Rust port of Java `ExcelWriteHeadProperty.headCellRangeList()`.
+///
+/// Each unclaimed cell greedily expands right across equal labels, then down
+/// only while the complete rectangle remains equal and unclaimed. Short paths
+/// repeat their final label, matching Java `ExcelHeadProperty.initHeadRowNumber`.
+fn dynamic_head_merge_ranges(
+    columns: &[(usize, usize, &'static ExcelColumn)],
+    head: &[Vec<String>],
+    start_row: u32,
+) -> Result<Vec<MergeRange>> {
+    if columns.len() != head.len() {
+        return Err(ExcelError::Format(format!(
+            "dynamic head column count {} does not match selected column count {}",
+            head.len(),
+            columns.len()
+        )));
+    }
+    let indexed_columns = columns
+        .iter()
+        .map(|(column_index, _, column)| (*column_index, *column))
+        .collect::<Vec<_>>();
+    let property = ExcelWriteHeadProperty::from_columns(
+        None,
+        &indexed_columns,
+        Some(head),
+        ExcelWriteMetadata::default(),
+    )?;
+    property
+        .head_cell_range_list()
+        .into_iter()
+        .map(|range| {
+            let first_row = start_row
+                .checked_add(u32::try_from(range.first_row).map_err(|_| {
+                    ExcelError::Format("dynamic head row can not be negative".to_owned())
+                })?)
+                .ok_or_else(|| ExcelError::Format("dynamic head row overflow".to_owned()))?;
+            let last_row = start_row
+                .checked_add(u32::try_from(range.last_row).map_err(|_| {
+                    ExcelError::Format("dynamic head row can not be negative".to_owned())
+                })?)
+                .ok_or_else(|| ExcelError::Format("dynamic head row overflow".to_owned()))?;
+            let first_col = usize::try_from(range.first_col).map_err(|_| {
+                ExcelError::Format("dynamic head column can not be negative".to_owned())
+            })?;
+            let last_col = usize::try_from(range.last_col).map_err(|_| {
+                ExcelError::Format("dynamic head column can not be negative".to_owned())
+            })?;
+            Ok(MergeRange::new(
+                first_row,
+                last_row,
+                to_column(first_col)?,
+                to_column(last_col)?,
+            ))
+        })
+        .collect()
+}
+
+fn automatic_dynamic_head_merge_ranges<T>(
+    options: &WriteOptions,
+    start_row: u32,
+    write_head: bool,
+) -> Result<Vec<MergeRange>>
+where
+    T: ExcelRow,
+{
+    if !write_head || !options.need_head || !options.automatic_merge_head {
+        return Ok(Vec::new());
+    }
+    let Some(head) = &options.dynamic_head else {
+        return Ok(Vec::new());
+    };
+    let columns = selected_columns(T::schema(), options)?;
+    let head = selected_dynamic_head_paths(&columns, head)?;
+    dynamic_head_merge_ranges(
+        &columns,
+        &head,
+        start_row.saturating_add(relative_head_start_row(options)),
+    )
 }
 
 fn head_level_to_row(level: usize) -> Result<u32> {
@@ -4536,6 +7009,7 @@ fn write_headers(
         &mut [],
         &layout,
         0,
+        None,
     )
 }
 
@@ -4547,6 +7021,7 @@ fn write_headers_with_handlers(
     handlers: &mut [Box<dyn WriteHandler>],
     image_layout: &ImageLayout,
     start_row: u32,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<()> {
     let labels = columns
         .iter()
@@ -4561,6 +7036,7 @@ fn write_headers_with_handlers(
         style,
         handlers,
         image_layout,
+        holder_scope,
     )
 }
 
@@ -4573,21 +7049,17 @@ fn write_dynamic_headers_with_handlers(
     handlers: &mut [Box<dyn WriteHandler>],
     image_layout: &ImageLayout,
     start_row: u32,
+    automatic_merge_head: bool,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<()> {
-    if head.len() != columns.len() {
-        return Err(ExcelError::Format(format!(
-            "dynamic head column count {} does not match selected column count {}",
-            head.len(),
-            columns.len()
-        )));
-    }
+    let head = selected_dynamic_head_paths(columns, head)?;
     let levels = head.iter().map(Vec::len).max().unwrap_or(0);
     for level in 0..levels {
         #[allow(clippy::cast_possible_truncation)]
         let row_index = start_row.saturating_add(level as u32);
         let labels = head
             .iter()
-            .map(|path| path.get(level).cloned().unwrap_or_default())
+            .map(|path| normalized_head_label(path, level).to_owned())
             .collect::<Vec<_>>();
         write_header_row_with_handlers(
             worksheet,
@@ -4598,9 +7070,13 @@ fn write_dynamic_headers_with_handlers(
             style,
             handlers,
             image_layout,
+            holder_scope,
         )?;
     }
-    merge_dynamic_head_groups(worksheet, columns, head, style)
+    if automatic_merge_head {
+        merge_dynamic_head_groups(worksheet, columns, &head, style, start_row)?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4613,35 +7089,38 @@ fn write_header_row_with_handlers(
     style: SheetStyleContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
     image_layout: &ImageLayout,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<()> {
-    let row_context = WriteRowContext {
-        sheet_name: sheet_name.to_owned(),
-        row_index,
-        is_head: true,
-    };
-    for handler in handlers.iter_mut() {
-        handler.before_row(&row_context)?;
-    }
+    let relative = Some(usize::try_from(row_index).unwrap_or(usize::MAX));
+    let row_context = WriteRowContext::new(sheet_name, row_index, relative, true);
+    let row_context = holder_scope.map_or(row_context.clone(), |scope| scope.row(row_context));
+    begin_row_lifecycle(handlers, &row_context)?;
     for ((physical_index, _, column), label) in columns.iter().zip(labels) {
         let column_index = to_column(*physical_index)?;
-        let mut context = WriteCellContext {
-            sheet_name: sheet_name.to_owned(),
+        let mut context = WriteCellContext::new(
+            sheet_name,
             row_index,
             column_index,
-            field: (!column.field.is_empty()).then_some(column.field),
-            is_head: true,
-            relative_row_index: Some(usize::try_from(row_index).unwrap_or(0)),
-            value: CellValue::String(label.clone()),
-            skip: false,
-        };
-        for handler in handlers.iter_mut() {
-            handler.before_cell(&mut context)?;
+            CellValue::String(label.clone()),
+        )
+        .with_column(column)
+        .with_head(label.clone())
+        .without_original_value()
+        .with_relative_row_index(relative);
+        if let Some(scope) = holder_scope {
+            context = scope.cell(context);
         }
+        begin_cell_lifecycle(handlers, &mut context)?;
+        finish_cell_lifecycle(handlers, &context)?;
+        context.apply_cell_mutations();
         if !context.skip {
-            let handler_style = collect_handler_cell_style(handlers, &context);
-            let format_context = style
-                .column(column)
-                .with_handler_cell(handler_style);
+            let format_context = if context.ignore_fill_style {
+                style.column(column).without_fill_style()
+            } else {
+                style
+                    .column(column)
+                    .with_handler_cell(effective_handler_cell_style(handlers, &context))
+            };
             let format = cell_format(format_context);
             match &context.value {
                 CellValue::String(value) | CellValue::Error(value) => {
@@ -4660,12 +7139,12 @@ fn write_header_row_with_handlers(
                 )?,
             }
         }
-        for handler in handlers.iter_mut() {
-            handler.after_cell(&context)?;
-        }
     }
-    for handler in handlers.iter_mut() {
-        handler.after_row(&row_context)?;
+    finish_row_lifecycle(handlers, &row_context)?;
+    if let Some(height) = row_context.row().requested_height() {
+        worksheet
+            .set_row_height(row_index, height)
+            .map_err(format_error)?;
     }
     Ok(())
 }
@@ -4675,51 +7154,29 @@ fn merge_dynamic_head_groups(
     columns: &[(usize, usize, &'static ExcelColumn)],
     head: &[Vec<String>],
     style: SheetStyleContext<'_>,
+    start_row: u32,
 ) -> Result<()> {
-    let levels = head.iter().map(Vec::len).max().unwrap_or(0);
-    for level in 0..levels {
-        #[allow(clippy::cast_possible_truncation)]
-        let row_index = level as u32;
-        let mut start = 0;
-        while start < head.len() {
-            let mut end = start;
-            while end + 1 < head.len()
-                && columns[end].0.checked_add(1) == Some(columns[end + 1].0)
-                && same_dynamic_head_group(head, start, end + 1, level)
-            {
-                end += 1;
-            }
-            let label = head[start].get(level).map_or("", String::as_str);
-            if end > start && !label.is_empty() {
-                let format = cell_format(style.column(columns[start].2));
-                worksheet
-                    .merge_range(
-                        row_index,
-                        to_column(columns[start].0)?,
-                        row_index,
-                        to_column(columns[end].0)?,
-                        label,
-                        &format,
-                    )
-                    .map_err(format_error)?;
-            }
-            start = end + 1;
-        }
+    for range in dynamic_head_merge_ranges(columns, head, start_row)? {
+        let column_position = columns
+            .iter()
+            .position(|(physical, _, _)| u16::try_from(*physical).ok() == Some(range.first_column))
+            .ok_or_else(|| ExcelError::Format("dynamic head merge column is absent".to_owned()))?;
+        let relative_level =
+            usize::try_from(range.first_row.saturating_sub(start_row)).unwrap_or(usize::MAX);
+        let label = normalized_head_label(&head[column_position], relative_level);
+        let format = cell_format(style.column(columns[column_position].2));
+        worksheet
+            .merge_range(
+                range.first_row,
+                range.first_column,
+                range.last_row,
+                range.last_column,
+                label,
+                &format,
+            )
+            .map_err(format_error)?;
     }
     Ok(())
-}
-
-fn same_dynamic_head_group(
-    head: &[Vec<String>],
-    first: usize,
-    second: usize,
-    level: usize,
-) -> bool {
-    head[first].get(level) == head[second].get(level)
-        && head[first]
-            .iter()
-            .take(level)
-            .eq(head[second].iter().take(level))
 }
 
 #[cfg(test)]
@@ -4730,12 +7187,18 @@ fn write_data_row(
     cells: &[CellValue],
 ) -> Result<()> {
     let image_layout = ImageLayout::default();
+    let write_cells = cells
+        .iter()
+        .cloned()
+        .map(WriteCellData::new)
+        .collect::<Vec<_>>();
     write_data_row_with_handlers(
         worksheet,
         row_index,
         0,
         columns,
         cells,
+        &write_cells,
         "",
         SheetStyleContext {
             explicit: None,
@@ -4745,6 +7208,7 @@ fn write_data_row(
         },
         &mut [],
         &image_layout,
+        None,
     )
 }
 
@@ -4754,41 +7218,47 @@ fn write_data_row_with_handlers(
     row_index: u32,
     relative_row_index: usize,
     columns: &[(usize, usize, &'static ExcelColumn)],
-    cells: &[CellValue],
+    original_cells: &[CellValue],
+    cells: &[WriteCellData],
     sheet_name: &str,
     style: SheetStyleContext<'_>,
     handlers: &mut [Box<dyn WriteHandler>],
     image_layout: &ImageLayout,
+    holder_scope: Option<&HandlerHolderScope>,
 ) -> Result<()> {
-    let row_context = WriteRowContext {
-        sheet_name: sheet_name.to_owned(),
-        row_index,
-        is_head: false,
-    };
-    for handler in handlers.iter_mut() {
-        handler.before_row(&row_context)?;
-    }
+    let row_context = WriteRowContext::new(sheet_name, row_index, Some(relative_row_index), false);
+    let row_context = holder_scope.map_or(row_context.clone(), |scope| scope.row(row_context));
+    begin_row_lifecycle(handlers, &row_context)?;
     for (physical_index, schema_index, metadata) in columns {
-        let value = cells.get(*schema_index).unwrap_or(&CellValue::Empty);
+        let cell_data = cells.get(*schema_index);
+        let value = cell_data.map_or(CellValue::Empty, WriteCellData::effective_value);
         let column = to_column(*physical_index)?;
-        let mut context = WriteCellContext {
-            sheet_name: sheet_name.to_owned(),
-            row_index,
-            column_index: column,
-            field: (!metadata.field.is_empty()).then_some(metadata.field),
-            is_head: false,
-            relative_row_index: Some(relative_row_index),
-            value: value.clone(),
-            skip: false,
-        };
-        for handler in handlers.iter_mut() {
-            handler.before_cell(&mut context)?;
+        let mut context = WriteCellContext::new(sheet_name, row_index, column, value)
+            .with_column(metadata)
+            .with_original_value(
+                original_cells
+                    .get(*schema_index)
+                    .unwrap_or(&CellValue::Empty)
+                    .clone(),
+            )
+            .with_relative_row_index(Some(relative_row_index));
+        if let Some(scope) = holder_scope {
+            context = scope.cell(context);
         }
+        begin_cell_lifecycle(handlers, &mut context)?;
+        finish_cell_lifecycle(handlers, &context)?;
+        context.apply_cell_mutations();
         if !context.skip {
-            let handler_style = collect_handler_cell_style(handlers, &context);
-            let format_context = style
-                .column(metadata)
-                .with_handler_cell(handler_style);
+            let format_context = if context.ignore_fill_style {
+                style.column(metadata).without_fill_style()
+            } else {
+                let format_context = style
+                    .column(metadata)
+                    .with_handler_cell(effective_handler_cell_style(handlers, &context));
+                cell_data.map_or(format_context, |cell| {
+                    format_context.with_converted_cell(cell)
+                })
+            };
             write_cell(
                 worksheet,
                 row_index,
@@ -4799,12 +7269,12 @@ fn write_data_row_with_handlers(
                 image_layout,
             )?;
         }
-        for handler in handlers.iter_mut() {
-            handler.after_cell(&context)?;
-        }
     }
-    for handler in handlers.iter_mut() {
-        handler.after_row(&row_context)?;
+    finish_row_lifecycle(handlers, &row_context)?;
+    if let Some(height) = row_context.row().requested_height() {
+        worksheet
+            .set_row_height(row_index, height)
+            .map_err(format_error)?;
     }
     Ok(())
 }
@@ -4819,6 +7289,17 @@ fn write_cell(
     style: CellFormatContext<'_>,
     image_layout: &ImageLayout,
 ) -> Result<()> {
+    // Java creates the POI Row and Cell through WorkBookUtil before assigning
+    // the typed value. rust_xlsxwriter materialises them on the first write,
+    // so the adapter creates and validates the same logical handles here.
+    let mut row_creator = XlsxRowCreator { worksheet };
+    let mut row = create_row(&mut row_creator, row_index)?;
+    let cell = create_cell(&mut row, column)?;
+    let XlsxCell {
+        worksheet,
+        row_index,
+        column_index: column,
+    } = cell;
     let format = cell_format(style);
     let global = style.global;
     match value {
@@ -4854,21 +7335,22 @@ fn write_cell(
                 .map_err(format_error)?;
         }
         CellValue::Decimal(value) => {
-            let value = value
-                .to_f64()
-                .filter(|value| value.is_finite())
-                .ok_or_else(|| {
-                    ExcelError::Format("decimal value exceeds XLSX numeric range".to_owned())
-                })?;
+            let numeric = finite_decimal_f64(value, "XLSX")?;
+            if decimal_integer_requires_text(value)? {
+                worksheet
+                    .write_string_with_format(row_index, column, value.to_plain_string(), &format)
+                    .map_err(format_error)?;
+                return Ok(());
+            }
             let mut cell_format = format.clone();
             if global.use_scientific_format
                 && metadata.format.is_none()
-                && is_scientific_magnitude(value)
+                && is_scientific_magnitude(numeric)
             {
                 cell_format = cell_format.set_num_format("0.#####E0");
             }
             worksheet
-                .write_number_with_format(row_index, column, value, &cell_format)
+                .write_number_with_format(row_index, column, numeric, &cell_format)
                 .map_err(format_error)?;
         }
         CellValue::Date(value) => {
@@ -5215,7 +7697,13 @@ fn cell_format(context: CellFormatContext<'_>) -> Format {
     let mut format = Format::new();
     // Annotation style merged with handler strategy style
     // (Java `WriteCellStyle.merge(strategy, cellData.getOrCreateStyle())`).
-    let mut annotation_cell = context.cell;
+    let mut annotation_cell = context.converted_cell;
+    if let Some(annotation_style) = context.cell {
+        annotation_cell = Some(merge_write_cell_style(
+            &annotation_style,
+            annotation_cell.unwrap_or_default(),
+        ));
+    }
     if let Some(handler_style) = context.handler_cell {
         annotation_cell = Some(merge_write_cell_style(
             &handler_style,
@@ -5225,6 +7713,7 @@ fn cell_format(context: CellFormatContext<'_>) -> Format {
     // Nested WriteFont / ExcelFontStyle on merged cell style
     // (Java WriteCellStyle.writeFont merge onto annotation HeadFontStyle/ContentFontStyle).
     let mut font = context.font;
+    let merged_has_data_format = annotation_cell.is_some_and(|style| style.data_format.is_some());
     if let Some(style) = annotation_cell {
         if let Some(style_font) = style.font {
             font = Some(match font {
@@ -5233,6 +7722,11 @@ fn cell_format(context: CellFormatContext<'_>) -> Format {
             });
         }
         format = apply_annotation_cell_style(format, style);
+    }
+    if !merged_has_data_format {
+        if let Some(number_format) = context.converted_data_format {
+            format = format.set_num_format(number_format);
+        }
     }
     if let Some(font) = font {
         format = apply_annotation_font_style(format, font);
@@ -5597,6 +8091,24 @@ fn write_integer(
     }
 }
 
+pub(crate) fn finite_decimal_f64(value: &BigDecimal, format: &str) -> Result<f64> {
+    value
+        .to_f64()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| ExcelError::Format(format!("decimal value exceeds {format} numeric range")))
+}
+
+pub(crate) fn decimal_integer_requires_text(value: &BigDecimal) -> Result<bool> {
+    const MAX_EXACT_EXCEL_INTEGER: i64 = 9_007_199_254_740_991;
+    let _ = finite_decimal_f64(value, "Excel")?;
+    if value != &value.with_scale(0) {
+        return Ok(false);
+    }
+    let maximum = BigDecimal::from(MAX_EXACT_EXCEL_INTEGER);
+    let minimum = -maximum.clone();
+    Ok(value > &maximum || value < &minimum)
+}
+
 fn excel_date_format(format: Option<&str>, default: &str) -> String {
     format
         .unwrap_or(default)
@@ -5618,6 +8130,6 @@ pub(crate) fn format_error(error: impl std::fmt::Display) -> ExcelError {
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod missing_tests;
+#[cfg(test)]
+mod tests;

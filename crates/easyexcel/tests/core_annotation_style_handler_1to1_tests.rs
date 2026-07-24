@@ -45,7 +45,6 @@ fn require_fixture(name: &str) -> std::path::PathBuf {
     path
 }
 
-
 /// Reads a ZIP entry from an XLSX workbook as UTF-8 text.
 fn is_xls_path(path: &Path) -> bool {
     path.extension()
@@ -77,9 +76,7 @@ fn sheet_column_width(sheet_xml: &str, one_based_column: u16) -> f64 {
     let (_, column) = sheet_xml
         .split_once(&marker)
         .unwrap_or_else(|| panic!("missing column {one_based_column}"));
-    let (_, width) = column
-        .split_once("width=\"")
-        .expect("missing column width");
+    let (_, width) = column.split_once("width=\"").expect("missing column width");
     let (width, _) = width.split_once('"').expect("unterminated column width");
     width.parse().expect("column width f64")
 }
@@ -306,7 +303,11 @@ fn assert_annotation_write_style(path: &Path) {
     assert!(meta.head_font_style.is_some());
     assert!(meta.content_font_style.is_some());
     assert!(AnnotationStyleData::schema()[0].head_style.is_some());
-    assert!(AnnotationStyleData::schema()[0].content_font_style.is_some());
+    assert!(
+        AnnotationStyleData::schema()[0]
+            .content_font_style
+            .is_some()
+    );
 
     let styles = zip_entry(path, "xl/styles.xml");
     for expected in [
@@ -923,9 +924,7 @@ mod exclude_or_include_data_test {
     /// Java: com.alibaba.easyexcel.test.core.excludeorinclude.ExcludeOrIncludeDataTest#t42IncludeFieldNameOrderIndex03
     #[test]
     fn t42_include_field_name_order_index03() {
-        assert_include_field_name_order_index(&temp_path(
-            "includeFieldNameOrderIndex03.xls",
-        ));
+        assert_include_field_name_order_index(&temp_path("includeFieldNameOrderIndex03.xls"));
     }
 
     /// Java: com.alibaba.easyexcel.test.core.excludeorinclude.ExcludeOrIncludeDataTest#t43IncludeFieldNameOrderIndexCsv

@@ -11,8 +11,8 @@
 //! - `.xls`: real BIFF8 write → read; `.xls` template write is explicit `Unsupported`
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use easyexcel::{
     DynamicRow, DynamicValue, EasyExcel, ExcelRow, PageReadListener, ReadDefaultReturn,
@@ -47,7 +47,11 @@ fn assert_xls_readable(path: &std::path::Path) {
         .head_row_number(0)
         .do_read_sync()
         .unwrap();
-    assert!(!rows.is_empty(), "Java .xls fixture must be readable: {}", path.display());
+    assert!(
+        !rows.is_empty(),
+        "Java .xls fixture must be readable: {}",
+        path.display()
+    );
 }
 
 fn read_dynamic_string(path: &std::path::Path) -> Vec<DynamicRow> {
@@ -285,9 +289,11 @@ fn assert_sort_no_head(path: &std::path::Path) {
         .sheet("Sheet1")
         .do_write(vec![{
             let mut map = BTreeMap::new();
-            for (i, name) in ["column1", "column2", "column3", "column4", "column5", "column6"]
-                .iter()
-                .enumerate()
+            for (i, name) in [
+                "column1", "column2", "column3", "column4", "column5", "column6",
+            ]
+            .iter()
+            .enumerate()
             {
                 map.insert(i, DynamicValue::String(name.to_string()));
             }
@@ -308,16 +314,36 @@ fn assert_skip(path: &std::path::Path) {
     let sheet3 = EasyExcel::writer_sheet::<SkipData>("第四个");
     let mut writer = EasyExcel::write::<SkipData>(path).build();
     writer
-        .write(vec![SkipData { name: "name1".to_owned() }], &sheet0)
+        .write(
+            vec![SkipData {
+                name: "name1".to_owned(),
+            }],
+            &sheet0,
+        )
         .unwrap();
     writer
-        .write(vec![SkipData { name: "name2".to_owned() }], &sheet1)
+        .write(
+            vec![SkipData {
+                name: "name2".to_owned(),
+            }],
+            &sheet1,
+        )
         .unwrap();
     writer
-        .write(vec![SkipData { name: "name3".to_owned() }], &sheet2)
+        .write(
+            vec![SkipData {
+                name: "name3".to_owned(),
+            }],
+            &sheet2,
+        )
         .unwrap();
     writer
-        .write(vec![SkipData { name: "name4".to_owned() }], &sheet3)
+        .write(
+            vec![SkipData {
+                name: "name4".to_owned(),
+            }],
+            &sheet3,
+        )
         .unwrap();
     writer.finish().unwrap();
 
@@ -335,10 +361,7 @@ fn assert_no_model(path: &std::path::Path) {
             let mut map = BTreeMap::new();
             map.insert(0, DynamicValue::String(format!("string1{i}")));
             map.insert(1, DynamicValue::String(format!("{}", 100 + i)));
-            map.insert(
-                2,
-                DynamicValue::String("2020-01-01 01:01:01".to_owned()),
-            );
+            map.insert(2, DynamicValue::String("2020-01-01 01:01:01".to_owned()));
             DynamicRow::new(map)
         })
         .collect();
@@ -673,9 +696,19 @@ mod skip_data_test {
         let sheet1 = EasyExcel::writer_sheet::<SkipData>("第二个");
         let mut writer = EasyExcel::write::<SkipData>(&path).build();
         writer
-            .write(vec![SkipData { name: "name1".to_owned() }], &sheet0)
+            .write(
+                vec![SkipData {
+                    name: "name1".to_owned(),
+                }],
+                &sheet0,
+            )
             .unwrap();
-        let result = writer.write(vec![SkipData { name: "name2".to_owned() }], &sheet1);
+        let result = writer.write(
+            vec![SkipData {
+                name: "name2".to_owned(),
+            }],
+            &sheet1,
+        );
         assert!(result.is_err(), "CSV should not support multiple sheets");
     }
 }

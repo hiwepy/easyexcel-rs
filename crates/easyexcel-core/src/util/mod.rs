@@ -35,5 +35,5 @@ pub mod write_handler_utils;
 // (`format`, `remove_thread_local_cache`, ...). Callers should reach
 // for a helper through its fully-qualified path, e.g.
 // `easyexcel_core::util::string_utils::is_blank`.
-pub mod excel_utils;
 pub mod cell_editor;
+pub mod excel_utils;

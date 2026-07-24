@@ -105,12 +105,12 @@ pub fn is_date_format(format_str: &str) -> bool {
             count += 1;
         }
         match ch {
-            'y' | 'Y' => return true,  // year
-            'm' | 'M' if count <= 4 => return true,  // month (not "mmmmm" which is literal)
-            'd' | 'D' if count <= 4 => return true,  // day
-            'h' | 'H' => return true,                 // hour
-            's' | 'S' if count <= 2 => return true,   // second (not "sss" literal)
-            'a' | 'A' => return true,                 // am/pm
+            'y' | 'Y' => return true,               // year
+            'm' | 'M' if count <= 4 => return true, // month (not "mmmmm" which is literal)
+            'd' | 'D' if count <= 4 => return true, // day
+            'h' | 'H' => return true,               // hour
+            's' | 'S' if count <= 2 => return true, // second (not "sss" literal)
+            'a' | 'A' => return true,               // am/pm
             _ => {}
         }
         i += count;
@@ -127,7 +127,11 @@ mod tests {
         for i in [0, 1, 25, 26, 51, 52, 701, 702, 1000] {
             let name = index_to_col_name(i);
             let back = col_name_to_index(&name);
-            assert_eq!(back, Some(i), "round-trip failed for index {i}, name={name}");
+            assert_eq!(
+                back,
+                Some(i),
+                "round-trip failed for index {i}, name={name}"
+            );
         }
     }
 
@@ -153,7 +157,9 @@ mod tests {
 
     #[test]
     fn xls_xlsx_csv_detection() {
-        assert!(is_xls_bytes(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]));
+        assert!(is_xls_bytes(&[
+            0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1
+        ]));
         assert!(!is_xls_bytes(b"not xls data"));
         assert!(is_xlsx_bytes(b"PK\x03\x04more"));
         assert!(!is_xlsx_bytes(b"not zip"));

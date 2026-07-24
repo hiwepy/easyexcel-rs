@@ -1,6 +1,5 @@
 //! Mirrors Java `com.alibaba.excel.write.handler.AbstractCellWriteHandler`.
 
-use easyexcel_core::WriteCellContext;
 use easyexcel_core::WriteHandler;
 
 use crate::handler::cell_write_handler::CellWriteHandler;

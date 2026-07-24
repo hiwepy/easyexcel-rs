@@ -16,6 +16,8 @@ pub struct WriteWorkbook {
     pub options: WriteOptions,
     /// Mirrors `WriteWorkbook.excelType`. (Java `getExcelType()`)
     pub excel_type: easyexcel_core::support::ExcelTypeEnum,
+    /// Final output file. (Java `WriteWorkbook.file`)
+    pub output_file: Option<std::path::PathBuf>,
 }
 
 impl WriteWorkbook {
@@ -25,6 +27,7 @@ impl WriteWorkbook {
         Self {
             options: WriteOptions::default(),
             excel_type: easyexcel_core::support::ExcelTypeEnum::Xlsx,
+            output_file: None,
         }
     }
 
@@ -46,25 +49,42 @@ impl WriteWorkbook {
         excel_type: easyexcel_core::support::ExcelTypeEnum,
     ) -> &mut Self {
         self.excel_type = excel_type;
+        self.options.excel_type = Some(excel_type);
         self
     }
 
     /// Returns the output file path. (Java `getFile()`)
     ///
-    /// Rust port: file is a constructor concern on `ExcelWriter`
-    /// rather than a `WriteOptions` field. The getter returns the
-    /// sheet name as a 1:1 placeholder so callers can mirror the
-    /// Java shape; the actual path lives on `ExcelWriter::output_path()`.
     #[must_use]
     pub fn file(&self) -> Option<&std::path::Path> {
-        None
+        self.output_file.as_deref()
     }
 
     /// Sets the output file path. (Java `setFile(File)`)
-    ///
-    /// Rust port: no-op; configure file via
-    /// `EasyExcel::write(path).build()`.
-    pub fn set_file(&mut self, _file: impl Into<std::path::PathBuf>) -> &mut Self {
+    pub fn set_file(&mut self, file: impl Into<std::path::PathBuf>) -> &mut Self {
+        self.output_file = Some(file.into());
+        self
+    }
+
+    /// Returns the template file path. (Java `getTemplateFile()`)
+    #[must_use]
+    pub fn template_file(&self) -> Option<&std::path::Path> {
+        self.options.template_file.as_deref()
+    }
+
+    /// Sets the template file and clears an input-stream template.
+    /// (Java `setTemplateFile(File)`)
+    pub fn set_template_file(&mut self, template_file: impl Into<std::path::PathBuf>) -> &mut Self {
+        self.options.template_file = Some(template_file.into());
+        self.options.template_bytes = None;
+        self
+    }
+
+    /// Sets an already-buffered input-stream template and clears the file.
+    /// (Java `setTemplateInputStream(InputStream)`)
+    pub fn set_template_bytes(&mut self, template_bytes: impl Into<Vec<u8>>) -> &mut Self {
+        self.options.template_bytes = Some(template_bytes.into());
+        self.options.template_file = None;
         self
     }
 
@@ -149,9 +169,13 @@ impl Default for WriteWorkbook {
 
 impl From<WriteOptions> for WriteWorkbook {
     fn from(options: WriteOptions) -> Self {
+        let excel_type = options
+            .excel_type
+            .unwrap_or(easyexcel_core::support::ExcelTypeEnum::Xlsx);
         Self {
             options,
-            excel_type: easyexcel_core::support::ExcelTypeEnum::Xlsx,
+            excel_type,
+            output_file: None,
         }
     }
 }

@@ -18,6 +18,15 @@ impl SheetHandlerExecutionChain {
         }
     }
 
+    /// Creates a chain whose head contains `handler`. (Java constructor)
+    #[must_use]
+    pub fn with_handler(handler: Box<dyn easyexcel_core::WriteHandler>) -> Self {
+        Self {
+            handler: Some(handler),
+            next: None,
+        }
+    }
+
     /// Appends a handler. (Java `addLast`)
     pub fn add_last(&mut self, handler: Box<dyn easyexcel_core::WriteHandler>) {
         match self.next.as_mut() {
@@ -31,10 +40,27 @@ impl SheetHandlerExecutionChain {
         }
     }
 
-    /// Runs the sheet lifecycle. (Java `afterSheetCreate`)
-    pub fn after_sheet_create(&mut self, context: &WriteSheetContext) -> easyexcel_core::Result<()> {
+    /// Runs Java `beforeSheetCreate` in chain order.
+    pub fn before_sheet_create(
+        &mut self,
+        context: &WriteSheetContext,
+    ) -> easyexcel_core::Result<()> {
         if let Some(handler) = self.handler.as_mut() {
-            handler.after_sheet(context)?;
+            handler.before_sheet_create(context)?;
+        }
+        if let Some(next) = self.next.as_mut() {
+            next.before_sheet_create(context)?;
+        }
+        Ok(())
+    }
+
+    /// Runs Java `afterSheetCreate` in chain order.
+    pub fn after_sheet_create(
+        &mut self,
+        context: &WriteSheetContext,
+    ) -> easyexcel_core::Result<()> {
+        if let Some(handler) = self.handler.as_mut() {
+            handler.after_sheet_create(context)?;
         }
         if let Some(next) = self.next.as_mut() {
             next.after_sheet_create(context)?;

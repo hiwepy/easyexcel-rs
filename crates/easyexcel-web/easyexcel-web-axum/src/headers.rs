@@ -26,15 +26,11 @@ pub fn excel_xlsx_attachment_headers(file_name: &str) -> HeaderMap {
     let disposition = format!("attachment;filename*=utf-8''{encoded}.xlsx");
 
     let mut headers = HeaderMap::new();
-    headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static(XLSX_CONTENT_TYPE),
-    );
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(XLSX_CONTENT_TYPE));
     headers.insert(
         CONTENT_DISPOSITION,
-        HeaderValue::from_str(&disposition).unwrap_or_else(|_| {
-            HeaderValue::from_static("attachment;filename=download.xlsx")
-        }),
+        HeaderValue::from_str(&disposition)
+            .unwrap_or_else(|_| HeaderValue::from_static("attachment;filename=download.xlsx")),
     );
     headers
 }

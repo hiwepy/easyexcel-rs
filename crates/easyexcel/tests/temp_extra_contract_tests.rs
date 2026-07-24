@@ -67,9 +67,7 @@ fn temp_dataformat_date_fixtures() {
     ] {
         let path = fixture(name);
         assert_fixture(&path);
-        let rows = EasyExcel::read_dynamic_sync(&path)
-            .do_read_sync()
-            .unwrap();
+        let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
         assert!(!rows.is_empty(), "{name} must yield rows");
     }
 }
@@ -185,13 +183,20 @@ fn temp_issue2443_date_fixtures() {
 fn temp_lock_stress_intentionally_skipped() {
     use easyexcel_derive::ExcelRow;
     #[derive(Debug, Clone, ExcelRow)]
-    struct LockRow { #[excel(name = "v")] v: String }
+    struct LockRow {
+        #[excel(name = "v")]
+        v: String,
+    }
     let path = std::env::temp_dir().join("easyexcel_lock_probe.xlsx");
     let _ = std::fs::remove_file(&path);
     let rows: Vec<LockRow> = (0..3).map(|i| LockRow { v: format!("r{i}") }).collect();
-    easyexcel::EasyExcel::write(&path).sheet("S").do_write(rows).unwrap();
+    easyexcel::EasyExcel::write(&path)
+        .sheet("S")
+        .do_write(rows)
+        .unwrap();
     assert!(path.exists());
     let read: Vec<easyexcel_core::DynamicRow> = easyexcel::EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync().unwrap_or_default();
+        .do_read_sync()
+        .unwrap_or_default();
     assert!(!read.is_empty());
 }

@@ -8,13 +8,16 @@ use super::blank_record_handler::BlankCell;
 
 /// Mirrors Java `RkRecordHandler`.
 #[derive(Debug, Default)]
-pub struct RkRecordHandler;
+pub struct RkRecordHandler {
+    /// Most recently decoded RK placement using Java's empty-cell quirk.
+    pub last_cell: Option<BlankCell>,
+}
 
 impl RkRecordHandler {
     /// Creates an idle handler.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
     /// Java `RkRecordHandler.processRecord` — always yields an empty cell.
@@ -35,7 +38,7 @@ impl XlsRecordHandler for RkRecordHandler {
         }
         let row = u16::from_le_bytes([data[0], data[1]]) as u32;
         let column = u16::from_le_bytes([data[2], data[3]]) as usize;
-        let _ = Self::process_rk(row, column);
+        self.last_cell = Some(Self::process_rk(row, column));
     }
 }
 

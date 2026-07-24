@@ -16,9 +16,7 @@ impl SyncReadListener {
     /// Creates an empty listener.
     #[must_use]
     pub const fn new() -> Self {
-        Self {
-            list: Vec::new(),
-        }
+        Self { list: Vec::new() }
     }
 
     /// Returns the collected list. (Java `getList()`)

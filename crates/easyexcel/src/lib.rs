@@ -11,13 +11,14 @@ use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
+pub use easyexcel_core::metadata::GlobalConfiguration;
 pub use easyexcel_core::*;
 pub use easyexcel_derive::ExcelRow;
-pub use easyexcel_core::metadata::GlobalConfiguration;
 pub use easyexcel_reader::{
-    apply_global_configuration_to_read_options, Ehcache, EternalReadCacheSelector, ExcelLocale,
-    ExcelReader, global_configuration_from_read_options, MapCache, ReadCache, ReadCacheMode,
+    CompatibleExcelReaderBuilder, CompatibleExcelReaderSheetBuilder, Ehcache,
+    EternalReadCacheSelector, ExcelLocale, ExcelReader, MapCache, ReadCache, ReadCacheMode,
     ReadCacheSelector, SimpleReadCacheSelector, StoredReadCacheSelector, XlsCache,
+    apply_global_configuration_to_read_options, global_configuration_from_read_options,
 };
 use easyexcel_reader::{
     ReadOptions, ScientificFormatMode, SheetSelector, read_csv, read_xls, read_xlsx,
@@ -27,19 +28,21 @@ pub use easyexcel_template::{
     TemplateSheet, fill_xlsx_template, fill_xlsx_template_list,
 };
 pub use easyexcel_writer::{
-    CellStyle, CsvEncodingWriter, ExcelBuilder, ExcelBuilderImpl, ExcelOutputStream,
-    ExcelWriter, HorizontalAlignment, HorizontalCellStyleStrategy,
+    CellStyle, CompatibleExcelWriterBuilder, CompatibleExcelWriterOutputStreamBuilder,
+    CompatibleExcelWriterSheetBuilder, CsvEncodingWriter, ExcelBuilder, ExcelBuilderImpl,
+    ExcelOutputStream, ExcelWriter, HorizontalAlignment, HorizontalCellStyleStrategy,
     LongestMatchColumnWidthStyleStrategy, LoopMergeStrategy, MergeRange,
     SimpleColumnWidthStyleStrategy, SimpleRowHeightStyleStrategy, VerticalAlignment,
-    VerticalCellStyleStrategy, WriteOptions, WriteSheet, write_csv_to_buffer,
-    write_csv_to_writer, write_xls, write_xls_to_writer, write_xlsx_to_writer,
-};
-pub use excel_builder::{
-    builder_from_writer, do_fill_template, do_fill_template_with_config,
-    fill_builder_from_writer, wire_template_fill,
+    VerticalCellStyleStrategy, WriteOptions, WriteSheet, write_csv_to_buffer, write_csv_to_writer,
+    write_xls, write_xls_to_writer, write_xlsx_to_writer,
 };
 use easyexcel_writer::{
-    write_csv_with_handlers, write_xls_with_handlers, write_xlsx_with_handlers,
+    DefaultWriteHandlerLoader, write_csv_with_handlers, write_xls_with_handlers,
+    write_xlsx_with_handlers,
+};
+pub use excel_builder::{
+    builder_from_writer, do_fill_template, do_fill_template_with_config, fill_builder_from_writer,
+    wire_template_fill,
 };
 
 /// Static factory matching Java `EasyExcel`'s entry point.
@@ -51,6 +54,29 @@ pub struct EasyExcel;
 pub type EasyExcelFactory = EasyExcel;
 
 impl EasyExcel {
+    /// Starts Java's path-independent `read()` builder.
+    #[must_use]
+    pub fn reader() -> CompatibleExcelReaderBuilder {
+        CompatibleExcelReaderBuilder::new()
+    }
+
+    /// Starts Java's `read(File/String)` builder without a listener.
+    #[must_use]
+    pub fn reader_from_path(path: impl Into<PathBuf>) -> CompatibleExcelReaderBuilder {
+        Self::reader().file(path)
+    }
+
+    /// Starts Java's `read(InputStream)` builder.
+    ///
+    /// The stream is materialised into an automatically deleted temporary
+    /// file so the existing XLSX, XLS, and CSV engines retain random access.
+    pub fn reader_from_input_stream<R>(input: R) -> Result<CompatibleExcelReaderBuilder>
+    where
+        R: Read,
+    {
+        Self::reader().input_stream(input)
+    }
+
     /// Starts an event-driven XLSX, XLS, or CSV read selected from the path extension.
     pub fn read<T, L>(path: impl Into<PathBuf>, listener: L) -> ExcelReaderBuilder<T, L>
     where
@@ -107,6 +133,56 @@ impl EasyExcel {
         }
     }
 
+    /// Starts Java's path-independent `write()` builder.
+    #[must_use]
+    pub fn writer() -> CompatibleExcelWriterBuilder {
+        CompatibleExcelWriterBuilder::new()
+    }
+
+    /// Starts Java's `write(File/String)` builder.
+    #[must_use]
+    pub fn writer_to_path(path: impl Into<PathBuf>) -> CompatibleExcelWriterBuilder {
+        Self::writer().file(path)
+    }
+
+    /// Starts Java's `write(OutputStream)` builder.
+    #[must_use]
+    pub fn writer_to_output_stream<W>(
+        output: ExcelOutputStream<W>,
+    ) -> CompatibleExcelWriterOutputStreamBuilder<W>
+    where
+        W: Write + Send + 'static,
+    {
+        Self::writer().output_stream(output)
+    }
+
+    /// Builds Java's unbound `readSheet()` metadata builder.
+    #[must_use]
+    pub fn read_sheet() -> CompatibleExcelReaderSheetBuilder {
+        CompatibleExcelReaderSheetBuilder::new()
+    }
+
+    /// Builds Java's unbound `readSheet(Integer)` metadata builder.
+    #[must_use]
+    pub fn read_sheet_index(index: i32) -> CompatibleExcelReaderSheetBuilder {
+        Self::read_sheet().sheet_no(index)
+    }
+
+    /// Builds Java's unbound `readSheet(String)` metadata builder.
+    #[must_use]
+    pub fn read_sheet_name(name: impl Into<String>) -> CompatibleExcelReaderSheetBuilder {
+        Self::read_sheet().sheet_name(name)
+    }
+
+    /// Builds Java's unbound `readSheet(Integer, String)` metadata builder.
+    #[must_use]
+    pub fn read_sheet_with(
+        index: i32,
+        name: impl Into<String>,
+    ) -> CompatibleExcelReaderSheetBuilder {
+        Self::read_sheet().sheet_no(index).sheet_name(name)
+    }
+
     /// Creates typed worksheet metadata for a stateful [`ExcelWriter`].
     #[must_use]
     pub fn writer_sheet<T>(name: impl Into<String>) -> WriteSheet<T>
@@ -123,6 +199,35 @@ impl EasyExcel {
         T: ExcelRow,
     {
         WriteSheet::new_index(index)
+    }
+
+    /// Builds Java's unbound `writerSheet()` metadata builder.
+    #[must_use]
+    pub fn writer_sheet_builder() -> CompatibleExcelWriterSheetBuilder {
+        CompatibleExcelWriterSheetBuilder::new()
+    }
+
+    /// Builds Java's unbound `writerSheet(Integer)` metadata builder.
+    #[must_use]
+    pub fn writer_sheet_builder_index(index: i32) -> CompatibleExcelWriterSheetBuilder {
+        Self::writer_sheet_builder().sheet_no(index)
+    }
+
+    /// Builds Java's unbound `writerSheet(String)` metadata builder.
+    #[must_use]
+    pub fn writer_sheet_builder_name(name: impl Into<String>) -> CompatibleExcelWriterSheetBuilder {
+        Self::writer_sheet_builder().sheet_name(name)
+    }
+
+    /// Builds Java's unbound `writerSheet(Integer, String)` metadata builder.
+    #[must_use]
+    pub fn writer_sheet_builder_with(
+        index: i32,
+        name: impl Into<String>,
+    ) -> CompatibleExcelWriterSheetBuilder {
+        Self::writer_sheet_builder()
+            .sheet_no(index)
+            .sheet_name(name)
     }
 
     /// Creates a `WriteTable` value mirroring Java
@@ -143,6 +248,12 @@ impl EasyExcel {
     #[must_use]
     pub fn writer_table_builder(table_no: i32) -> easyexcel_writer::ExcelWriterTableBuilder {
         easyexcel_writer::ExcelWriterTableBuilder::new().table_no(table_no)
+    }
+
+    /// Builds Java's unbound `writerTable()` builder.
+    #[must_use]
+    pub fn writer_table_builder_default() -> easyexcel_writer::ExcelWriterTableBuilder {
+        easyexcel_writer::ExcelWriterTableBuilder::new()
     }
 
     /// Fills scalar `{key}` placeholders in an existing XLSX template.
@@ -311,6 +422,30 @@ where
     T: ExcelRow,
     L: ReadListener<T>,
 {
+    /// Registers another listener after the listener supplied to
+    /// [`EasyExcel::read`].
+    ///
+    /// Java appends listeners to `ReadBasicParameter.customReadListenerList`.
+    /// Rust returns a builder carrying an ordered composite listener. `T:
+    /// Clone` is required because Rust listeners take ownership of each row,
+    /// whereas Java listeners share the same object reference.
+    #[must_use]
+    pub fn register_read_listener<Next>(
+        self,
+        listener: Next,
+    ) -> ExcelReaderBuilder<T, CompositeReadListener<T, L, Next>>
+    where
+        T: Clone,
+        Next: ReadListener<T>,
+    {
+        ExcelReaderBuilder {
+            path: self.path,
+            options: self.options,
+            listener: CompositeReadListener::new(self.listener, listener),
+            marker: PhantomData,
+        }
+    }
+
     /// Selects a worksheet by name or zero-based index.
     #[must_use]
     pub fn sheet(mut self, sheet: impl IntoSheetSelector) -> Self {
@@ -379,6 +514,19 @@ where
         C: Converter<V> + Send + Sync + 'static,
     {
         self.options.converters.register::<V, C>(converter);
+        self
+    }
+
+    /// Registers a converter that receives empty cells.
+    ///
+    /// Mirrors Java's `registerConverter(NullableObjectConverter)`.
+    #[must_use]
+    pub fn register_nullable_converter<V, C>(mut self, converter: C) -> Self
+    where
+        V: 'static,
+        C: NullableObjectConverter<V> + Send + Sync + 'static,
+    {
+        self.options.converters.register_nullable::<V, C>(converter);
         self
     }
 
@@ -568,6 +716,17 @@ where
         self
     }
 
+    /// Registers a nullable converter while collecting rows.
+    #[must_use]
+    pub fn register_nullable_converter<V, C>(mut self, converter: C) -> Self
+    where
+        V: 'static,
+        C: NullableObjectConverter<V> + Send + Sync + 'static,
+    {
+        self.options.converters.register_nullable::<V, C>(converter);
+        self
+    }
+
     /// Selects the XLSX shared-string cache backend while collecting rows.
     #[must_use]
     pub fn read_cache(mut self, mode: ReadCacheMode) -> Self {
@@ -695,6 +854,14 @@ impl<T> ExcelWriterBuilder<T>
 where
     T: ExcelRow,
 {
+    /// Sets an explicit output type, overriding the file extension.
+    /// (Java `ExcelWriterBuilder.excelType`)
+    #[must_use]
+    pub const fn excel_type(mut self, excel_type: easyexcel_core::support::ExcelTypeEnum) -> Self {
+        self.options.excel_type = Some(excel_type);
+        self
+    }
+
     /// Sets the worksheet name.
     #[must_use]
     pub fn sheet(mut self, name: impl Into<String>) -> Self {
@@ -714,6 +881,25 @@ where
     #[must_use]
     pub const fn need_head(mut self, need_head: bool) -> Self {
         self.options.need_head = need_head;
+        self
+    }
+
+    /// Enables or disables Java's default header style.
+    #[must_use]
+    pub fn use_default_style(mut self, enabled: bool) -> Self {
+        self.options.use_default_style = enabled;
+        self.options.head_style = if enabled {
+            CellStyle::new().bold(true)
+        } else {
+            CellStyle::new()
+        };
+        self
+    }
+
+    /// Controls automatic merging of equal multi-level headers.
+    #[must_use]
+    pub const fn automatic_merge_head(mut self, enabled: bool) -> Self {
+        self.options.automatic_merge_head = enabled;
         self
     }
 
@@ -833,6 +1019,17 @@ where
         C: Converter<V> + Send + Sync + 'static,
     {
         self.options.converters.register::<V, C>(converter);
+        self
+    }
+
+    /// Registers a nullable converter for this workbook.
+    #[must_use]
+    pub fn register_nullable_converter<V, C>(mut self, converter: C) -> Self
+    where
+        V: 'static,
+        C: NullableObjectConverter<V> + Send + Sync + 'static,
+    {
+        self.options.converters.register_nullable::<V, C>(converter);
         self
     }
 
@@ -1029,7 +1226,13 @@ where
     {
         let has_template =
             self.options.template_file.is_some() || self.options.template_bytes.is_some();
-        if is_csv_path(&self.path) {
+        let excel_type = effective_write_type(&self.path, &self.options);
+        self.handlers
+            .extend(DefaultWriteHandlerLoader::load_default_handler_for(
+                self.options.use_default_style,
+                excel_type,
+            ));
+        if is_csv_write(&self.path, &self.options) {
             if has_template {
                 return Err(ExcelError::Unsupported(
                     "csv cannot use template.".to_owned(),
@@ -1041,7 +1244,7 @@ where
                 rows,
                 &mut self.handlers,
             )
-        } else if is_xls_path(&self.path) {
+        } else if is_xls_write(&self.path, &self.options) {
             // Java: EasyExcel.write(...).excelType(ExcelTypeEnum.XLS).sheet().doWrite(...)
             // Minimal BIFF8; with_template uses value-preserving rewrite (see biff8::template).
             write_xls_with_handlers::<T, I>(
@@ -1079,9 +1282,56 @@ where
     /// # Errors
     ///
     /// Returns template, fill, CSV/XLS unsupported, or output errors.
-    pub fn do_fill(self, data: &TemplateData) -> Result<()> {
+    pub fn do_fill(self, data: &dyn std::any::Any) -> Result<()> {
         let sheet = WriteSheet::<DynamicRow>::from_options(self.options.clone());
         do_fill_template(self.build(), data, &sheet)
+    }
+
+    /// Fills scalar or collection data with Java-compatible `FillConfig`.
+    ///
+    /// Mirrors Java `ExcelWriterSheetBuilder.doFill(Object, FillConfig)`.
+    pub fn do_fill_with_config(
+        self,
+        data: &dyn std::any::Any,
+        fill_config: FillConfig,
+    ) -> Result<()> {
+        let builder_config = easyexcel_writer::BuilderFillConfig::new()
+            .direction(match fill_config.get_direction() {
+                FillDirection::Vertical => WriteDirection::Vertical,
+                FillDirection::Horizontal => WriteDirection::Horizontal,
+            })
+            .force_new_row(fill_config.get_force_new_row())
+            .auto_style(fill_config.get_auto_style());
+        let sheet = WriteSheet::<DynamicRow>::from_options(self.options.clone());
+        do_fill_template_with_config(self.build(), data, builder_config, &sheet)
+    }
+
+    /// Resolves fill data lazily, then delegates to [`Self::do_fill`].
+    ///
+    /// Mirrors Java `doFill(Supplier<Object>)`.
+    pub fn do_fill_with<D, F>(self, supplier: F) -> Result<()>
+    where
+        D: std::any::Any,
+        F: FnOnce() -> D,
+    {
+        let data = supplier();
+        self.do_fill(&data)
+    }
+
+    /// Resolves fill data lazily and applies an explicit fill configuration.
+    ///
+    /// Mirrors Java `doFill(Supplier<Object>, FillConfig)`.
+    pub fn do_fill_with_config_supplier<D, F>(
+        self,
+        supplier: F,
+        fill_config: FillConfig,
+    ) -> Result<()>
+    where
+        D: std::any::Any,
+        F: FnOnce() -> D,
+    {
+        let data = supplier();
+        self.do_fill_with_config(&data, fill_config)
     }
 }
 
@@ -1107,7 +1357,14 @@ where
     {
         let has_template = self.builder.options.template_file.is_some()
             || self.builder.options.template_bytes.is_some();
-        if is_csv_path(&self.builder.path) {
+        let excel_type = effective_write_type(&self.builder.path, &self.builder.options);
+        self.builder
+            .handlers
+            .extend(DefaultWriteHandlerLoader::load_default_handler_for(
+                self.builder.options.use_default_style,
+                excel_type,
+            ));
+        if is_csv_write(&self.builder.path, &self.builder.options) {
             if has_template {
                 return Err(ExcelError::Unsupported(
                     "csv cannot use template.".to_owned(),
@@ -1123,7 +1380,7 @@ where
             self.output.flush()?;
             return Ok(());
         }
-        if is_xls_path(&self.builder.path) {
+        if is_xls_write(&self.builder.path, &self.builder.options) {
             // Java stream write with ExcelTypeEnum.XLS — BIFF8 (+ optional template).
             return write_xls_to_writer::<T, I, _>(
                 &self.builder.path,
@@ -1192,6 +1449,33 @@ fn is_csv_path(path: &Path) -> bool {
 fn is_xls_path(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("xls"))
+}
+
+fn is_csv_write(path: &Path, options: &WriteOptions) -> bool {
+    match options.excel_type {
+        Some(excel_type) => excel_type == easyexcel_core::support::ExcelTypeEnum::Csv,
+        None => is_csv_path(path),
+    }
+}
+
+fn is_xls_write(path: &Path, options: &WriteOptions) -> bool {
+    match options.excel_type {
+        Some(excel_type) => excel_type == easyexcel_core::support::ExcelTypeEnum::Xls,
+        None => is_xls_path(path),
+    }
+}
+
+fn effective_write_type(
+    path: &Path,
+    options: &WriteOptions,
+) -> easyexcel_core::support::ExcelTypeEnum {
+    if is_csv_write(path, options) {
+        easyexcel_core::support::ExcelTypeEnum::Csv
+    } else if is_xls_write(path, options) {
+        easyexcel_core::support::ExcelTypeEnum::Xls
+    } else {
+        easyexcel_core::support::ExcelTypeEnum::Xlsx
+    }
 }
 
 #[cfg(test)]

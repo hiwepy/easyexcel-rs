@@ -9,6 +9,7 @@ use std::sync::Arc;
 use calamine::{Data, ExcelDateTime, ExcelDateTimeType, Range, Reader, Xls, open_workbook};
 #[cfg(test)]
 use calamine::{DataRef, Xlsx};
+use easyexcel_core::converter::default_converter_loader::load_default_read_converter;
 use easyexcel_core::{
     AnalysisContext, CellExtra, CellExtraType, CellValue, ConverterRegistry, CsvCharset,
     CustomReadObject, ErrorAction, ExcelError, ExcelRow, FormulaData, ReadDefaultReturn,
@@ -30,14 +31,18 @@ pub mod metadata;
 /// Java `com.alibaba.excel.read` 包路径镜像（含 `ReadBasicParameter`）。
 pub mod read;
 
-pub mod holder;
 pub mod builder;
+pub mod holder;
 pub mod listener;
 pub mod processor;
 
 mod excel_reader;
 mod global_configuration;
 
+pub use analysis::v03::XlsSaxAnalyser;
+pub use analysis::v07::XlsxSaxAnalyser;
+pub use builder::excel_reader_builder::ExcelReaderBuilder as CompatibleExcelReaderBuilder;
+pub use builder::excel_reader_sheet_builder::ExcelReaderSheetBuilder as CompatibleExcelReaderSheetBuilder;
 pub use cache::{
     Ehcache, EternalReadCacheSelector, MapCache, ReadCache, ReadCacheSelector,
     SimpleReadCacheSelector, XlsCache,
@@ -48,8 +53,6 @@ pub use global_configuration::{
 };
 pub use locale::ExcelLocale;
 pub use read_cache::ReadCacheMode;
-pub use analysis::v03::XlsSaxAnalyser;
-pub use analysis::v07::XlsxSaxAnalyser;
 
 use xls_display::load_xls_displays;
 use xlsx_rows::{XlsxDisplayCellReader, XlsxRowMetadata};
@@ -191,7 +194,7 @@ impl Default for ReadOptions {
             extra_read: HashSet::new(),
             password: None,
             charset: CsvCharset::default(),
-            converters: ConverterRegistry::default(),
+            converters: load_default_read_converter(),
             read_cache: ReadCacheMode::default(),
             read_cache_selector: None,
         }
@@ -212,7 +215,6 @@ where
     read_xlsx_source::<T, L>(&source, options, listener)
 }
 
-
 /// Discovers worksheet names in workbook order.
 ///
 /// Mirrors Java `XlsxSaxAnalyser` constructor sheet enumeration via `XSSFReader`.
@@ -224,11 +226,7 @@ pub fn list_xlsx_sheets(path: &Path, options: &ReadOptions) -> Result<Vec<(usize
     let source = open_xlsx_source(path, options)?;
     let reader = source.reader()?;
     let metadata = xlsx_rows::XlsxRowMetadata::new_with_cache(reader, options)?;
-    Ok(metadata
-        .sheet_names()
-        .into_iter()
-        .enumerate()
-        .collect())
+    Ok(metadata.sheet_names().into_iter().enumerate().collect())
 }
 
 /// Discovers worksheet names in workbook order.
@@ -242,11 +240,7 @@ pub fn list_xlsx_sheets(path: &Path, options: &ReadOptions) -> Result<Vec<(usize
 pub fn list_xls_sheets(path: &Path, options: &ReadOptions) -> Result<Vec<(usize, String)>> {
     reject_extra_read(options, "XLS")?;
     let workbook: Xls<_> = open_workbook(path).map_err(format_error)?;
-    Ok(workbook
-        .sheet_names()
-        .into_iter()
-        .enumerate()
-        .collect())
+    Ok(workbook.sheet_names().into_iter().enumerate().collect())
 }
 
 fn open_xlsx_source(path: &Path, options: &ReadOptions) -> Result<XlsxSource> {
@@ -405,7 +399,11 @@ where
     let sheets = select_xls_sheets(workbook.worksheets(), &options.sheet, options.auto_trim)?;
     // Overlay BIFF FORMAT/XF display strings so STRING mode matches Java
     // BuiltinFormats (e.g. short date id 22 → `yyyy-m-d h:mm`).
-    let displays = load_xls_displays(path, options.use_1904_windowing, &options.locale.formatter());
+    let displays = load_xls_displays(
+        path,
+        options.use_1904_windowing,
+        &options.locale.formatter(),
+    );
     for (sheet_no, sheet_name, range) in sheets {
         let mut consumer = TypedRowConsumer::<T> { listener };
         let sheet_displays = displays.get(sheet_no).cloned().unwrap_or_default();
@@ -952,7 +950,8 @@ where
         .with_display_values(display_values)
         .with_decimal_values(decimal_values)
         .with_present_columns(present_columns)
-        .with_read_default_return(options.read_default_return);
+        .with_read_default_return(options.read_default_return)
+        .with_use_1904_windowing(options.use_1904_windowing);
     match T::from_row_with_converters(&row, &options.converters) {
         Ok(data) => {
             let result = listener.invoke(data, &context);
@@ -977,7 +976,7 @@ fn is_empty_read_cell(cell: &CellValue) -> bool {
     cell.is_empty() || matches!(cell, CellValue::String(value) if value.is_empty())
 }
 
-fn sheet_name_matches(candidate: &str, requested: &str, auto_trim: bool) -> bool {
+pub(crate) fn sheet_name_matches(candidate: &str, requested: &str, auto_trim: bool) -> bool {
     if auto_trim {
         java_trim(candidate) == java_trim(requested)
     } else {
@@ -1063,7 +1062,7 @@ fn from_calamine(value: &DataRef<'_>, use_1904_windowing: bool) -> CellValue {
         DataRef::Int(value) => CellValue::Int(*value),
         DataRef::Float(value) => CellValue::Float(*value),
         DataRef::DateTime(value) => excel_datetime_cell(value, use_1904_windowing),
-        DataRef::Error(value) => CellValue::String(value.to_string()),
+        DataRef::Error(value) => CellValue::Error(value.to_string()),
     }
 }
 
@@ -1077,7 +1076,7 @@ fn from_data(value: &Data, use_1904_windowing: bool) -> CellValue {
         Data::Int(value) => CellValue::Int(*value),
         Data::Float(value) => CellValue::Float(*value),
         Data::DateTime(value) => excel_datetime_cell(value, use_1904_windowing),
-        Data::Error(value) => CellValue::String(value.to_string()),
+        Data::Error(value) => CellValue::Error(value.to_string()),
     }
 }
 
@@ -1105,6 +1104,6 @@ fn to_column_index(column: u32) -> Result<usize> {
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod missing_tests;
+#[cfg(test)]
+mod tests;

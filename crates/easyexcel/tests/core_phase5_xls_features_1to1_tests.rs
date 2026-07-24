@@ -6,7 +6,7 @@
 //! Naming: `mod <java_class_snake>` + `fn <java_method_snake>`.
 
 use easyexcel::EasyExcel;
-use easyexcel_core::{CellExtraType, WriteCellData, CellValue};
+use easyexcel_core::{CellExtraType, CellValue, WriteCellData};
 use easyexcel_derive::ExcelRow;
 
 // ---------------------------------------------------------------------------
@@ -30,9 +30,15 @@ mod encrypt_data_test_xls {
         let path = std::env::temp_dir().join("easyexcel_phase5_encrypt_t02.xls");
         let _ = std::fs::remove_file(&path);
         let sheet = EasyExcel::writer_sheet::<EncryptRow>("Sheet1");
-        let rows: Vec<EncryptRow> = (0..10).map(|i| EncryptRow { data: format!("n{i}") }).collect();
+        let rows: Vec<EncryptRow> = (0..10)
+            .map(|i| EncryptRow {
+                data: format!("n{i}"),
+            })
+            .collect();
         let mut writer = ExcelWriter::new(&path);
-        writer.write(rows, &sheet).expect("XLS encrypt write must succeed");
+        writer
+            .write(rows, &sheet)
+            .expect("XLS encrypt write must succeed");
         writer.finish().expect("XLS encrypt finish must succeed");
         assert!(path.exists(), "Encrypted XLS must exist");
     }
@@ -45,8 +51,8 @@ mod encrypt_data_test_xls {
 
 mod converter_data_test_xls_image {
     use super::*;
-    use easyexcel_writer::ExcelWriter;
     use easyexcel_derive::ExcelRow;
+    use easyexcel_writer::ExcelWriter;
 
     #[derive(Debug, Clone, ExcelRow)]
     struct ImageRow {
@@ -64,7 +70,9 @@ mod converter_data_test_xls_image {
         let mut writer = ExcelWriter::new(&path);
         writer.write_image(&image_data, 0, 0);
         let sheet = EasyExcel::writer_sheet::<ImageRow>("Sheet1");
-        let rows = vec![ImageRow { label: "img".into() }];
+        let rows = vec![ImageRow {
+            label: "img".into(),
+        }];
         writer.write(rows, &sheet).expect("XLS write must succeed");
         writer.finish().expect("XLS finish must succeed");
         assert!(path.exists(), "XLS with image must exist");
@@ -99,8 +107,11 @@ mod extra_data_test_xls {
     /// verify NOTE handler processes records and produces CellExtra events.
     #[test]
     fn t02_read03() {
-        let path = std::path::PathBuf::from("tests/fixtures/xls/dataformat.xls");
-        if !path.exists() { return; }
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/xls/dataformat.xls");
+        if !path.exists() {
+            return;
+        }
         // Read with extra types enabled — NOTE handler should process comments
         let result = EasyExcel::read_dynamic_sync(&path)
             .extra_read(CellExtraType::Comment)
@@ -122,8 +133,11 @@ mod xls_reader_smoke_test {
 
     #[test]
     fn t01_xls_read_smoke07() {
-        let path = std::path::PathBuf::from("tests/fixtures/xls/dataformat.xls");
-        if !path.exists() { return; }
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/xls/dataformat.xls");
+        if !path.exists() {
+            return;
+        }
         let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync();
         let _ = rows;
     }

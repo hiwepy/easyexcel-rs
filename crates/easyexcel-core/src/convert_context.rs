@@ -21,6 +21,9 @@ pub struct ConvertContext {
     pub field: &'static str,
     /// Optional format string. (Java `ExcelContentProperty.getDateTimeFormatProperty()` etc.)
     pub format: Option<&'static str>,
+    /// Whether numeric dates use Excel's 1904 date system.
+    /// (Java `GlobalConfiguration.getUse1904windowing()`)
+    pub use_1904_windowing: bool,
 }
 
 impl ConvertContext {
@@ -37,6 +40,30 @@ impl ConvertContext {
             field: self.field,
             value: value.as_text(),
             message: format!("cannot convert cell to {target}"),
+        }
+    }
+
+    /// Attaches this field's conversion location to an arbitrary converter error.
+    ///
+    /// Java wraps every exception raised by `Converter.convertToExcelData` in
+    /// `ExcelWriteDataConvertException`, so even converters that return a
+    /// generic error retain the field, row, and column from the active cell
+    /// handler context. Derive-generated Rust writers use this helper before
+    /// the backend replaces the provisional row/column with their physical
+    /// worksheet coordinates.
+    #[must_use]
+    pub fn write_error(&self, error: ExcelError) -> ExcelError {
+        let (value, message) = match error {
+            ExcelError::Data { value, message, .. } => (value, message),
+            other => (String::new(), other.to_string()),
+        };
+        ExcelError::Data {
+            sheet: self.sheet_name.clone(),
+            row: self.row_index,
+            column: self.column_index,
+            field: self.field,
+            value,
+            message,
         }
     }
 }

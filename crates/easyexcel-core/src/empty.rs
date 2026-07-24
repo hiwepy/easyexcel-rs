@@ -6,3 +6,21 @@
 /// 空标记结构，对齐 Java `Empty`（无字段）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Empty;
+
+#[cfg(test)]
+mod tests {
+    use std::any::TypeId;
+
+    use super::Empty;
+
+    #[test]
+    fn root_and_support_empty_are_the_same_zero_sized_marker() {
+        let marker = Empty;
+        assert_eq!(marker, Empty::default());
+        assert_eq!(std::mem::size_of::<Empty>(), 0);
+        assert_eq!(
+            TypeId::of::<Empty>(),
+            TypeId::of::<crate::support::empty::Empty>()
+        );
+    }
+}

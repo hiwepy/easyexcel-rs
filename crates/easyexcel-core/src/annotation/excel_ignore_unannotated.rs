@@ -5,5 +5,13 @@
 //! for 1:1 Java file parity.
 
 /// Marker type mirroring Java `@ExcelIgnoreUnannotated`.
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ExcelIgnoreUnannotated;
+
+impl ExcelIgnoreUnannotated {
+    /// Creates the type-level ignore-unannotated marker.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}

@@ -20,13 +20,16 @@ pub struct NumberCell {
 
 /// Mirrors Java `NumberRecordHandler`.
 #[derive(Debug, Default)]
-pub struct NumberRecordHandler;
+pub struct NumberRecordHandler {
+    /// Most recently decoded number cell.
+    pub last_cell: Option<NumberCell>,
+}
 
 impl NumberRecordHandler {
     /// Creates an idle handler.
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
     /// Java `NumberRecordHandler.processRecord` (without BuiltinFormats lookup).
@@ -56,7 +59,8 @@ impl XlsRecordHandler for NumberRecordHandler {
         let mut bits = [0u8; 8];
         bits.copy_from_slice(&data[6..14]);
         let value = f64::from_le_bytes(bits);
-        let _ = Self::process_number(row, column, value, 0);
+        let format_index = u16::from_le_bytes([data[4], data[5]]);
+        self.last_cell = Some(Self::process_number(row, column, value, format_index));
     }
 }
 

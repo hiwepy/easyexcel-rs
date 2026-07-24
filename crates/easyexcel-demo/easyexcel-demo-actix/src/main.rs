@@ -1,7 +1,7 @@
 //! Actix-web 版 Web 读写演示。
 
 use actix_multipart::Multipart;
-use actix_web::{web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{App, HttpResponse, HttpServer, Responder, web};
 use chrono::NaiveDateTime;
 use easyexcel::{AnalysisContext, ExcelRow, ReadListener, Result as ExcelResult};
 use easyexcel_web_actix::{
@@ -135,7 +135,10 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
             .route("/download", web::get().to(download))
-            .route("/downloadFailedUsingJson", web::get().to(download_failed_using_json))
+            .route(
+                "/downloadFailedUsingJson",
+                web::get().to(download_failed_using_json),
+            )
             .route("/upload", web::post().to(upload))
     })
     .bind(("127.0.0.1", 8081))?

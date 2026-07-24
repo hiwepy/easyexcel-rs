@@ -14,7 +14,7 @@ pub fn value_of(value: &str) -> bool {
 /// Mirrors `org.apache.commons.lang3.BooleanUtils#isTrue`.
 #[must_use]
 pub fn is_true(value: Option<bool>) -> bool {
-        matches!(value, Some(true))
+    matches!(value, Some(true))
 }
 
 /// Mirrors `org.apache.commons.lang3.BooleanUtils#isNotTrue`.

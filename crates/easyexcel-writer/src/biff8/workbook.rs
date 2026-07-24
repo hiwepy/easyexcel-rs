@@ -19,11 +19,11 @@ use chrono::{NaiveDate, NaiveDateTime, Timelike};
 use easyexcel_core::{ExcelError, Result};
 
 use super::encode::{
-    encode_rk, encode_short_unicode_string, encode_unicode_string, pack_colinfo, pack_merge_range,
-    pack_row, record, write_merge_cells, write_palette_record, BIFF8_VERSION, BLANK, BOOLERR,
-    BOUNDSHEET, BOF, CODEPAGE, COLINFO, CONTINUE, DATEMODE, DIMENSION, DT_GLOBALS, DT_WORKSHEET,
-    EOF, EXTSST, FONT, LABELSST, MAX_RECORD_DATA, MSODRAWING, NUMBER, OBJ, RK, ROW, SST, STYLE, WINDOW2, XF, XF_DATE,
-    XF_DATETIME, XF_GENERAL,
+    BIFF8_VERSION, BLANK, BOF, BOOLERR, BOUNDSHEET, CODEPAGE, COLINFO, CONTINUE, DATEMODE,
+    DIMENSION, DT_GLOBALS, DT_WORKSHEET, EOF, EXTSST, FONT, LABELSST, MAX_RECORD_DATA, MSODRAWING,
+    NUMBER, OBJ, RK, ROW, SST, STYLE, WINDOW2, XF, XF_DATE, XF_DATETIME, XF_GENERAL, encode_rk,
+    encode_short_unicode_string, encode_unicode_string, pack_colinfo, pack_merge_range, pack_row,
+    record, write_merge_cells, write_palette_record,
 };
 use super::style::Biff8StyleTable;
 
@@ -139,12 +139,10 @@ impl Biff8Sheet {
     /// Returns [`ExcelError::Format`] when the coordinate exceeds BIFF8 limits
     /// (65_536 rows × 256 columns).
     pub fn set(&mut self, row: u32, col: usize, cell: Biff8Cell) -> Result<()> {
-        let row = u16::try_from(row).map_err(|_| {
-            ExcelError::Format("BIFF8 supports at most 65536 rows".to_owned())
-        })?;
-        let col = u8::try_from(col).map_err(|_| {
-            ExcelError::Format("BIFF8 supports at most 256 columns".to_owned())
-        })?;
+        let row = u16::try_from(row)
+            .map_err(|_| ExcelError::Format("BIFF8 supports at most 65536 rows".to_owned()))?;
+        let col = u8::try_from(col)
+            .map_err(|_| ExcelError::Format("BIFF8 supports at most 256 columns".to_owned()))?;
         self.cells.insert((row, col), cell);
         Ok(())
     }
@@ -212,18 +210,13 @@ impl Biff8Book {
     /// Encodes image bytes as BIFF8 Obj + MSODrawing records (Escher BSE
     /// container) and appends them to extra_bytes. This produces output
     /// compatible with POI's HSSFWorkbook image writing.
-    pub fn write_image(
-        &mut self,
-        image_data: &[u8],
-        col: u8,
-        row: u32,
-    ) {
+    pub fn write_image(&mut self, image_data: &[u8], col: u8, row: u32) {
         // Determine image type from magic bytes
         let blip_type: u8 = if image_data.len() >= 2 {
             match &image_data[..2] {
                 [0xFF, 0xD8] => 0x07, // JPEG
                 [0x89, b'P'] => 0x09, // PNG
-                _ => 0x07,             // default JPEG
+                _ => 0x07,            // default JPEG
             }
         } else {
             0x07
@@ -238,11 +231,11 @@ impl Biff8Book {
         obj.extend_from_slice(&0x0015u16.to_le_bytes()); // ftCmo
         obj.extend_from_slice(&0x0012u16.to_le_bytes()); // cbCmo = 18
         obj.extend_from_slice(&0x0008u16.to_le_bytes()); // ot = Picture
-        obj.extend_from_slice(&obj_id.to_le_bytes());    // id
+        obj.extend_from_slice(&obj_id.to_le_bytes()); // id
         obj.extend_from_slice(&0x6011u16.to_le_bytes()); // grbit
-        obj.extend_from_slice(&[0u8; 4]);                // reserved
-        obj.extend_from_slice(&[0u8; 4]);                // reserved
-        obj.extend_from_slice(&[0u8; 2]);                // reserved
+        obj.extend_from_slice(&[0u8; 4]); // reserved
+        obj.extend_from_slice(&[0u8; 4]); // reserved
+        obj.extend_from_slice(&[0u8; 2]); // reserved
         // ftEnd
         obj.extend_from_slice(&0x0000u16.to_le_bytes()); // ftEnd
         obj.extend_from_slice(&0x0000u16.to_le_bytes()); // cbEnd
@@ -253,29 +246,29 @@ impl Biff8Book {
         // === MsofbtDggContainer ===
         let dgg_start = drawing.len();
         drawing.extend_from_slice(&[0x0F, 0x00, 0x00, 0xF0]); // ver+inst+type
-        drawing.extend_from_slice(&0u32.to_le_bytes());        // length placeholder
+        drawing.extend_from_slice(&0u32.to_le_bytes()); // length placeholder
         // MsofbtDgg
         drawing.extend_from_slice(&[0x00, 0x00, 0x00, 0xF0]); // ver+inst+type
         drawing.extend_from_slice(&0x0000_0008u32.to_le_bytes()); // length
-        drawing.extend_from_slice(&(-1i32).to_le_bytes());     // idclusters
-        drawing.extend_from_slice(&1u32.to_le_bytes());        // cSavedDrawings
-        drawing.extend_from_slice(&1u32.to_le_bytes());        // cSavedShapes
+        drawing.extend_from_slice(&(-1i32).to_le_bytes()); // idclusters
+        drawing.extend_from_slice(&1u32.to_le_bytes()); // cSavedDrawings
+        drawing.extend_from_slice(&1u32.to_le_bytes()); // cSavedShapes
         let dgg_end = drawing.len();
         let dgg_len = (dgg_end - dgg_start - 8) as u32;
         drawing[dgg_start + 4..dgg_start + 8].copy_from_slice(&dgg_len.to_le_bytes());
 
         // === MsofbtDgContainer ===
         drawing.extend_from_slice(&[0x0F, 0x00, 0x02, 0xF0]); // ver+inst+type
-        drawing.extend_from_slice(&0u32.to_le_bytes());        // length placeholder
+        drawing.extend_from_slice(&0u32.to_le_bytes()); // length placeholder
         // MsofbtDg
         drawing.extend_from_slice(&[0x00, 0x00, 0x08, 0xF0]); // ver+inst+type
         drawing.extend_from_slice(&0x0000_0008u32.to_le_bytes()); // length
-        drawing.extend_from_slice(&1u32.to_le_bytes());         // drawingId
-        drawing.extend_from_slice(&1u32.to_le_bytes());         // cLastSpId
+        drawing.extend_from_slice(&1u32.to_le_bytes()); // drawingId
+        drawing.extend_from_slice(&1u32.to_le_bytes()); // cLastSpId
         // MsofbtSpgrContainer
         drawing.extend_from_slice(&[0x0F, 0x00, 0x03, 0xF0]); // ver+inst+type
         let spgr_start = drawing.len();
-        drawing.extend_from_slice(&0u32.to_le_bytes());        // length placeholder
+        drawing.extend_from_slice(&0u32.to_le_bytes()); // length placeholder
         // MsofbtSpContainer
         drawing.extend_from_slice(&[0x0F, 0x00, 0x04, 0xF0]); // ver+inst+type
         let sp_start = drawing.len();
@@ -283,8 +276,8 @@ impl Biff8Book {
         // MsofbtSp
         drawing.extend_from_slice(&[0x00, 0x00, 0x0A, 0xF0]); // ver+inst+type
         drawing.extend_from_slice(&0x0000_0008u32.to_le_bytes()); // length
-        drawing.extend_from_slice(&obj_id.to_le_bytes());       // shapeId
-        drawing.extend_from_slice(&0x0A00u16.to_le_bytes());    // flags
+        drawing.extend_from_slice(&obj_id.to_le_bytes()); // shapeId
+        drawing.extend_from_slice(&0x0A00u16.to_le_bytes()); // flags
         let sp_end = drawing.len();
         let sp_len = (sp_end - sp_start - 8) as u32;
         drawing[sp_start + 4..sp_start + 8].copy_from_slice(&sp_len.to_le_bytes());
@@ -292,7 +285,7 @@ impl Biff8Book {
         // MsofbtClientAnchor
         drawing.extend_from_slice(&[0x00, 0x00, 0x10, 0xF0]); // ver+inst+type
         drawing.extend_from_slice(&0x0000_0008u32.to_le_bytes()); // length
-        drawing.extend_from_slice(&[0u8; 8]);                   // 8 bytes anchor
+        drawing.extend_from_slice(&[0u8; 8]); // 8 bytes anchor
 
         // MsofbtClientData
         drawing.extend_from_slice(&[0x00, 0x00, 0x11, 0xF0]); // ver+inst+type
@@ -313,17 +306,17 @@ impl Biff8Book {
         drawing.extend_from_slice(&[0x02, 0x00, 0x07, 0xF0]); // ver+inst+type (BlipType depends)
         let bse_start = drawing.len();
         drawing.extend_from_slice(&0u32.to_le_bytes()); // length placeholder
-        drawing.push(blip_type);    // btWin32
-        drawing.push(0x00);         // btMacOS
+        drawing.push(blip_type); // btWin32
+        drawing.push(0x00); // btMacOS
         drawing.extend_from_slice(&[0u8; 16]); // rgbUid (dummy)
         drawing.extend_from_slice(&0x0000u16.to_le_bytes()); // tag
         drawing.extend_from_slice(&image_size.to_le_bytes()); // size
-        drawing.extend_from_slice(&1u32.to_le_bytes());       // cRef
-        drawing.extend_from_slice(&0u32.to_le_bytes());       // foDelay
-        drawing.push(0x00);         // usage
-        drawing.push(0x00);         // cbName
-        drawing.push(0x00);         // cbSave
-        drawing.extend_from_slice(image_data);                // image bytes
+        drawing.extend_from_slice(&1u32.to_le_bytes()); // cRef
+        drawing.extend_from_slice(&0u32.to_le_bytes()); // foDelay
+        drawing.push(0x00); // usage
+        drawing.push(0x00); // cbName
+        drawing.push(0x00); // cbSave
+        drawing.extend_from_slice(image_data); // image bytes
         // Padding to 4-byte boundary
         while drawing.len() % 4 != 0 {
             drawing.push(0x00);
@@ -409,8 +402,11 @@ pub fn date_to_excel_serial_with_windowing(date: NaiveDate, use_1904_windowing: 
     let epoch = if use_1904_windowing {
         // Excel 1904 system: day 0 is 1904-01-01.
         NaiveDate::from_ymd_opt(1904, 1, 1).expect("valid epoch")
+    } else if date < NaiveDate::from_ymd_opt(1900, 3, 1).expect("valid Excel boundary") {
+        // Before March 1900 there is no fictitious leap day to compensate for.
+        NaiveDate::from_ymd_opt(1899, 12, 31).expect("valid epoch")
     } else {
-        // Excel's 1900 system epoch is 1899-12-30 (Lotus 1-2-3 leap-year bug).
+        // From March 1900 onward, include Excel's fictitious 1900-02-29.
         NaiveDate::from_ymd_opt(1899, 12, 30).expect("valid epoch")
     };
     f64::from(i32::try_from((date - epoch).num_days()).unwrap_or(i32::MAX))
@@ -658,7 +654,13 @@ fn write_worksheet(out: &mut Vec<u8>, sheet: &Biff8Sheet, sst_index: &HashMap<St
     record(out, EOF, &[]);
 }
 
-fn write_cell(out: &mut Vec<u8>, row: u16, col: u8, cell: &Biff8Cell, sst_index: &HashMap<String, u32>) {
+fn write_cell(
+    out: &mut Vec<u8>,
+    row: u16,
+    col: u8,
+    cell: &Biff8Cell,
+    sst_index: &HashMap<String, u32>,
+) {
     match &cell.value {
         Biff8Value::Blank => write_blank(out, row, col, cell.xf),
         Biff8Value::Text(text) => {
@@ -711,3 +713,36 @@ fn write_boolerr(out: &mut Vec<u8>, row: u16, col: u8, xf: u16, value: u8, is_er
     record(out, BOOLERR, &data);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn excel_serials_match_poi_across_1900_leap_bug_and_1904_epoch() {
+        assert_eq!(
+            date_to_excel_serial_with_windowing(
+                NaiveDate::from_ymd_opt(1900, 1, 1).unwrap(),
+                false
+            ),
+            1.0
+        );
+        assert_eq!(
+            date_to_excel_serial_with_windowing(
+                NaiveDate::from_ymd_opt(1900, 2, 28).unwrap(),
+                false
+            ),
+            59.0
+        );
+        assert_eq!(
+            date_to_excel_serial_with_windowing(
+                NaiveDate::from_ymd_opt(1900, 3, 1).unwrap(),
+                false
+            ),
+            61.0
+        );
+        assert_eq!(
+            date_to_excel_serial_with_windowing(NaiveDate::from_ymd_opt(1904, 1, 1).unwrap(), true),
+            0.0
+        );
+    }
+}

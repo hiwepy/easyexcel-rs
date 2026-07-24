@@ -4,9 +4,9 @@
 //! read during row conversion; missing or unreadable files return an I/O
 //! error.
 
-use crate::cell_value::CellValue;
 use crate::converter::Converter;
 use crate::excel_error::ExcelError;
+use crate::write_cell_data::WriteCellData;
 use crate::write_converter_context::WriteConverterContext;
 
 /// Java `StringImageConverter` equivalent for fields containing an image file path.
@@ -21,9 +21,9 @@ impl Converter<String> for StringImageConverter {
     fn convert_to_excel_data(
         &self,
         context: &WriteConverterContext<'_, String>,
-    ) -> Result<CellValue, ExcelError> {
+    ) -> Result<WriteCellData, ExcelError> {
         std::fs::read(context.value())
-            .map(CellValue::Image)
+            .map(WriteCellData::from_image)
             .map_err(Into::into)
     }
 }

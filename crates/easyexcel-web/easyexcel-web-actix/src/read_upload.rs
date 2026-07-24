@@ -12,7 +12,10 @@ use tempfile::Builder;
 /// # Errors
 ///
 /// 临时文件创建或写入失败时返回 I/O 错误。
-pub fn write_upload_temp(bytes: &[u8], extension: &str) -> Result<(PathBuf, tempfile::NamedTempFile)> {
+pub fn write_upload_temp(
+    bytes: &[u8],
+    extension: &str,
+) -> Result<(PathBuf, tempfile::NamedTempFile)> {
     let suffix = normalize_extension(extension);
     let mut temp = Builder::new().suffix(&suffix).tempfile()?;
     temp.as_file_mut().write_all(bytes)?;
@@ -25,11 +28,7 @@ pub fn write_upload_temp(bytes: &[u8], extension: &str) -> Result<(PathBuf, temp
 /// # Errors
 ///
 /// 解析或监听器错误时返回。
-pub fn read_upload_with_listener<T, L>(
-    bytes: &[u8],
-    extension: &str,
-    listener: L,
-) -> Result<()>
+pub fn read_upload_with_listener<T, L>(bytes: &[u8], extension: &str, listener: L) -> Result<()>
 where
     T: ExcelRow,
     L: ReadListener<T>,

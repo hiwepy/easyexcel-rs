@@ -5,6 +5,7 @@ use crate::converter_registry::ConverterRegistry;
 use crate::excel_column::ExcelColumn;
 use crate::excel_write_metadata::ExcelWriteMetadata;
 use crate::row_data::RowData;
+use crate::{CellValue, WriteCellData};
 
 /// Compile-time mapping implemented by `#[derive(ExcelRow)]`.
 ///
@@ -16,6 +17,15 @@ use crate::row_data::RowData;
 pub trait ExcelRow: Sized {
     /// Returns static column metadata. (Java `ExcelHeadProperty.getHeadMap().values()`)
     fn schema() -> &'static [ExcelColumn];
+
+    /// Returns whether this item represents a Java `null` row.
+    ///
+    /// Writers advance the physical and relative row indexes for an absent row,
+    /// but do not create a row, run conversion, or invoke row/cell handlers.
+    #[must_use]
+    fn is_absent_row(&self) -> bool {
+        false
+    }
 
     /// Returns annotation-driven dimensions used by writers. (Java
     /// `ExcelWriteHeadProperty`)
@@ -59,5 +69,113 @@ pub trait ExcelRow: Sized {
         _converters: &ConverterRegistry,
     ) -> Result<Vec<crate::cell_value::CellValue>> {
         self.to_row()
+    }
+
+    /// Returns both pre-converter field values and converted cell values.
+    ///
+    /// Derive-generated implementations evaluate the normal field encoding
+    /// before the converter chain, matching Java `converterAndSet`. Manual
+    /// implementations default to `to_row()` plus `to_row_with_converters()`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either representation cannot be produced.
+    fn to_excel_write_row(
+        &self,
+        converters: &ConverterRegistry,
+    ) -> Result<(Vec<CellValue>, Vec<WriteCellData>)> {
+        Ok((
+            self.to_row()?,
+            self.to_row_with_converters(converters)?
+                .into_iter()
+                .map(WriteCellData::new)
+                .collect(),
+        ))
+    }
+
+    /// Converts only the requested schema positions for a filtered write.
+    ///
+    /// Java removes excluded fields from `FieldCache.sortedFieldMap` before
+    /// `ExcelWriteAddExecutor` invokes converters. Derive-generated
+    /// implementations therefore skip conversion entirely for positions that
+    /// are not selected. Manual implementations retain the compatibility
+    /// default and blank excluded results after conversion.
+    fn to_excel_write_row_selected(
+        &self,
+        converters: &ConverterRegistry,
+        selected_schema_indexes: Option<&[usize]>,
+    ) -> Result<(Vec<CellValue>, Vec<WriteCellData>)> {
+        let (mut original, mut converted) = self.to_excel_write_row(converters)?;
+        if let Some(selected) = selected_schema_indexes {
+            for (index, value) in original.iter_mut().enumerate() {
+                if !selected.contains(&index) {
+                    *value = CellValue::Empty;
+                }
+            }
+            for (index, value) in converted.iter_mut().enumerate() {
+                if !selected.contains(&index) {
+                    *value = WriteCellData::new(CellValue::Empty);
+                }
+            }
+        }
+        Ok((original, converted))
+    }
+}
+
+impl<T> ExcelRow for Option<T>
+where
+    T: ExcelRow,
+{
+    fn schema() -> &'static [ExcelColumn] {
+        T::schema()
+    }
+
+    fn is_absent_row(&self) -> bool {
+        self.is_none()
+    }
+
+    fn write_metadata() -> &'static ExcelWriteMetadata {
+        T::write_metadata()
+    }
+
+    fn from_row(row: &RowData) -> Result<Self> {
+        T::from_row(row).map(Some)
+    }
+
+    fn from_row_with_converters(row: &RowData, converters: &ConverterRegistry) -> Result<Self> {
+        T::from_row_with_converters(row, converters).map(Some)
+    }
+
+    fn to_row(&self) -> Result<Vec<CellValue>> {
+        self.as_ref()
+            .map_or_else(|| Ok(Vec::new()), ExcelRow::to_row)
+    }
+
+    fn to_row_with_converters(&self, converters: &ConverterRegistry) -> Result<Vec<CellValue>> {
+        self.as_ref().map_or_else(
+            || Ok(Vec::new()),
+            |row| row.to_row_with_converters(converters),
+        )
+    }
+
+    fn to_excel_write_row(
+        &self,
+        converters: &ConverterRegistry,
+    ) -> Result<(Vec<CellValue>, Vec<WriteCellData>)> {
+        self.as_ref().map_or_else(
+            || Ok((Vec::new(), Vec::new())),
+            |row| row.to_excel_write_row(converters),
+        )
+    }
+
+    fn to_excel_write_row_selected(
+        &self,
+        converters: &ConverterRegistry,
+        selected_schema_indexes: Option<&[usize]>,
+    ) -> Result<(Vec<CellValue>, Vec<WriteCellData>)> {
+        self.as_ref().map_or_else(
+            || Ok((Vec::new(), Vec::new())),
+            |row| row.to_excel_write_row_selected(converters, selected_schema_indexes),
+        )
     }
 }

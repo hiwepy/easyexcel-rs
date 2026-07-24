@@ -832,7 +832,10 @@ fn fill_xls_template_scalar(template: &Path, output: &Path, data: &TemplateData)
     let mut pkg = easyexcel_writer::biff8::Biff8TemplatePackage::from_bytes(&bytes)?;
     let placeholders = pkg.scan_placeholders();
     for (sheet_name, row, col, text) in &placeholders {
-        let key = text.trim_start_matches('{').trim_end_matches('}').to_string();
+        let key = text
+            .trim_start_matches('{')
+            .trim_end_matches('}')
+            .to_string();
         if let Some(value) = data.values.get(&key) {
             let replacement = value.as_text();
             pkg.replace_label(sheet_name, *row, *col, &replacement)?;
@@ -856,17 +859,23 @@ fn fill_xls_template_list(
 
     for (sheet_name, row, col, text) in &placeholders {
         let key = if is_dot && text.starts_with("{.") {
-            text.trim_start_matches("{.").trim_end_matches('}').to_string()
+            text.trim_start_matches("{.")
+                .trim_end_matches('}')
+                .to_string()
         } else if !prefix.is_empty() && text.starts_with(&format!("{{{prefix}")) {
             text.trim_start_matches(&format!("{{{prefix}"))
                 .trim_end_matches('}')
                 .to_string()
         } else if text.starts_with('{') {
-            text.trim_start_matches('{').trim_end_matches('}').to_string()
+            text.trim_start_matches('{')
+                .trim_end_matches('}')
+                .to_string()
         } else {
             continue;
         };
-        if key.is_empty() { continue; }
+        if key.is_empty() {
+            continue;
+        }
         for template_row in data.rows() {
             if let Some(value) = template_row.values.get(&key) {
                 let replacement = value.as_text();
@@ -934,8 +943,7 @@ fn replace_collection_fills_in_sheet(
                 },
             );
         }
-        if fill.config.get_direction() == FillDirection::Vertical
-            && fill.config.get_force_new_row()
+        if fill.config.get_direction() == FillDirection::Vertical && fill.config.get_force_new_row()
         {
             let cursor = cursors
                 .get(&key)
@@ -977,19 +985,18 @@ fn replace_collection_fills_in_sheet(
         for data in fill.wrapper.rows() {
             for index in 0..cursor.templates.len() {
                 let template = cursor.templates[index].clone();
-                let (target_row, target_column, last_index) =
-                    match fill.config.get_direction() {
-                        FillDirection::Vertical => {
-                            let row = cursor.last_indices[index]
-                                .map_or(template.row, |last| last.saturating_add(1));
-                            (row, template.column, row)
-                        }
-                        FillDirection::Horizontal => {
-                            let column = cursor.last_indices[index]
-                                .map_or(template.column, |last| last.saturating_add(1));
-                            (template.row, column, column)
-                        }
-                    };
+                let (target_row, target_column, last_index) = match fill.config.get_direction() {
+                    FillDirection::Vertical => {
+                        let row = cursor.last_indices[index]
+                            .map_or(template.row, |last| last.saturating_add(1));
+                        (row, template.column, row)
+                    }
+                    FillDirection::Horizontal => {
+                        let column = cursor.last_indices[index]
+                            .map_or(template.column, |last| last.saturating_add(1));
+                        (template.row, column, column)
+                    }
+                };
                 validate_collection_target(target_row, target_column)?;
                 let cell = positioned_collection_cell(
                     &template.cell,

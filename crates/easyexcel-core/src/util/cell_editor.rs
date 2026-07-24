@@ -92,9 +92,21 @@ mod tests {
     #[test]
     fn numeric_editor_converts_float_to_int() {
         let editor = NumericToIntEditor;
-        assert_eq!(editor.edit(&CellValue::Float(3.14), "", 0, 0), CellValue::Int(3));
-        assert_eq!(editor.edit(&CellValue::Int(42), "", 0, 0), CellValue::Int(42));
-        assert_eq!(editor.edit(&CellValue::Bool(true), "", 0, 0), CellValue::Int(1));
-        assert_eq!(editor.edit(&CellValue::String("99".into()), "", 0, 0), CellValue::Int(99));
+        assert_eq!(
+            editor.edit(&CellValue::Float(3.14), "", 0, 0),
+            CellValue::Int(3)
+        );
+        assert_eq!(
+            editor.edit(&CellValue::Int(42), "", 0, 0),
+            CellValue::Int(42)
+        );
+        assert_eq!(
+            editor.edit(&CellValue::Bool(true), "", 0, 0),
+            CellValue::Int(1)
+        );
+        assert_eq!(
+            editor.edit(&CellValue::String("99".into()), "", 0, 0),
+            CellValue::Int(99)
+        );
     }
 }

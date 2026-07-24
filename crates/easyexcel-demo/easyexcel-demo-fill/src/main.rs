@@ -37,9 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             score_label: "{score}".to_owned(),
         }])?;
 
-    let data = TemplateData::new()
-        .with("name", "张三")
-        .with("score", 98.5);
+    let data = TemplateData::new().with("name", "张三").with("score", 98.5);
 
     EasyExcel::fill_template(&template, &output, &data)?;
 

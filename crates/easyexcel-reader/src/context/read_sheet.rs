@@ -11,8 +11,17 @@ use std::fmt;
 pub struct ReadSheet {
     /// Zero-based sheet index. (Java `ReadSheet.sheetNo`)
     sheet_no: usize,
+    /// Whether `sheet_no` was explicitly configured.
+    ///
+    /// Java stores a nullable `Integer`; Rust keeps the existing numeric getter
+    /// while retaining the null-vs-zero distinction needed by `SheetUtils.match`.
+    sheet_no_explicit: bool,
     /// Worksheet name. (Java `ReadSheet.sheetName`)
     sheet_name: String,
+    /// Sheet-scoped header row count inherited from `ReadBasicParameter`.
+    head_row_number: Option<u32>,
+    /// Sheet-scoped scientific-format override inherited from `ReadBasicParameter`.
+    use_scientific_format: Option<bool>,
 }
 
 impl ReadSheet {
@@ -27,7 +36,10 @@ impl ReadSheet {
     pub fn new(sheet_no: usize) -> Self {
         Self {
             sheet_no,
+            sheet_no_explicit: true,
             sheet_name: String::new(),
+            head_row_number: None,
+            use_scientific_format: None,
         }
     }
 
@@ -36,7 +48,22 @@ impl ReadSheet {
     pub fn with_name(sheet_no: usize, sheet_name: impl Into<String>) -> Self {
         Self {
             sheet_no,
+            sheet_no_explicit: true,
             sheet_name: sheet_name.into(),
+            head_row_number: None,
+            use_scientific_format: None,
+        }
+    }
+
+    /// Creates a name-only sheet selector.
+    ///
+    /// Mirrors `new ReadSheet()` followed by `setSheetName(...)`, leaving the
+    /// Java `sheetNo` value null.
+    #[must_use]
+    pub fn named(sheet_name: impl Into<String>) -> Self {
+        Self {
+            sheet_name: sheet_name.into(),
+            ..Self::default()
         }
     }
 
@@ -44,6 +71,12 @@ impl ReadSheet {
     #[must_use]
     pub const fn sheet_no(&self) -> usize {
         self.sheet_no
+    }
+
+    /// Returns whether a sheet number was explicitly configured.
+    #[must_use]
+    pub const fn has_sheet_no(&self) -> bool {
+        self.sheet_no_explicit
     }
 
     /// Returns the zero-based sheet index as `i32` (Java boxing). (Java `getSheetNo()`)
@@ -55,6 +88,7 @@ impl ReadSheet {
     /// Sets the zero-based sheet index. (Java `setSheetNo(Integer)`)
     pub fn set_sheet_no(&mut self, sheet_no: usize) -> &mut Self {
         self.sheet_no = sheet_no;
+        self.sheet_no_explicit = true;
         self
     }
 
@@ -70,15 +104,44 @@ impl ReadSheet {
         self
     }
 
+    /// Returns the sheet-scoped header row count.
+    ///
+    /// Mirrors `ReadBasicParameter.getHeadRowNumber()`.
+    #[must_use]
+    pub const fn head_row_number(&self) -> Option<u32> {
+        self.head_row_number
+    }
+
+    /// Overrides the workbook header row count for this sheet.
+    ///
+    /// Mirrors `ReadBasicParameter.setHeadRowNumber(Integer)`.
+    pub fn set_head_row_number(&mut self, head_row_number: u32) -> &mut Self {
+        self.head_row_number = Some(head_row_number);
+        self
+    }
+
+    /// Returns the sheet-scoped scientific-format override.
+    ///
+    /// Mirrors `ReadBasicParameter.getUseScientificFormat()`.
+    #[must_use]
+    pub const fn use_scientific_format(&self) -> Option<bool> {
+        self.use_scientific_format
+    }
+
+    /// Overrides scientific formatting for this sheet.
+    ///
+    /// Mirrors `ReadBasicParameter.setUseScientificFormat(Boolean)`.
+    pub fn set_use_scientific_format(&mut self, enabled: bool) -> &mut Self {
+        self.use_scientific_format = Some(enabled);
+        self
+    }
+
     /// Copies common basic-parameter fields from another ReadSheet.
     /// (Java `copyBasicParameter(ReadSheet other)`)
     ///
-    /// Rust port: only the identity fields are relevant. The Java
-    /// fields `headRowNumber` / `customObject` etc. live on
-    /// [`crate::ReadOptions`], not on the sheet metadata.
     pub fn copy_basic_parameter(&mut self, other: &ReadSheet) -> &mut Self {
-        self.sheet_no = other.sheet_no;
-        self.sheet_name.clone_from(&other.sheet_name);
+        self.head_row_number = other.head_row_number;
+        self.use_scientific_format = other.use_scientific_format;
         self
     }
 }

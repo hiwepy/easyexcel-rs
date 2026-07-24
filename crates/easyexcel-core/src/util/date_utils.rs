@@ -23,9 +23,7 @@ pub fn parse_date<'a>(
             return Ok(d.and_hms_opt(0, 0, 0).unwrap_or_default());
         }
     }
-    Err(ExcelError::Format(format!(
-        "parseDate failed for {str:?}"
-    )))
+    Err(ExcelError::Format(format!("parseDate failed for {str:?}")))
 }
 
 /// Mirrors `org.apache.commons.lang3.time.DateFormatUtils#format`.

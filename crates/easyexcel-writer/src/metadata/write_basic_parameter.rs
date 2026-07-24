@@ -11,18 +11,26 @@ use easyexcel_core::ConverterRegistry;
 /// `orderByIncludeColumn`). Rust reuses [`WriteOptions`] for the same
 /// data, and uses this struct as a thin handle so the 1:1 API name is
 /// preserved.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WriteBasicParameter {
     /// Mirrors `WriteBasicParameter.relativeHeadRowIndex`.
-    pub relative_head_row_index: i32,
+    pub relative_head_row_index: Option<i32>,
     /// Mirrors `WriteBasicParameter.needHead`.
-    pub need_head: bool,
+    pub need_head: Option<bool>,
     /// Mirrors `WriteBasicParameter.useDefaultStyle`.
-    pub use_default_style: bool,
+    pub use_default_style: Option<bool>,
     /// Mirrors `WriteBasicParameter.automaticMergeHead`.
-    pub automatic_merge_head: bool,
+    pub automatic_merge_head: Option<bool>,
+    /// Mirrors `WriteBasicParameter.excludeColumnIndexes`.
+    pub exclude_column_indexes: Option<Vec<usize>>,
+    /// Mirrors `WriteBasicParameter.excludeColumnFieldNames`.
+    pub exclude_column_field_names: Option<Vec<String>>,
+    /// Mirrors `WriteBasicParameter.includeColumnIndexes`.
+    pub include_column_indexes: Option<Vec<usize>>,
+    /// Mirrors `WriteBasicParameter.includeColumnFieldNames`.
+    pub include_column_field_names: Option<Vec<String>>,
     /// Mirrors `WriteBasicParameter.orderByIncludeColumn`.
-    pub order_by_include_column: bool,
+    pub order_by_include_column: Option<bool>,
     /// Mirrors `WriteBasicParameter.converters` (custom-registered converters).
     pub converters: ConverterRegistry,
 }
@@ -30,19 +38,19 @@ pub struct WriteBasicParameter {
 impl WriteBasicParameter {
     /// Returns whether a header row is required. (Java `getNeedHead()`)
     #[must_use]
-    pub const fn get_need_head(&self) -> bool {
+    pub const fn get_need_head(&self) -> Option<bool> {
         self.need_head
     }
 
     /// Returns the relative head row index. (Java `getRelativeHeadRowIndex()`)
     #[must_use]
-    pub const fn get_relative_head_row_index(&self) -> i32 {
+    pub const fn get_relative_head_row_index(&self) -> Option<i32> {
         self.relative_head_row_index
     }
 
     /// Returns whether headers are auto-merged. (Java `getAutomaticMergeHead()`)
     #[must_use]
-    pub const fn get_automatic_merge_head(&self) -> bool {
+    pub const fn get_automatic_merge_head(&self) -> Option<bool> {
         self.automatic_merge_head
     }
 }

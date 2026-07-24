@@ -8,7 +8,7 @@
 
 use easyexcel_core::Result;
 
-use super::read_cache::{new_map_cache, ReadCache, SharedStringCacheAdapter};
+use super::read_cache::{ReadCache, SharedStringCacheAdapter, new_map_cache};
 use crate::read_cache::SharedStringCache;
 
 /// In-memory shared-string cache matching Java `MapCache`.

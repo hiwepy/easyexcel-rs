@@ -102,6 +102,7 @@ mod excel_font_style;
 mod excel_horizontal_alignment;
 mod excel_underline;
 mod excel_vertical_alignment;
+mod excel_write_head_property;
 mod excel_write_metadata;
 
 pub use excel_border_style::*;
@@ -115,9 +116,10 @@ pub use excel_font_style::*;
 pub use excel_horizontal_alignment::*;
 pub use excel_underline::*;
 pub use excel_vertical_alignment::*;
+pub use excel_write_head_property::*;
 pub use excel_write_metadata::*;
 pub use metadata::property::{
-    ExcelDataValidationMeta, LoopMergeProperty, OnceAbsoluteMergeProperty,
+    ExcelDataValidationMeta, LoopMergeProperty, NumberRoundingMode, OnceAbsoluteMergeProperty,
 };
 
 // ---------------------------------------------------------------------------
@@ -130,6 +132,7 @@ mod convert_context;
 mod custom_read_object;
 mod dynamic_row;
 mod dynamic_value;
+mod java_date;
 mod page_read_listener;
 mod row_data;
 
@@ -138,6 +141,7 @@ pub use convert_context::*;
 pub use custom_read_object::*;
 pub use dynamic_row::*;
 pub use dynamic_value::*;
+pub use java_date::*;
 pub use page_read_listener::*;
 pub use row_data::*;
 
@@ -155,7 +159,10 @@ mod into_excel_cell;
 mod read_converter_context;
 mod write_converter_context;
 
+pub use converter::auto_converter::AutoConverter;
+pub use converter::converter_key_build::{ConverterKey, build_key};
 pub use converter::converter_trait::*;
+pub use converter::nullable_object_converter::NullableObjectConverter;
 pub use converter_registry::*;
 pub use from_excel_cell::*;
 pub use into_excel_cell::*;
@@ -203,10 +210,12 @@ pub type Result<T> = std::result::Result<T, ExcelError>;
 //   `com.alibaba.excel.write.handler.WriteHandler`)
 // ---------------------------------------------------------------------------
 mod read_listener;
+mod write_backend_handle;
 mod write_cell_context;
 mod write_context;
 mod write_fill_executor;
 mod write_handler;
+mod write_holder_context;
 mod write_row_context;
 
 // ---------------------------------------------------------------------------
@@ -217,10 +226,12 @@ mod write_sheet_context;
 mod write_workbook_context;
 
 pub use read_listener::*;
+pub use write_backend_handle::*;
 pub use write_cell_context::*;
 pub use write_context::*;
 pub use write_fill_executor::*;
 pub use write_handler::*;
+pub use write_holder_context::*;
 pub use write_row_context::*;
 pub use write_sheet_context::*;
 pub use write_workbook_context::*;
@@ -249,12 +260,12 @@ pub mod exception;
 // ---------------------------------------------------------------------------
 // Web JSON helpers (Java `WebTest.downloadFailedUsingJson` Fastjson body)
 // ---------------------------------------------------------------------------
-mod excel_download_error_body;
-mod empty;
 pub mod converters;
+mod empty;
+mod excel_download_error_body;
 
-pub use excel_download_error_body::*;
 pub use empty::Empty;
+pub use excel_download_error_body::*;
 
 // ---------------------------------------------------------------------------
 // Support (Java `com.alibaba.excel.support.*`)
@@ -283,6 +294,6 @@ pub mod annotation;
 pub mod util;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod missing_tests;
+#[cfg(test)]
+mod tests;

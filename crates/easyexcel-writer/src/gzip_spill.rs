@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use bigdecimal::BigDecimal;
 use chrono::{NaiveDate, NaiveDateTime};
 use easyexcel_core::{CellValue, ExcelError, ImageData, Result, RichTextStringData};
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 use tempfile::{Builder, TempDir};
 
 /// Gzip magic number (`1f 8b`) — used by tests to observe true compression.
@@ -211,15 +211,19 @@ pub fn file_has_gzip_magic(path: &Path) -> bool {
 
 fn encode_row(out: &mut Vec<u8>, cells: &[CellValue]) -> Result<()> {
     let mut body = Vec::with_capacity(cells.len() * 16);
-    write_u32(&mut body, u32::try_from(cells.len()).map_err(|_| {
-        ExcelError::Format("row cell count exceeds u32".to_owned())
-    })?);
+    write_u32(
+        &mut body,
+        u32::try_from(cells.len())
+            .map_err(|_| ExcelError::Format("row cell count exceeds u32".to_owned()))?,
+    );
     for cell in cells {
         encode_cell(&mut body, cell)?;
     }
-    write_u32(out, u32::try_from(body.len()).map_err(|_| {
-        ExcelError::Format("spill row exceeds u32 length".to_owned())
-    })?);
+    write_u32(
+        out,
+        u32::try_from(body.len())
+            .map_err(|_| ExcelError::Format("spill row exceeds u32 length".to_owned()))?,
+    );
     out.extend_from_slice(&body);
     Ok(())
 }
@@ -297,9 +301,8 @@ fn encode_cell(out: &mut Vec<u8>, value: &CellValue) -> Result<()> {
             encode_cell(out, value)?;
             write_u32(
                 out,
-                u32::try_from(images.len()).map_err(|_| {
-                    ExcelError::Format("image list exceeds u32".to_owned())
-                })?,
+                u32::try_from(images.len())
+                    .map_err(|_| ExcelError::Format("image list exceeds u32".to_owned()))?,
             );
             for image in images {
                 write_bytes(out, image.image())?;
@@ -384,9 +387,8 @@ fn write_str(out: &mut Vec<u8>, value: &str) -> Result<()> {
 fn write_bytes(out: &mut Vec<u8>, value: &[u8]) -> Result<()> {
     write_u32(
         out,
-        u32::try_from(value.len()).map_err(|_| {
-            ExcelError::Format("spill byte length exceeds u32".to_owned())
-        })?,
+        u32::try_from(value.len())
+            .map_err(|_| ExcelError::Format("spill byte length exceeds u32".to_owned()))?,
     );
     out.extend_from_slice(value);
     Ok(())

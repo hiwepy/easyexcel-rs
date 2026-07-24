@@ -7,18 +7,18 @@ pub mod basic_parameter;
 pub mod cell;
 pub mod cell_range;
 pub mod configuration_holder;
+pub mod csv;
+pub mod data;
 pub mod field_cache;
 pub mod field_wrapper;
 pub mod fill;
 pub mod font;
-pub mod holder;
-pub mod data;
+pub mod format;
 pub mod global_configuration;
 pub mod head;
+pub mod holder;
 pub mod null_object;
 pub mod property;
-pub mod format;
-pub mod csv;
 
 #[cfg(test)]
 mod tests;
@@ -40,9 +40,9 @@ pub use null_object::NullObject;
 pub use property::{
     ColumnWidthProperty, DateTimeFormatProperty, ExcelContentProperty, ExcelHeadProperty,
     ExcelReadHeadProperty, FontProperty, LoopMergeProperty, NumberFormatProperty,
-    OnceAbsoluteMergeProperty, RowHeightProperty, StyleProperty,
+    NumberRoundingMode, OnceAbsoluteMergeProperty, RowHeightProperty, StyleProperty,
 };
 
+pub use data::{CellData, DataFormatData};
 pub use font::Font;
 pub use holder::{ExcelHolder, HolderEnum};
-pub use data::{CellData, DataFormatData};

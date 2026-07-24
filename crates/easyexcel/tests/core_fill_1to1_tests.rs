@@ -11,8 +11,8 @@
 
 use chrono::NaiveDate;
 use easyexcel::{
-    CellValue, DynamicRow, DynamicValue, EasyExcel, ExcelError, ExcelRow, FillConfig, FillDirection,
-    FillWrapper, TemplateData, TemplateSheet,
+    CellValue, DynamicRow, DynamicValue, EasyExcel, ExcelError, ExcelRow, FillConfig,
+    FillDirection, FillWrapper, TemplateData, TemplateSheet,
 };
 
 fn temp_path(name: &str) -> std::path::PathBuf {
@@ -95,7 +95,6 @@ fn style_data_rows() -> Vec<TemplateData> {
         })
         .collect()
 }
-
 
 /// Assert legacy .xls template fill works with SST-based templates.
 /// Phase 5.2: SST parsing resolves LABELSST records so {key} placeholders
@@ -240,28 +239,34 @@ fn assert_composite_fill(template: &std::path::Path, output_name: &str) {
     let mut writer = EasyExcel::template_writer(template, &output).unwrap();
     let horizontal = FillConfig::new().direction(FillDirection::Horizontal);
     writer
+        .fill_list(&FillWrapper::named("data1", fill_data_rows()), horizontal)
+        .unwrap();
+    writer
+        .fill_list(&FillWrapper::named("data1", fill_data_rows()), horizontal)
+        .unwrap();
+    writer
         .fill_list(
-            &FillWrapper::named("data1", fill_data_rows()),
-            horizontal,
+            &FillWrapper::named("data2", fill_data_rows()),
+            FillConfig::new(),
         )
         .unwrap();
     writer
         .fill_list(
-            &FillWrapper::named("data1", fill_data_rows()),
-            horizontal,
+            &FillWrapper::named("data2", fill_data_rows()),
+            FillConfig::new(),
         )
         .unwrap();
     writer
-        .fill_list(&FillWrapper::named("data2", fill_data_rows()), FillConfig::new())
+        .fill_list(
+            &FillWrapper::named("data3", fill_data_rows()),
+            FillConfig::new(),
+        )
         .unwrap();
     writer
-        .fill_list(&FillWrapper::named("data2", fill_data_rows()), FillConfig::new())
-        .unwrap();
-    writer
-        .fill_list(&FillWrapper::named("data3", fill_data_rows()), FillConfig::new())
-        .unwrap();
-    writer
-        .fill_list(&FillWrapper::named("data3", fill_data_rows()), FillConfig::new())
+        .fill_list(
+            &FillWrapper::named("data3", fill_data_rows()),
+            FillConfig::new(),
+        )
         .unwrap();
     writer
         .fill(&TemplateData::new().with("date", "2019年10月9日13:28:28"))
@@ -352,10 +357,7 @@ mod fill_data_test {
     #[test]
     fn t02_fill03() {
         // Java fills xls/fill/simple.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_works(
-            &require_fixture("xls/fill/simple.xls"),
-            "t02_fill03.xls",
-        );
+        assert_xls_fill_works(&require_fixture("xls/fill/simple.xls"), "t02_fill03.xls");
     }
 
     /// Java: com.alibaba.easyexcel.test.core.fill.FillDataTest#t03FillCsv
@@ -496,10 +498,7 @@ mod fill_style_data_test {
     #[test]
     fn t02_fill03() {
         // Java fills xls/fill/style.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_works(
-            &require_fixture("xls/fill/style.xls"),
-            "t02_fill03.xls",
-        );
+        assert_xls_fill_works(&require_fixture("xls/fill/style.xls"), "t02_fill03.xls");
     }
 
     /// Java: com.alibaba.easyexcel.test.core.fill.style.FillStyleDataTest#t11FillStyleHandler07
@@ -543,9 +542,6 @@ mod fill_style_annotated_test {
     #[test]
     fn t02_fill03() {
         // Java fills xls/fill/style.xls. Legacy XLS template fill is Unsupported (visible).
-        assert_xls_fill_works(
-            &require_fixture("xls/fill/style.xls"),
-            "t02_fill03.xls",
-        );
+        assert_xls_fill_works(&require_fixture("xls/fill/style.xls"), "t02_fill03.xls");
     }
 }

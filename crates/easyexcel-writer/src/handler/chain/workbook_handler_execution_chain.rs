@@ -18,6 +18,15 @@ impl WorkbookHandlerExecutionChain {
         }
     }
 
+    /// Creates a chain whose head contains `handler`. (Java constructor)
+    #[must_use]
+    pub fn with_handler(handler: Box<dyn easyexcel_core::WriteHandler>) -> Self {
+        Self {
+            handler: Some(handler),
+            next: None,
+        }
+    }
+
     /// Appends a handler. (Java `addLast`)
     pub fn add_last(&mut self, handler: Box<dyn easyexcel_core::WriteHandler>) {
         match self.next.as_mut() {
@@ -31,13 +40,41 @@ impl WorkbookHandlerExecutionChain {
         }
     }
 
-    /// Runs the workbook lifecycle. (Java `afterWorkbookDispose`)
+    /// Runs Java `beforeWorkbookCreate` in chain order.
+    pub fn before_workbook_create(
+        &mut self,
+        context: &WriteWorkbookContext,
+    ) -> easyexcel_core::Result<()> {
+        if let Some(handler) = self.handler.as_mut() {
+            handler.before_workbook_create(context)?;
+        }
+        if let Some(next) = self.next.as_mut() {
+            next.before_workbook_create(context)?;
+        }
+        Ok(())
+    }
+
+    /// Runs Java `afterWorkbookCreate` in chain order.
+    pub fn after_workbook_create(
+        &mut self,
+        context: &WriteWorkbookContext,
+    ) -> easyexcel_core::Result<()> {
+        if let Some(handler) = self.handler.as_mut() {
+            handler.after_workbook_create(context)?;
+        }
+        if let Some(next) = self.next.as_mut() {
+            next.after_workbook_create(context)?;
+        }
+        Ok(())
+    }
+
+    /// Runs Java `afterWorkbookDispose` in chain order.
     pub fn after_workbook_dispose(
         &mut self,
         context: &WriteWorkbookContext,
     ) -> easyexcel_core::Result<()> {
         if let Some(handler) = self.handler.as_mut() {
-            handler.after_workbook(context)?;
+            handler.after_workbook_dispose(context)?;
         }
         if let Some(next) = self.next.as_mut() {
             next.after_workbook_dispose(context)?;

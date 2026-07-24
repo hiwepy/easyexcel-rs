@@ -1,8 +1,6 @@
 //! Mirrors Java `com.alibaba.excel.write.merge.OnceAbsoluteMergeStrategy`.
 
-use easyexcel_core::{
-    CellExtra, OnceAbsoluteMergeProperty, WriteCellContext, WriteHandler,
-};
+use easyexcel_core::{CellExtra, OnceAbsoluteMergeProperty, WriteCellContext, WriteHandler};
 
 use crate::merge::abstract_merge_strategy::AbstractMergeStrategy;
 
@@ -22,27 +20,36 @@ impl OnceAbsoluteMergeStrategy {
     /// Creates the strategy. (Java
     /// `OnceAbsoluteMergeStrategy(int, int, int, int)`)
     ///
-    /// Java throws when any index is negative; Rust stores the values and the
-    /// write path skips invalid regions (same as annotation apply).
+    /// Java throws when any index is negative; Rust returns a typed error at
+    /// construction time.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         first_row_index: i32,
         last_row_index: i32,
         first_column_index: i32,
         last_column_index: i32,
-    ) -> Self {
-        Self {
+    ) -> easyexcel_core::Result<Self> {
+        if first_row_index < 0
+            || last_row_index < 0
+            || first_column_index < 0
+            || last_column_index < 0
+        {
+            return Err(easyexcel_core::ExcelError::Format(
+                "all once-absolute merge indexes must be non-negative".to_owned(),
+            ));
+        }
+        Ok(Self {
             first_row_index,
             last_row_index,
             first_column_index,
             last_column_index,
-        }
+        })
     }
 
     /// Creates from annotation/runtime property.
     /// (Java `OnceAbsoluteMergeStrategy(OnceAbsoluteMergeProperty)`)
     #[must_use]
-    pub const fn from_property(property: OnceAbsoluteMergeProperty) -> Self {
+    pub fn from_property(property: OnceAbsoluteMergeProperty) -> easyexcel_core::Result<Self> {
         Self::new(
             property.first_row_index,
             property.last_row_index,

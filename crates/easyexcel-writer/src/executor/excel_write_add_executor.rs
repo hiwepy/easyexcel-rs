@@ -27,7 +27,7 @@ use rust_xlsxwriter::Worksheet;
 use crate::executor::abstract_excel_write_executor::AbstractExcelWriteExecutor;
 use crate::metadata::collection_row_data::CollectionRowData;
 use crate::metadata::map_row_data::MapRowData;
-use crate::{append_rows_to_worksheet, write_xlsx, WriteOptions, WriteProgress};
+use crate::{WriteOptions, WriteProgress, append_rows_to_worksheet, write_xlsx};
 
 /// Mirrors Java `ExcelWriteAddExecutor extends AbstractExcelWriteExecutor`.
 ///
@@ -109,13 +109,7 @@ impl<'a> ExcelWriteAddExecutor<'a> {
     {
         // Java add(): for (Object oneRowData : data) addOneRowOfDataToExcel(...)
         append_rows_to_worksheet::<T, I>(
-            worksheet,
-            options,
-            data,
-            handlers,
-            progress,
-            write_head,
-            metadata,
+            worksheet, options, data, handlers, progress, write_head, metadata,
         )
     }
 
@@ -355,10 +349,21 @@ fn collection_row_to_dynamic(row: &CollectionRowData) -> DynamicRow {
 
 /// Converts Java `MapRowData` into a writeable [`DynamicRow`].
 fn map_row_to_dynamic(row: &MapRowData) -> DynamicRow {
-    let cells = row
-        .values()
-        .iter()
-        .map(|(index, value)| (*index, DynamicValue::ActualData(value.clone())))
+    // Java `MapRowData.size()` returns the map entry count, then
+    // `ExcelWriteAddExecutor` calls `get(dataIndex)` for 0..size. It does not
+    // iterate arbitrary integer keys as physical column indexes.
+    let cells = (0..row.values().len())
+        .map(|index| {
+            (
+                index,
+                DynamicValue::ActualData(
+                    row.values()
+                        .get(&index)
+                        .cloned()
+                        .unwrap_or(CellValue::Empty),
+                ),
+            )
+        })
         .collect();
     DynamicRow::new(cells)
 }
@@ -389,6 +394,54 @@ mod tests {
         fn path(&self) -> &Path {
             &self.path
         }
+
+        fn holder_type(&self) -> easyexcel_core::Holder {
+            easyexcel_core::Holder::Workbook
+        }
+
+        fn excel_write_head_property(&self) -> &easyexcel_core::ExcelWriteHeadProperty {
+            static PROPERTY: std::sync::OnceLock<easyexcel_core::ExcelWriteHeadProperty> =
+                std::sync::OnceLock::new();
+            PROPERTY.get_or_init(easyexcel_core::ExcelWriteHeadProperty::new)
+        }
+
+        fn converter_map(&self) -> &easyexcel_core::ConverterRegistry {
+            static REGISTRY: std::sync::OnceLock<easyexcel_core::ConverterRegistry> =
+                std::sync::OnceLock::new();
+            REGISTRY.get_or_init(easyexcel_core::ConverterRegistry::default)
+        }
+
+        fn need_head(&self) -> bool {
+            true
+        }
+
+        fn automatic_merge_head(&self) -> bool {
+            true
+        }
+
+        fn relative_head_row_index(&self) -> i32 {
+            0
+        }
+
+        fn order_by_include_column(&self) -> bool {
+            false
+        }
+
+        fn include_column_indexes(&self) -> Option<&[usize]> {
+            None
+        }
+
+        fn include_column_field_names(&self) -> Option<&[String]> {
+            None
+        }
+
+        fn exclude_column_indexes(&self) -> &[usize] {
+            &[]
+        }
+
+        fn exclude_column_field_names(&self) -> &[String] {
+            &[]
+        }
     }
 
     /// Proves Java `add(Collection)` is callable and writes a calamine-readable file.
@@ -396,9 +449,7 @@ mod tests {
     fn add_writes_readable_xlsx() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("add-executor.xlsx");
-        let context = TestWriteContext {
-            path: path.clone(),
-        };
+        let context = TestWriteContext { path: path.clone() };
         let executor = ExcelWriteAddExecutor::new(&context);
 
         let mut row = BTreeMap::new();
@@ -428,9 +479,7 @@ mod tests {
     fn add_one_row_and_basic_type_write_cells() {
         let directory = tempdir().expect("tempdir");
         let path = directory.path().join("one-row.xlsx");
-        let context = TestWriteContext {
-            path: path.clone(),
-        };
+        let context = TestWriteContext { path: path.clone() };
         let executor = ExcelWriteAddExecutor::new(&context);
 
         let mut workbook = Workbook::new();
@@ -453,14 +502,21 @@ mod tests {
             .expect("collection row");
         assert_eq!(progress.next_row, 1);
 
-        // Java addBasicTypeToExcel Map branch
+        // Java MapRowData uses map.size() + get(0..size), not sparse key
+        // iteration. Key 2 is therefore outside the two-entry row.
         let mut map = BTreeMap::new();
         map.insert(0, CellValue::String("carol".to_owned()));
         map.insert(2, CellValue::Int(30));
         let map_row = MapRowData::new(map);
         let progress = executor
             .add_basic_type_to_excel_with_map(
-                worksheet, &options, &map_row, 1, 1, &mut [], &metadata,
+                worksheet,
+                &options,
+                &map_row,
+                1,
+                1,
+                &mut [],
+                &metadata,
             )
             .expect("map row");
         assert_eq!(progress.next_row, 2);
@@ -487,7 +543,8 @@ mod tests {
         assert_eq!(range.get((0, 0)), Some(&Data::String("bob".to_owned())));
         assert_eq!(range.get((0, 1)), Some(&Data::Float(21.0)));
         assert_eq!(range.get((1, 0)), Some(&Data::String("carol".to_owned())));
-        assert_eq!(range.get((1, 2)), Some(&Data::Float(30.0)));
+        assert_eq!(range.get((1, 1)), Some(&Data::Empty));
+        assert_eq!(range.get((1, 2)), None);
         assert_eq!(range.get((2, 1)), Some(&Data::String("solo".to_owned())));
     }
 }

@@ -16,9 +16,9 @@ use bigdecimal::BigDecimal;
 use chrono::NaiveDate;
 use easyexcel::{
     AnalysisContext, CellExtra, CellExtraType, CellValue, CsvCharset, DynamicRow, DynamicValue,
-    EasyExcel, ErrorAction, ExcelError, ExcelLocale, ExcelRow, FillWrapper, FormulaData,
-    ImageData, PageReadListener, ReadCacheMode, ReadDefaultReturn, ReadListener, Result,
-    StringImageConverter, TemplateData, WriteCellData,
+    EasyExcel, ErrorAction, ExcelError, ExcelLocale, ExcelRow, FillWrapper, FormulaData, ImageData,
+    PageReadListener, ReadCacheMode, ReadDefaultReturn, ReadListener, Result, StringImageConverter,
+    TemplateData, WriteCellData,
 };
 
 fn temp_path(name: &str) -> std::path::PathBuf {
@@ -42,8 +42,6 @@ fn require_fixture(name: &str) -> std::path::PathBuf {
     );
     path
 }
-
-
 
 fn dyn_str(row: &DynamicRow, col: usize) -> String {
     match row.get(col).unwrap() {
@@ -248,8 +246,14 @@ mod bom_data_test {
     }
 
     fn assert_read_csv(path: &std::path::Path) {
-        assert!(path.exists(), "required Java fixture missing: {}", path.display());
-        let rows = EasyExcel::read_sync::<BomData>(path).do_read_sync().unwrap();
+        assert!(
+            path.exists(),
+            "required Java fixture missing: {}",
+            path.display()
+        );
+        let rows = EasyExcel::read_sync::<BomData>(path)
+            .do_read_sync()
+            .unwrap();
         assert_eq!(rows.len(), 10);
         assert_eq!(rows[0].name, "姓名0");
         assert_eq!(rows[0].age, 20);
@@ -262,7 +266,11 @@ mod bom_data_test {
         assert_read_csv(&require_fixture("bom/office_bom.csv"));
     }
 
-    fn assert_read_and_write_csv(path: &std::path::Path, charset: Option<&str>, with_bom: Option<bool>) {
+    fn assert_read_and_write_csv(
+        path: &std::path::Path,
+        charset: Option<&str>,
+        with_bom: Option<bool>,
+    ) {
         let mut writer = EasyExcel::write::<BomData>(path);
         if let Some(cs) = charset {
             writer = writer.charset(CsvCharset::new(cs));
@@ -378,14 +386,9 @@ mod charset_data_test {
             }
         }
         // Intentionally wrong charset (Java: write GBK, read UTF-8).
-        let _ = EasyExcel::read::<CharsetData, _>(
-            &path,
-            HeadProbe {
-                head0: head0_cb,
-            },
-        )
-        .charset(CsvCharset::new("UTF-8"))
-        .do_read();
+        let _ = EasyExcel::read::<CharsetData, _>(&path, HeadProbe { head0: head0_cb })
+            .charset(CsvCharset::new("UTF-8"))
+            .do_read();
         // When decode corrupts headers, first head must not equal "姓名".
         if let Some(h) = head0.lock().unwrap().clone() {
             assert_ne!(h, "姓名", "Java assertNotEquals(\"姓名\", head)");
@@ -1035,9 +1038,7 @@ mod extra_data_test {
     #[test]
     fn t02_read03() {
         let path = require_fixture("demo/extra.xls");
-        let rows = EasyExcel::read_dynamic_sync(&path)
-            .do_read_sync()
-            .unwrap();
+        let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
         assert!(!rows.is_empty(), "Java extra.xls fixture must yield rows");
     }
 
@@ -1173,10 +1174,12 @@ mod converter_data_test {
     }
 
     fn assert_read_all_converter(path: &std::path::Path) {
-        assert!(path.exists(), "required Java fixture missing: {}", path.display());
-        let rows = EasyExcel::read_dynamic_sync(path)
-            .do_read_sync()
-            .unwrap();
+        assert!(
+            path.exists(),
+            "required Java fixture missing: {}",
+            path.display()
+        );
+        let rows = EasyExcel::read_dynamic_sync(path).do_read_sync().unwrap();
         assert!(!rows.is_empty(), "ReadAllConverter fixture must yield rows");
     }
 
@@ -1215,7 +1218,9 @@ mod converter_data_test {
             names
         };
         assert!(
-            sheet_xml.iter().any(|n| n.contains("media/") || n.contains("drawing")),
+            sheet_xml
+                .iter()
+                .any(|n| n.contains("media/") || n.contains("drawing")),
             "XLSX must embed image media/drawing parts: {sheet_xml:?}"
         );
         let _ = ImageData::new(vec![0u8; 1]); // keep ImageData import used on all paths
@@ -1300,7 +1305,10 @@ mod converter_test {
         let write_cell = WriteCellData::new(CellValue::Decimal(number));
         match write_cell.value() {
             CellValue::Decimal(d) => {
-                assert_eq!(d.cmp(&BigDecimal::from_str("95.62").unwrap()), std::cmp::Ordering::Equal);
+                assert_eq!(
+                    d.cmp(&BigDecimal::from_str("95.62").unwrap()),
+                    std::cmp::Ordering::Equal
+                );
             }
             other => panic!("expected Decimal WriteCellData, got {other:?}"),
         }

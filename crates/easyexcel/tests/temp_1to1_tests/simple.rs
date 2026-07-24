@@ -1,14 +1,14 @@
 //! 1:1 method matrix for Java `com.alibaba.easyexcel.test.temp.simple.*`
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use chrono::NaiveDate;
 use easyexcel::{
-    EasyExcel, ExcelCellStyle, ExcelColor, ExcelDataFormat, ExcelError, ExcelRow, WriteHandler,
-    WriteOptions, WriteSheet, WriteSheetContext,
+    CellValue, EasyExcel, ExcelCellStyle, ExcelColor, ExcelDataFormat, ExcelError, ExcelRow,
+    WriteHandler, WriteOptions, WriteSheet, WriteSheetContext,
 };
+use easyexcel_core::util::bean_map_utils;
 use serde::{Deserialize, Serialize};
 
 use super::helpers;
@@ -55,16 +55,23 @@ fn simple_repeat_test_hh_1() {
 
 /// Java `Write#simpleWrite1` — `BeanMapUtils.create(LargeData)` key probes.
 ///
-/// Portable stand-in: field-map containsKey/get for `str23` / `str22`.
 #[test]
 fn simple_write_simple_write_1() {
-    let mut map: HashMap<&str, Option<&str>> = HashMap::new();
-    map.insert("str23", Some("ttt"));
-    map.insert("str22", None);
-    assert!(map.contains_key("str23"));
-    assert!(map.contains_key("str22"));
-    assert_eq!(map.get("str23").copied().flatten(), Some("ttt"));
-    assert!(map.get("str22").copied().flatten().is_none());
+    #[derive(ExcelRow)]
+    struct LargeData {
+        str22: Option<String>,
+        str23: String,
+    }
+
+    let map = bean_map_utils::create(&LargeData {
+        str22: None,
+        str23: "ttt".to_owned(),
+    })
+    .expect("real compile-time bean map");
+    assert_eq!(map.get("str23"), Some(&CellValue::String("ttt".to_owned())));
+    assert_eq!(map.get("str22"), Some(&CellValue::Empty));
+    assert_eq!(map.property_type("str23"), Some("String"));
+    assert_eq!(map.property_type("str22"), Some("Option < String >"));
 }
 
 /// Java `Write#simpleWrite` — `relativeHeadRowIndex(10)` + DemoData write.
@@ -149,9 +156,7 @@ fn simple_write_simple_write_2() {
         })
         .collect();
     EasyExcel::write::<WriteData>(&path)
-        .register_write_handler(ProtectProbeHandler {
-            hits: hits.clone(),
-        })
+        .register_write_handler(ProtectProbeHandler { hits: hits.clone() })
         .sheet("模板")
         .do_write(data)
         .unwrap();
@@ -170,8 +175,7 @@ fn simple_write_simple_write_2() {
 #[test]
 fn simple_write_simple_write_3() {
     let gap = ExcelError::Unsupported(
-        "CellWriteHandler.afterCellDataConverted Cell.setCellStyle — no POI Cell handle"
-            .to_owned(),
+        "CellWriteHandler.afterCellDataConverted Cell.setCellStyle — no POI Cell handle".to_owned(),
     );
     assert!(matches!(gap, ExcelError::Unsupported(_)));
 

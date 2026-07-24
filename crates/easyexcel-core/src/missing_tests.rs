@@ -1,8 +1,8 @@
 //! Missing test coverage to match Java easyexcel test suite.
 
-use std::collections::{BTreeMap, HashSet};
 use bigdecimal::BigDecimal;
 use chrono::{NaiveDate, NaiveDateTime};
+use std::collections::{BTreeMap, HashSet};
 
 use super::*;
 
@@ -94,7 +94,10 @@ fn exclude_and_include_combined() {
 
 #[test]
 fn exclude_column_field_names_special_chars() {
-    let names: Vec<String> = vec!["field_with_underscore".to_owned(), "field-with-dash".to_owned()];
+    let names: Vec<String> = vec![
+        "field_with_underscore".to_owned(),
+        "field-with-dash".to_owned(),
+    ];
     assert_eq!(names.len(), 2);
 }
 
@@ -158,19 +161,14 @@ fn complex_head_multi_level_basic() {
 
 #[test]
 fn complex_head_multi_level_merge() {
-    let head: Vec<Vec<String>> = vec![
-        vec!["Main".to_owned(), "Sub".to_owned()],
-    ];
+    let head: Vec<Vec<String>> = vec![vec!["Main".to_owned(), "Sub".to_owned()]];
     assert_eq!(head.len(), 1);
     assert_eq!(head[0].len(), 2);
 }
 
 #[test]
 fn complex_head_mixed_levels() {
-    let head: Vec<Vec<String>> = vec![
-        vec!["A".to_owned(), "B".to_owned()],
-        vec!["C".to_owned()],
-    ];
+    let head: Vec<Vec<String>> = vec![vec!["A".to_owned(), "B".to_owned()], vec!["C".to_owned()]];
     assert_eq!(head.len(), 2);
 }
 
@@ -182,9 +180,7 @@ fn complex_head_empty() {
 
 #[test]
 fn complex_head_with_column_names() {
-    let head: Vec<Vec<String>> = vec![
-        vec!["ID".to_owned(), "Name".to_owned()],
-    ];
+    let head: Vec<Vec<String>> = vec![vec!["ID".to_owned(), "Name".to_owned()]];
     let cols = vec![
         ExcelColumn::new("id", "ID", Some(0), 0, None),
         ExcelColumn::new("name", "Name", Some(1), 1, None),
@@ -241,10 +237,7 @@ fn no_head_data_with_vec() {
 
 #[test]
 fn list_head_dynamic() {
-    let head: Vec<Vec<String>> = vec![
-        vec!["Header1".to_owned()],
-        vec!["Header2".to_owned()],
-    ];
+    let head: Vec<Vec<String>> = vec![vec!["Header1".to_owned()], vec!["Header2".to_owned()]];
     assert_eq!(head.len(), 2);
 }
 
@@ -371,8 +364,14 @@ fn fill_style_data_content_alignment() {
         vertical_alignment: Some(ExcelVerticalAlignment::Center),
         ..ExcelCellStyle::new()
     };
-    assert_eq!(style.horizontal_alignment, Some(ExcelHorizontalAlignment::Center));
-    assert_eq!(style.vertical_alignment, Some(ExcelVerticalAlignment::Center));
+    assert_eq!(
+        style.horizontal_alignment,
+        Some(ExcelHorizontalAlignment::Center)
+    );
+    assert_eq!(
+        style.vertical_alignment,
+        Some(ExcelVerticalAlignment::Center)
+    );
 }
 
 #[test]
@@ -432,8 +431,7 @@ fn fill_annotation_data_with_column_width() {
 
 #[test]
 fn fill_annotation_data_with_combined() {
-    let col = ExcelColumn::new("value", "Value", None, 0, Some("0.00"))
-        .with_column_width(40);
+    let col = ExcelColumn::new("value", "Value", None, 0, Some("0.00")).with_column_width(40);
     assert_eq!(col.column_width, Some(40));
     assert_eq!(col.format, Some("0.00"));
 }
@@ -448,7 +446,10 @@ fn fill_style_annotated_head() {
         horizontal_alignment: Some(ExcelHorizontalAlignment::Center),
         ..ExcelCellStyle::new()
     };
-    assert_eq!(style.horizontal_alignment, Some(ExcelHorizontalAlignment::Center));
+    assert_eq!(
+        style.horizontal_alignment,
+        Some(ExcelHorizontalAlignment::Center)
+    );
 }
 
 #[test]

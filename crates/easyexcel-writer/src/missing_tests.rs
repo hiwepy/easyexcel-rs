@@ -64,7 +64,10 @@ fn repetition_loop_merge_all_fields_distinct() {
 
 #[test]
 fn fill_style_data_head_background() {
-    use easyexcel_core::{ExcelCellStyle, ExcelColor, ExcelFillPattern, ExcelHorizontalAlignment, ExcelVerticalAlignment, ExcelBorderStyle, ExcelFontStyle};
+    use easyexcel_core::{
+        ExcelBorderStyle, ExcelCellStyle, ExcelColor, ExcelFillPattern, ExcelFontStyle,
+        ExcelHorizontalAlignment, ExcelVerticalAlignment,
+    };
     let style = ExcelCellStyle {
         fill_pattern: Some(ExcelFillPattern::Solid),
         fill_foreground_color: Some(ExcelColor::Rgb(0x0000FF)),
@@ -82,13 +85,19 @@ fn fill_style_data_content_alignment() {
         vertical_alignment: Some(ExcelVerticalAlignment::Center),
         ..ExcelCellStyle::new()
     };
-    assert_eq!(style.horizontal_alignment, Some(ExcelHorizontalAlignment::Center));
-    assert_eq!(style.vertical_alignment, Some(ExcelVerticalAlignment::Center));
+    assert_eq!(
+        style.horizontal_alignment,
+        Some(ExcelHorizontalAlignment::Center)
+    );
+    assert_eq!(
+        style.vertical_alignment,
+        Some(ExcelVerticalAlignment::Center)
+    );
 }
 
 #[test]
 fn fill_style_data_border() {
-    use easyexcel_core::{ExcelCellStyle, ExcelBorderStyle};
+    use easyexcel_core::{ExcelBorderStyle, ExcelCellStyle};
     let style = ExcelCellStyle {
         border_left: Some(ExcelBorderStyle::Thin),
         border_right: Some(ExcelBorderStyle::Thin),
@@ -104,7 +113,7 @@ fn fill_style_data_border() {
 
 #[test]
 fn fill_style_data_font_combined() {
-    use easyexcel_core::{ExcelFontStyle, ExcelCellStyle};
+    use easyexcel_core::{ExcelCellStyle, ExcelFontStyle};
     let fs = ExcelFontStyle {
         bold: Some(true),
         italic: Some(true),
@@ -149,8 +158,7 @@ fn fill_annotation_data_with_column_width() {
 #[test]
 fn fill_annotation_data_with_combined() {
     use easyexcel_core::ExcelColumn;
-    let col = ExcelColumn::new("value", "Value", None, 0, Some("0.00"))
-        .with_column_width(40);
+    let col = ExcelColumn::new("value", "Value", None, 0, Some("0.00")).with_column_width(40);
     assert_eq!(col.column_width, Some(40));
     assert_eq!(col.format, Some("0.00"));
 }
@@ -166,7 +174,10 @@ fn fill_style_annotated_head() {
         horizontal_alignment: Some(ExcelHorizontalAlignment::Center),
         ..ExcelCellStyle::new()
     };
-    assert_eq!(style.horizontal_alignment, Some(ExcelHorizontalAlignment::Center));
+    assert_eq!(
+        style.horizontal_alignment,
+        Some(ExcelHorizontalAlignment::Center)
+    );
 }
 
 #[test]

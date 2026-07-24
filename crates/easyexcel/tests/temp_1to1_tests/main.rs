@@ -7,11 +7,11 @@
 //!
 //! Matrix: `docs/temp-1to1-matrix.md`.
 
-mod helpers;
 mod cache;
 mod csv;
 mod dataformat;
 mod fill;
+mod helpers;
 mod issue1662;
 mod issue1663;
 mod issue2443;

@@ -623,10 +623,7 @@ fn golden_compatibility_t05_dates() {
 #[test]
 fn golden_compatibility_t06() {
     let golden = load_golden("compatibility_t06.expected.json");
-    assert_eq!(
-        golden.cells.get("0.2").map(String::as_str),
-        Some("2087.03")
-    );
+    assert_eq!(golden.cells.get("0.2").map(String::as_str), Some("2087.03"));
     let path = resolve_golden_path(&golden);
     let display_rows = read_display_rows(&path, &golden);
     assert_matches_golden(&golden, &display_rows);
@@ -666,7 +663,10 @@ fn golden_dataformat_v2() {
         golden.cells.get("1.0").map(String::as_str),
         Some("2023-1-01 00:00:00")
     );
-    assert!(!golden.rows.is_empty(), "dataformatv2 must be full-table STRING");
+    assert!(
+        !golden.rows.is_empty(),
+        "dataformatv2 must be full-table STRING"
+    );
     let path = resolve_golden_path(&golden);
     let display_rows = read_display_rows(&path, &golden);
     assert_matches_golden(&golden, &display_rows);
@@ -676,8 +676,14 @@ fn golden_dataformat_v2() {
 #[test]
 fn golden_dataformat_xlsx() {
     let golden = load_golden("dataformat_xlsx.expected.json");
-    assert_eq!(golden.cells.get("22.0").map(String::as_str), Some("上午1时01分"));
-    assert!(!golden.rows.is_empty(), "dataformat_xlsx must be full-table STRING");
+    assert_eq!(
+        golden.cells.get("22.0").map(String::as_str),
+        Some("上午1时01分")
+    );
+    assert!(
+        !golden.rows.is_empty(),
+        "dataformat_xlsx must be full-table STRING"
+    );
     let path = resolve_golden_path(&golden);
     let display_rows = read_display_rows(&path, &golden);
     assert_matches_golden(&golden, &display_rows);
@@ -688,8 +694,14 @@ fn golden_dataformat_xlsx() {
 fn golden_dataformat_xls() {
     let golden = load_golden("dataformat_xls.expected.json");
     assert_eq!(golden.cells.get("2.4").map(String::as_str), Some("¥1.11"));
-    assert_eq!(golden.cells.get("22.0").map(String::as_str), Some("上午1时01分"));
-    assert!(!golden.rows.is_empty(), "dataformat_xls must be full-table STRING");
+    assert_eq!(
+        golden.cells.get("22.0").map(String::as_str),
+        Some("上午1时01分")
+    );
+    assert!(
+        !golden.rows.is_empty(),
+        "dataformat_xls must be full-table STRING"
+    );
     let path = resolve_golden_path(&golden);
     let display_rows = read_display_rows(&path, &golden);
     assert_matches_golden(&golden, &display_rows);
@@ -895,7 +907,10 @@ fn golden_cache_data() {
         "unexpected source: {}",
         golden.source
     );
-    assert!(!golden.rows.is_empty(), "cache golden must include full rows");
+    assert!(
+        !golden.rows.is_empty(),
+        "cache golden must include full rows"
+    );
     let path = resolve_golden_path(&golden);
     let display_rows = read_display_rows(&path, &golden);
     assert_matches_golden(&golden, &display_rows);
@@ -917,7 +932,10 @@ fn golden_celldata_data() {
         "unexpected source: {}",
         golden.source
     );
-    assert!(!golden.rows.is_empty(), "celldata golden must include full rows");
+    assert!(
+        !golden.rows.is_empty(),
+        "celldata golden must include full rows"
+    );
     let path = resolve_golden_path(&golden);
     let display_rows = read_display_rows(&path, &golden);
     assert_matches_golden(&golden, &display_rows);
@@ -928,7 +946,10 @@ fn golden_celldata_data() {
 fn golden_charset_gbk() {
     let golden = load_golden("charset_gbk.expected.json");
     assert_eq!(golden.charset.as_deref(), Some("GBK"));
-    assert!(!golden.rows.is_empty(), "charset golden must include full rows");
+    assert!(
+        !golden.rows.is_empty(),
+        "charset golden must include full rows"
+    );
     let path = resolve_golden_path(&golden);
     let display_rows = read_display_rows(&path, &golden);
     assert_matches_golden(&golden, &display_rows);
@@ -1021,7 +1042,10 @@ fn golden_converter_write_csv() {
 #[test]
 fn golden_celldata_data_xls() {
     let golden = load_golden("celldata_data_xls.expected.json");
-    assert!(!golden.rows.is_empty(), "celldata_xls must export full rows");
+    assert!(
+        !golden.rows.is_empty(),
+        "celldata_xls must export full rows"
+    );
     assert!(
         golden.cells.get("0.0").is_some_and(|s| s.contains("年")),
         "celldata xls must keep CN date text"
@@ -1084,7 +1108,10 @@ fn golden_annotation_index_name() {
 #[test]
 fn golden_list_head() {
     let golden = load_golden("list_head.expected.json");
-    assert!(!golden.rows.is_empty(), "list_head xlsx must export full rows");
+    assert!(
+        !golden.rows.is_empty(),
+        "list_head xlsx must export full rows"
+    );
     assert_eq!(golden.cells.get("0.0").map(String::as_str), Some("字符串0"));
     assert_eq!(
         golden.cells.get("0.2").map(String::as_str),
@@ -1254,9 +1281,7 @@ fn golden_all_expected_json_files() {
                 .extension()
                 .and_then(|x| x.to_str())
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-                && e.file_name()
-                    .to_string_lossy()
-                    .ends_with(".expected.json")
+                && e.file_name().to_string_lossy().ends_with(".expected.json")
         })
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
@@ -1277,7 +1302,6 @@ fn golden_all_expected_json_files() {
 fn golden_missing_file_fails() {
     let _ = load_golden("__does_not_exist__.expected.json");
 }
-
 
 /// P0 STRING 全表回归：dataformat / annotation / converter03 / t07 / celldata / list_head。
 #[test]

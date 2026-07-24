@@ -6,7 +6,7 @@ use easyexcel_core::{AnalysisContext, ExcelError, ExcelRow, ReadListener, Result
 
 use crate::analysis::excel_read_executor::ExcelReadExecutor;
 use crate::context::{DefaultXlsxReadContext, ReadSheet, XlsxReadContext};
-use crate::{list_xlsx_sheets, read_xlsx, ReadOptions};
+use crate::{ReadOptions, list_xlsx_sheets, read_xlsx};
 
 /// Mirrors Java `XlsxSaxAnalyser implements ExcelReadExecutor`.
 ///
@@ -120,7 +120,16 @@ impl XlsxSaxAnalyser {
         T: ExcelRow,
         L: ReadListener<T>,
     {
-        let result = read_xlsx::<T, L>(&self.path, &self.options, listener);
+        let options = self.options.clone();
+        self.execute::<T, L>(&options, listener)
+    }
+
+    fn execute_with_options<T, L>(&mut self, options: &ReadOptions, listener: &mut L) -> Result<()>
+    where
+        T: ExcelRow,
+        L: ReadListener<T>,
+    {
+        let result = read_xlsx::<T, L>(&self.path, options, listener);
         match result {
             Ok(()) => {
                 self.last_error = None;
@@ -136,7 +145,9 @@ impl XlsxSaxAnalyser {
     /// Returns the listener callback context from the embedded read context.
     #[must_use]
     pub fn analysis_context(&self) -> &AnalysisContext {
-        self.xlsx_read_context.analysis_context_impl().analysis_context()
+        self.xlsx_read_context
+            .analysis_context_impl()
+            .analysis_context()
     }
 }
 
@@ -146,14 +157,12 @@ impl ExcelReadExecutor for XlsxSaxAnalyser {
         &self.sheet_list
     }
 
-    /// Mirrors Java `execute()`.
-    ///
-    /// Java pulls listeners from `ReadWorkbook`. Rust requires an explicit
-    /// listener via [`execute_with_listener`](Self::execute_with_listener).
-    fn execute(&mut self) {
-        self.last_error = Some(ExcelError::Unsupported(
-            "use XlsxSaxAnalyser::execute_with_listener::<T, L>(...) to run read_xlsx".to_owned(),
-        ));
+    fn execute<T, L>(&mut self, options: &ReadOptions, listener: &mut L) -> Result<()>
+    where
+        T: ExcelRow,
+        L: ReadListener<T>,
+    {
+        self.execute_with_options::<T, L>(options, listener)
     }
 }
 
@@ -213,11 +222,16 @@ mod tests {
     }
 
     #[test]
-    fn void_execute_records_error_instead_of_panicking() {
+    fn trait_execute_runs_the_real_xlsx_parser() -> Result<()> {
         let file = write_xlsx();
+        let mut options = ReadOptions::default();
+        options.head_row_number = 1;
         let mut analyser =
-            XlsxSaxAnalyser::from_path(file.path(), ReadOptions::default()).expect("analyser");
-        analyser.execute();
-        assert!(analyser.last_error().is_some());
+            XlsxSaxAnalyser::from_path(file.path(), options.clone()).expect("analyser");
+        let mut listener = CollectingListener::default();
+        ExcelReadExecutor::execute::<DynamicRow, _>(&mut analyser, &options, &mut listener)?;
+        assert_eq!(listener.rows.len(), 1);
+        assert!(analyser.last_error().is_none());
+        Ok(())
     }
 }

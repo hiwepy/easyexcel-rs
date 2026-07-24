@@ -72,14 +72,14 @@
 
 | # | Java method                                              | Rust method                                 | Match? |
 |---|----------------------------------------------------------|---------------------------------------------|--------|
-| 1 | `void analysis(List<ReadSheet>, Boolean)` (interface)    | `fn analysis(&mut self)`                    | OK-ADAPTED |
+| 1 | `void analysis(List<ReadSheet>, Boolean)` (interface)    | `fn analysis<T,L>(&mut self, &mut L) -> Result<()>`; sheet 参数由 `ExcelReader` 写入 options | OK-ADAPTED |
 | 2 | `void finish()` (interface)                              | `fn finish(&mut self)`                      | OK-ADAPTED |
-| 3 | `ExcelReadExecutor excelExecutor()` (interface)         | (folded into ExcelAnalyserImpl)            | HANDLE  |
-| 4 | `AnalysisContext analysisContext()` (interface)          | `fn analysis_context(&self)`               | OK-ADAPTED |
+| 3 | `ExcelReadExecutor excelExecutor()` (interface)         | `fn excel_executor(&self) -> &ExcelReadExecutorKind` | OK-ADAPTED |
+| 4 | `AnalysisContext analysisContext()` (interface)          | `fn analysis_context(&self)`；保留最新真实回调上下文 | OK-ADAPTED |
 | 5 | `ExcelAnalyserImpl(ReadWorkbook)`                        | `ExcelAnalyserImpl::new()` + `from_path()`  | OK-ADAPTED |
 | 6 | `void choiceExcelExecutor()`                             | `fn choice_excel_executor(&mut self)`       | OK-RENAMED |
-| 7 | `void removeThreadLocalCache()`                          | (folded; Rust uses per-read context)        | HANDLE  |
-| 8 | `void clearEncrypt03()`                                  | (folded into ReadOptions.password handling) | HANDLE  |
+| 7 | `void removeThreadLocalCache()`                          | `finish()` 清理 formatter 与磁盘缓存真实 TLS 句柄 | OK-ADAPTED |
+| 8 | `void clearEncrypt03()`                                  | 密码为单 reader 所有，从未进入全局/TLS 状态 | OK-ADAPTED |
 
 ## 5. ExcelBuilder / ExcelBuilderImpl
 

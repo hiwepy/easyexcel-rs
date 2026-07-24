@@ -28,10 +28,10 @@ use chrono::NaiveDate;
 use easyexcel::{
     AnalysisContext, CellStyle, CellValue, ClientAnchorData, CommentData, CoordinateData,
     DynamicRow, DynamicValue, EasyExcel, ErrorAction, ExcelCellStyle, ExcelError, ExcelRow,
-    FillConfig, FormulaData, HorizontalCellStyleStrategy, HyperlinkData, HyperlinkType, ImageData,
-    ImageType, LongestMatchColumnWidthStyleStrategy, LoopMergeStrategy, PageReadListener,
-    ReadListener, Result, RichTextStringData, TemplateData, FillWrapper, WriteCellData,
-    WriteCellContext, WriteHandler, WriteWorkbookContext,
+    FillConfig, FillWrapper, FormulaData, HorizontalCellStyleStrategy, HyperlinkData,
+    HyperlinkType, ImageData, ImageType, LongestMatchColumnWidthStyleStrategy, LoopMergeStrategy,
+    PageReadListener, ReadListener, Result, RichTextStringData, TemplateData, WriteCellContext,
+    WriteCellData, WriteHandler, WriteWorkbookContext,
 };
 use tempfile::tempdir;
 
@@ -144,27 +144,33 @@ fn read_test_index_or_name_read() {
         .do_read_sync()
         .unwrap();
     assert!(!rows.is_empty());
-    assert!(rows[0]
-        .string
-        .as_ref()
-        .map(|s| !s.is_empty())
-        .unwrap_or(false));
+    assert!(
+        rows[0]
+            .string
+            .as_ref()
+            .map(|s| !s.is_empty())
+            .unwrap_or(false)
+    );
 }
 
 /// Java: `com.alibaba.easyexcel.test.demo.read.ReadTest#repeatedRead`
 #[test]
 fn read_test_repeated_read() {
     let path = require_fixture("demo/demo.xlsx");
-    assert!(!EasyExcel::read_sync::<DemoData>(&path)
-        .all_sheets()
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
-    assert!(!EasyExcel::read_sync::<DemoData>(&path)
-        .sheet(0usize)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_sync::<DemoData>(&path)
+            .all_sheets()
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        !EasyExcel::read_sync::<DemoData>(&path)
+            .sheet(0usize)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Java: `com.alibaba.easyexcel.test.demo.read.ReadTest#converterRead`
@@ -231,29 +237,35 @@ fn read_test_header_read() {
 fn read_test_extra_read() {
     // Java also ships extra.xls; assert real BIFF8 read (only-add; keep xlsx path).
     let xls = require_fixture("demo/extra.xls");
-    assert!(!EasyExcel::read_dynamic_sync(&xls)
-        .sheet(0usize)
-        .head_row_number(0)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_dynamic_sync(&xls)
+            .sheet(0usize)
+            .head_row_number(0)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
     let path = require_fixture("demo/extra.xlsx");
-    assert!(!EasyExcel::read_dynamic_sync(&path)
-        .sheet(0usize)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_dynamic_sync(&path)
+            .sheet(0usize)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Java: `com.alibaba.easyexcel.test.demo.read.ReadTest#cellDataRead`
 #[test]
 fn read_test_cell_data_read() {
     let path = require_fixture("demo/cellDataDemo.xlsx");
-    assert!(!EasyExcel::read_dynamic_sync(&path)
-        .sheet(0usize)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_dynamic_sync(&path)
+            .sheet(0usize)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Java: `com.alibaba.easyexcel.test.demo.read.ReadTest#exceptionRead`
@@ -328,10 +340,12 @@ fn read_test_no_model_read() {
 #[test]
 fn read_test_csv_format() {
     let path = require_fixture("demo/demo.csv");
-    assert!(!EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_dynamic_sync(&path)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // ============================================================================
@@ -366,11 +380,13 @@ fn write_test_exclude_or_include_write() {
         .sheet("模板")
         .do_write(write_demo_data())
         .unwrap();
-    assert!(!EasyExcel::read_dynamic_sync(&path)
-        .head_row_number(0)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_dynamic_sync(&path)
+            .head_row_number(0)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
     let path2 = temp_path("includeOnlyDate.xlsx");
     let mut include = HashSet::new();
     include.insert("date".to_owned());
@@ -427,11 +443,13 @@ fn write_test_complex_head_write() {
         .sheet("模板")
         .do_write(write_demo_data())
         .unwrap();
-    assert!(!EasyExcel::read_dynamic_sync(&path)
-        .head_row_number(0)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_dynamic_sync(&path)
+            .head_row_number(0)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Java: `com.alibaba.easyexcel.test.demo.write.WriteTest#repeatedWrite`
@@ -545,13 +563,16 @@ fn write_test_write_cell_data_write() {
                 .hyperlink_type(HyperlinkType::Url),
         ),
         comment_data: WriteCellData::from_string("备注的单元格信息").comment_data(
-            CommentData::new().author("Jiaju Zhuang").text("这是一个备注").anchor(
-                ClientAnchorData::new().coordinates(
-                    CoordinateData::new()
-                        .relative_last_column_index(1)
-                        .relative_last_row_index(1),
+            CommentData::new()
+                .author("Jiaju Zhuang")
+                .text("这是一个备注")
+                .anchor(
+                    ClientAnchorData::new().coordinates(
+                        CoordinateData::new()
+                            .relative_last_column_index(1)
+                            .relative_last_row_index(1),
+                    ),
                 ),
-            ),
         ),
         formula_data: WriteCellData::new(CellValue::Empty)
             .formula_data(FormulaData::new("REPLACE(123456789,1,1,2)")),
@@ -561,10 +582,12 @@ fn write_test_write_cell_data_write() {
         .sheet("模板")
         .do_write(vec![row])
         .unwrap();
-    assert!(!EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_dynamic_sync(&path)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// Java: `com.alibaba.easyexcel.test.demo.write.WriteTest#templateWrite`
@@ -729,9 +752,7 @@ fn write_test_custom_handler_write() {
     let hits = Arc::new(AtomicUsize::new(0));
     let path = temp_path("customHandlerWrite.xlsx");
     EasyExcel::write::<WriteDemoData>(&path)
-        .register_write_handler(CountingHandler {
-            hits: hits.clone(),
-        })
+        .register_write_handler(CountingHandler { hits: hits.clone() })
         .sheet("模板")
         .do_write(write_demo_data())
         .unwrap();
@@ -793,10 +814,12 @@ fn write_test_no_model_write() {
         .sheet("模板")
         .do_write(rows)
         .unwrap();
-    assert!(!EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap()
-        .is_empty());
+    assert!(
+        !EasyExcel::read_dynamic_sync(&path)
+            .do_read_sync()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 // ============================================================================

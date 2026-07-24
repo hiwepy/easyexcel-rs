@@ -72,12 +72,18 @@ impl XlsxRowHandler {
         let mut handlers = HashMap::new();
         handlers.insert(CELL_TAG, RoutedHandler::Cell(CellTagHandler::new()));
         handlers.insert(ROW_TAG, RoutedHandler::Row(RowTagHandler::new()));
-        handlers.insert(CELL_VALUE_TAG, RoutedHandler::CellValue(CellValueTagHandler::new()));
+        handlers.insert(
+            CELL_VALUE_TAG,
+            RoutedHandler::CellValue(CellValueTagHandler::new()),
+        );
         handlers.insert(
             CELL_INLINE_STRING_VALUE_TAG,
             RoutedHandler::InlineString(CellInlineStringValueTagHandler::new()),
         );
-        handlers.insert(CELL_FORMULA_TAG, RoutedHandler::Formula(CellFormulaTagHandler::new()));
+        handlers.insert(
+            CELL_FORMULA_TAG,
+            RoutedHandler::Formula(CellFormulaTagHandler::new()),
+        );
         handlers.insert(DIMENSION_TAG, RoutedHandler::Count(CountTagHandler::new()));
         handlers.insert(
             MERGE_CELL_TAG,

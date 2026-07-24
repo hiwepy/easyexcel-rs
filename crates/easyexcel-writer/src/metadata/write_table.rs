@@ -1,6 +1,7 @@
 //! Mirrors Java `com.alibaba.excel.write.metadata.WriteTable`.
 
 use crate::WriteOptions;
+use crate::metadata::WriteBasicParameter;
 
 /// Mirrors Java `WriteTable extends WriteBasicParameter`.
 ///
@@ -12,6 +13,8 @@ pub struct WriteTable {
     pub table_no: i32,
     /// Mirrors the remaining `WriteBasicParameter` fields.
     pub options: WriteOptions,
+    /// Nullable table-level overrides used for Java parent-holder inheritance.
+    pub parameter: WriteBasicParameter,
 }
 
 impl WriteTable {
@@ -21,6 +24,7 @@ impl WriteTable {
         Self {
             table_no: 0,
             options: WriteOptions::default(),
+            parameter: WriteBasicParameter::default(),
         }
     }
 
@@ -30,6 +34,7 @@ impl WriteTable {
         Self {
             table_no,
             options: WriteOptions::default(),
+            parameter: WriteBasicParameter::default(),
         }
     }
 
@@ -49,6 +54,12 @@ impl WriteTable {
     #[must_use]
     pub const fn options(&self) -> &WriteOptions {
         &self.options
+    }
+
+    /// Returns nullable table-level overrides before parent inheritance.
+    #[must_use]
+    pub const fn parameter(&self) -> &WriteBasicParameter {
+        &self.parameter
     }
 }
 

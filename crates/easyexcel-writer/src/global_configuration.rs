@@ -64,7 +64,10 @@ mod tests {
 
         assert_eq!(restored.auto_trim, options.auto_trim);
         assert_eq!(restored.use_1904_windowing, options.use_1904_windowing);
-        assert_eq!(restored.use_scientific_format, options.use_scientific_format);
+        assert_eq!(
+            restored.use_scientific_format,
+            options.use_scientific_format
+        );
         assert_eq!(restored.locale, options.locale);
         assert_eq!(restored.filed_cache_location, options.filed_cache_location);
     }

@@ -1,8 +1,6 @@
 //! CSV / style / read / write / large / issue portable asserts for temp 1:1.
 
-use easyexcel::{
-    DynamicRow, EasyExcel, ExcelCellStyle, ExcelRow, HorizontalCellStyleStrategy,
-};
+use easyexcel::{DynamicRow, EasyExcel, ExcelCellStyle, ExcelRow, HorizontalCellStyleStrategy};
 
 use super::{assert_fixture, fixture, temp_path};
 
@@ -37,9 +35,7 @@ pub fn assert_csv_fixture_read() {
     for name in ["bom/office_bom.csv", "bom/no_bom.csv", "demo/demo.csv"] {
         let path = fixture(name);
         assert_fixture(&path);
-        let rows = EasyExcel::read_dynamic_sync(&path)
-            .do_read_sync()
-            .unwrap();
+        let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
         assert!(!rows.is_empty(), "{name} must yield rows");
     }
 }
@@ -197,9 +193,7 @@ pub fn assert_large_fixture() {
 pub fn assert_no_model_read() {
     let path = fixture("demo/demo.csv");
     assert_fixture(&path);
-    let rows: Vec<DynamicRow> = EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap();
+    let rows: Vec<DynamicRow> = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
     assert!(!rows.is_empty());
 }
 
@@ -265,9 +259,7 @@ pub fn assert_dataformat_dates() {
     ] {
         let path = fixture(name);
         assert_fixture(&path);
-        let rows = EasyExcel::read_dynamic_sync(&path)
-            .do_read_sync()
-            .unwrap();
+        let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
         assert!(!rows.is_empty(), "{name} must yield rows");
     }
 }
@@ -331,9 +323,7 @@ pub fn assert_issue2443() {
     ] {
         let path = fixture(name);
         assert_fixture(&path);
-        let rows = EasyExcel::read_dynamic_sync(&path)
-            .do_read_sync()
-            .unwrap();
+        let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
         assert!(!rows.is_empty(), "{name}");
     }
 }
@@ -350,9 +340,7 @@ pub fn assert_issue2443_parse() {
     let path = fixture("java/temp/issue2443/date1.xlsx");
     assert_fixture(&path);
     let _ = EasyExcel::read_sync::<Issue2443>(&path).do_read_sync();
-    let rows = EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap();
+    let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
     assert!(!rows.is_empty());
 }
 
@@ -423,9 +411,7 @@ pub fn assert_write_simple() {
         .sheet("Sheet1")
         .do_write(vec![Row { v: "ok".into() }])
         .unwrap();
-    let rows = EasyExcel::read_sync::<Row>(&path)
-        .do_read_sync()
-        .unwrap();
+    let rows = EasyExcel::read_sync::<Row>(&path).do_read_sync().unwrap();
     assert_eq!(rows[0].v, "ok");
 }
 
@@ -457,9 +443,7 @@ pub fn assert_csv_file_magic() {
     use std::io::Read;
     file.read_exact(&mut header).unwrap();
     assert_ne!(&header, b"PK\x03\x04", "CSV fixture must not be ZIP magic");
-    let rows = EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap();
+    let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
     assert!(!rows.is_empty());
 }
 
@@ -521,17 +505,14 @@ pub fn assert_decimal_scale_smoke() {
 /// SimpleDateFormat-style locale date format strings (DataFormatTest probes).
 pub fn assert_locale_date_format_smoke() {
     // Pattern presence checks — portable stand-in for Java SimpleDateFormat probes.
-    let patterns = [
-        "yyyy年m月d日 h点mm哈哈哈m",
-        "yyyy年m月d日",
-        "ah时mm分",
-    ];
+    let patterns = ["yyyy年m月d日 h点mm哈哈哈m", "yyyy年m月d日", "ah时mm分"];
     for p in patterns {
         assert!(p.contains('年') || p.contains('时') || p.contains('月'));
     }
     // Java `date_ptrn6`: must contain at least one of 年|月|日|时|分|秒
     fn has_date_token(s: &str) -> bool {
-        s.chars().any(|c| matches!(c, '年' | '月' | '日' | '时' | '分' | '秒'))
+        s.chars()
+            .any(|c| matches!(c, '年' | '月' | '日' | '时' | '分' | '秒'))
     }
     assert!(has_date_token("2017年"));
     assert!(!has_date_token("2017但是"));
@@ -566,7 +547,10 @@ pub fn assert_excel_serial_date_probes() {
 
     // Integer-day serial: 44729 ≈ 2022-06-17 (1900 date system / Lotus bug epoch)
     let dt = get_java_date(44729);
-    assert_eq!(dt.date_naive(), NaiveDate::from_ymd_opt(2022, 6, 17).unwrap());
+    assert_eq!(
+        dt.date_naive(),
+        NaiveDate::from_ymd_opt(2022, 6, 17).unwrap()
+    );
 
     // Fractional serial → wall-clock via epoch + days + fraction-of-day
     let serial = 44729.99998842592_f64;
@@ -575,7 +559,10 @@ pub fn assert_excel_serial_date_probes() {
     let base = get_java_date(whole).naive_utc();
     let nanos = (frac * 86_400.0 * 1_000_000_000.0).round() as i64;
     let with_time = base + chrono::Duration::nanoseconds(nanos);
-    assert_eq!(with_time.date(), NaiveDate::from_ymd_opt(2022, 6, 17).unwrap());
+    assert_eq!(
+        with_time.date(),
+        NaiveDate::from_ymd_opt(2022, 6, 17).unwrap()
+    );
     // Near end of day (23:59:xx)
     assert!(with_time.hour() >= 23);
 
@@ -625,8 +612,14 @@ pub fn assert_is_a_date_format_probes() {
         Some("[DBNum1][$-404]m\"月\"d\"日\";@"),
     ));
     // Java DataFormatTest#test1
-    assert!(is_a_date_format(181, Some("yyyy\"年啊\"m\"月\"d\"日\"\\ h")));
-    assert!(is_a_date_format(180, Some("yyyy\"年\"m\"月\"d\"日\"\\ h\"点\"")));
+    assert!(is_a_date_format(
+        181,
+        Some("yyyy\"年啊\"m\"月\"d\"日\"\\ h")
+    ));
+    assert!(is_a_date_format(
+        180,
+        Some("yyyy\"年\"m\"月\"d\"日\"\\ h\"点\"")
+    ));
 }
 
 /// Read `fill/simple.xlsx` (replaces Java `TestFileUtil` / local-path lastRowNum probes).

@@ -16,10 +16,10 @@ use std::path::Path;
 use chrono::NaiveDate;
 use easyexcel::{
     AnalysisContext, CellExtraType, CellStyle, DynamicRow, DynamicValue, EasyExcel, ErrorAction,
-    ExcelCellStyle, ExcelColor, ExcelError, ExcelFillPattern, ExcelRow, HorizontalCellStyleStrategy,
-    LoopMergeStrategy, PageReadListener, ReadDefaultReturn, ReadListener,
-    SimpleColumnWidthStyleStrategy, SimpleRowHeightStyleStrategy, VerticalCellStyleStrategy,
-    WriteCellData,
+    ExcelCellStyle, ExcelColor, ExcelError, ExcelFillPattern, ExcelRow,
+    HorizontalCellStyleStrategy, LoopMergeStrategy, PageReadListener, ReadDefaultReturn,
+    ReadListener, SimpleColumnWidthStyleStrategy, SimpleRowHeightStyleStrategy,
+    VerticalCellStyleStrategy, WriteCellData,
 };
 use tempfile::tempdir;
 use zip::ZipArchive;
@@ -64,7 +64,6 @@ fn read_dynamic_actual_no_head(path: &std::path::Path) -> Vec<DynamicRow> {
         .do_read_sync()
         .unwrap()
 }
-
 
 fn assert_xls_readable(path: &std::path::Path) {
     assert!(
@@ -115,9 +114,7 @@ fn sheet_column_width(sheet_xml: &str, one_based_column: u16) -> f64 {
     let (_, column) = sheet_xml
         .split_once(&marker)
         .unwrap_or_else(|| panic!("missing column {one_based_column}"));
-    let (_, width) = column
-        .split_once("width=\"")
-        .expect("missing column width");
+    let (_, width) = column.split_once("width=\"").expect("missing column width");
     let (width, _) = width.split_once('"').expect("unterminated column width");
     width.parse().expect("column width f64")
 }
@@ -360,9 +357,11 @@ fn assert_sort_no_head(path: &std::path::Path) {
         .sheet("Sheet1")
         .do_write(vec![{
             let mut map = BTreeMap::new();
-            for (i, name) in ["column1", "column2", "column3", "column4", "column5", "column6"]
-                .iter()
-                .enumerate()
+            for (i, name) in [
+                "column1", "column2", "column3", "column4", "column5", "column6",
+            ]
+            .iter()
+            .enumerate()
             {
                 map.insert(i, DynamicValue::String(name.to_string()));
             }
@@ -434,7 +433,11 @@ fn assert_exception_read_and_write(path: &std::path::Path) {
         fn on_exception(&mut self, _error: &ExcelError, _context: &AnalysisContext) -> ErrorAction {
             ErrorAction::Continue
         }
-        fn invoke(&mut self, data: ExceptionData, _context: &AnalysisContext) -> easyexcel::Result<()> {
+        fn invoke(
+            &mut self,
+            data: ExceptionData,
+            _context: &AnalysisContext,
+        ) -> easyexcel::Result<()> {
             self.list.push(data);
             if self.list.len() == 5 {
                 // Simulate exception at row 5
@@ -483,7 +486,11 @@ fn assert_exception_throw(path: &std::path::Path) {
 
     struct ExceptionThrowListener;
     impl ReadListener<ExceptionData> for ExceptionThrowListener {
-        fn invoke(&mut self, _data: ExceptionData, _context: &AnalysisContext) -> easyexcel::Result<()> {
+        fn invoke(
+            &mut self,
+            _data: ExceptionData,
+            _context: &AnalysisContext,
+        ) -> easyexcel::Result<()> {
             Err(ExcelError::Format("/ by zero".to_owned()))
         }
         fn do_after_all_analysed(&mut self, _context: &AnalysisContext) -> easyexcel::Result<()> {
@@ -516,7 +523,10 @@ fn assert_stop_sheet_exception(path: &std::path::Path) {
     let sheet4 = EasyExcel::writer_sheet::<ExceptionData>("sheet4");
 
     let mut writer = EasyExcel::write::<ExceptionData>(path).build();
-    for (i, sheet) in [&sheet0, &sheet1, &sheet2, &sheet3, &sheet4].iter().enumerate() {
+    for (i, sheet) in [&sheet0, &sheet1, &sheet2, &sheet3, &sheet4]
+        .iter()
+        .enumerate()
+    {
         let data: Vec<ExceptionData> = (0..5)
             .map(|j| ExceptionData {
                 name: format!("sheet{i}-姓名{j}"),
@@ -790,7 +800,11 @@ fn converter_t22_write_image_xls() {
 #[test]
 fn dateformat_t01_read_xlsx() {
     let path = fixture("dataformat/dataformat.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = read_dynamic_string(&path);
     assert!(!rows.is_empty(), "dataformat.xlsx should have data");
 }
@@ -798,7 +812,11 @@ fn dateformat_t01_read_xlsx() {
 #[test]
 fn dateformat_t02_read_xls() {
     let path = fixture("xls/dataformat.xls");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = read_dynamic_string(&path);
     assert!(!rows.is_empty());
 }
@@ -807,7 +825,11 @@ fn dateformat_t02_read_xls() {
 fn dateformat_t03_read() {
     // Generic date format read test
     let path = fixture("dataformat/dataformat.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = read_dynamic_actual(&path);
     assert!(!rows.is_empty());
 }
@@ -877,10 +899,7 @@ fn assert_no_model(path: &std::path::Path) {
             let mut map = BTreeMap::new();
             map.insert(0, DynamicValue::String(format!("string1{i}")));
             map.insert(1, DynamicValue::String(format!("{}", 100 + i)));
-            map.insert(
-                2,
-                DynamicValue::String("2020-01-01 01:01:01".to_owned()),
-            );
+            map.insert(2, DynamicValue::String("2020-01-01 01:01:01".to_owned()));
             DynamicRow::new(map)
         })
         .collect();
@@ -1024,7 +1043,11 @@ fn skip_t03_read_and_write_csv() {
 #[test]
 fn large_t01_read_xlsx() {
     let path = fixture("large/large07.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = read_dynamic_string(&path);
     assert!(!rows.is_empty(), "large07.xlsx should have data");
 }
@@ -1033,7 +1056,11 @@ fn large_t01_read_xlsx() {
 fn large_t02_fill_xlsx() {
     // Template fill test
     let path = fixture("fill/simple.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     // Verify template exists and is readable
     let bytes = std::fs::read(&path).unwrap();
     assert!(bytes.starts_with(b"PK"), "should be valid XLSX");
@@ -1496,7 +1523,11 @@ fn annotation_t11_write_style_xlsx() {
     assert!(meta.head_font_style.is_some());
     assert!(meta.content_font_style.is_some());
     assert!(AnnotationStyleData::schema()[0].head_style.is_some());
-    assert!(AnnotationStyleData::schema()[0].content_font_style.is_some());
+    assert!(
+        AnnotationStyleData::schema()[0]
+            .content_font_style
+            .is_some()
+    );
 
     let styles = zip_entry(&path, "xl/styles.xml");
     // Indexed palette colors used by AnnotationStyleData
@@ -1510,10 +1541,7 @@ fn annotation_t11_write_style_xlsx() {
         "rgb=\"FF008000\"", // 17
         "rgb=\"FFC0C0C0\"", // 22
     ] {
-        assert!(
-            styles.contains(expected),
-            "styles.xml missing {expected}"
-        );
+        assert!(styles.contains(expected), "styles.xml missing {expected}");
     }
     for size in [20, 30, 40, 50] {
         assert!(
@@ -1624,7 +1652,9 @@ fn cache_t03_read_and_write_invoke_memory_xlsx() {
 //   before_row, after_row, before_cell, after_cell
 // ============================================================================
 
-use easyexcel::{WriteWorkbookContext, WriteSheetContext, WriteRowContext, WriteCellContext, WriteHandler};
+use easyexcel::{
+    WriteCellContext, WriteHandler, WriteRowContext, WriteSheetContext, WriteWorkbookContext,
+};
 
 #[derive(Debug, Clone, ExcelRow)]
 struct WriteHandlerData {
@@ -1830,11 +1860,13 @@ use easyexcel::{FillConfig, FillWrapper, TemplateData};
 #[test]
 fn fill_t01_fill_xlsx() {
     let template = fixture("fill/simple.xlsx");
-    assert!(template.exists(), "required Java fixture missing: {}", template.display());
+    assert!(
+        template.exists(),
+        "required Java fixture missing: {}",
+        template.display()
+    );
     let output = temp_path("fill_simple07.xlsx");
-    let data = TemplateData::new()
-        .with("name", "张三")
-        .with("number", 5.2);
+    let data = TemplateData::new().with("name", "张三").with("number", 5.2);
     EasyExcel::fill_template(&template, &output, &data).unwrap();
     // Read back and assert filled values match Java
     let rows = EasyExcel::read_dynamic_sync(&output)
@@ -1850,9 +1882,15 @@ fn fill_t01_fill_xlsx() {
             match val {
                 DynamicValue::String(s) if s.contains("张三") => found_name = true,
                 DynamicValue::String(s) if s.contains("5") => found_number = true,
-                DynamicValue::ActualData(easyexcel::CellValue::String(s)) if s.contains("张三") => found_name = true,
+                DynamicValue::ActualData(easyexcel::CellValue::String(s)) if s.contains("张三") => {
+                    found_name = true
+                }
                 DynamicValue::ActualData(easyexcel::CellValue::Decimal(_)) => found_number = true,
-                DynamicValue::ActualData(easyexcel::CellValue::Float(f)) if (*f - 5.2).abs() < 0.1 => found_number = true,
+                DynamicValue::ActualData(easyexcel::CellValue::Float(f))
+                    if (*f - 5.2).abs() < 0.1 =>
+                {
+                    found_number = true
+                }
                 _ => {}
             }
         }
@@ -1868,11 +1906,8 @@ fn fill_t02_fill_xls() {
     let xls = fixture("xls/fill/simple.xls");
     assert_xls_readable(&xls);
     let output = temp_path("fill_t02_fill_xls.xls");
-    let data = TemplateData::new()
-        .with("name", "张三")
-        .with("number", 5.2);
-    EasyExcel::fill_template(&xls, &output, &data)
-        .expect("XLS fill must succeed with SST support");
+    let data = TemplateData::new().with("name", "张三").with("number", 5.2);
+    EasyExcel::fill_template(&xls, &output, &data).expect("XLS fill must succeed with SST support");
     assert!(output.exists());
     let rows = EasyExcel::read_dynamic_sync(&output)
         .head_row_number(0)
@@ -1910,14 +1945,25 @@ fn fill_t03_fill_csv() {
 #[test]
 fn fill_t03_complex_fill_xlsx() {
     let template = fixture("fill/complex.xlsx");
-    assert!(template.exists(), "required Java fixture missing: {}", template.display());
+    assert!(
+        template.exists(),
+        "required Java fixture missing: {}",
+        template.display()
+    );
     let output = temp_path("fill_complex07.xlsx");
     // complex.xlsx placeholders: {date}, {.name}, {.number}, {total}
     // Use fill_template_list for collection fill
-    let wrapper = FillWrapper::named("", vec![
-        TemplateData::new().with("name", "张三").with("number", 5.2),
-    ]);
-    EasyExcel::fill_template_list(&template, &output, &wrapper, FillConfig::new().force_new_row(true)).unwrap();
+    let wrapper = FillWrapper::named(
+        "",
+        vec![TemplateData::new().with("name", "张三").with("number", 5.2)],
+    );
+    EasyExcel::fill_template_list(
+        &template,
+        &output,
+        &wrapper,
+        FillConfig::new().force_new_row(true),
+    )
+    .unwrap();
     let rows = EasyExcel::read_dynamic_sync(&output)
         .head_row_number(0)
         .do_read_sync()
@@ -1928,7 +1974,9 @@ fn fill_t03_complex_fill_xlsx() {
         for (_, val) in row.values() {
             match val {
                 DynamicValue::String(s) if s.contains("张三") => found_name = true,
-                DynamicValue::ActualData(easyexcel::CellValue::String(s)) if s.contains("张三") => found_name = true,
+                DynamicValue::ActualData(easyexcel::CellValue::String(s)) if s.contains("张三") => {
+                    found_name = true
+                }
                 _ => {}
             }
         }
@@ -1943,11 +1991,8 @@ fn fill_t04_complex_fill_xls() {
     let xls = fixture("xls/fill/complex.xls");
     assert_xls_readable(&xls);
     let output = temp_path("fill_t04_complex_fill_xls.xls");
-    let data = TemplateData::new()
-        .with("name", "张三")
-        .with("number", 5.2);
-    EasyExcel::fill_template(&xls, &output, &data)
-        .expect("XLS fill must succeed with SST support");
+    let data = TemplateData::new().with("name", "张三").with("number", 5.2);
+    EasyExcel::fill_template(&xls, &output, &data).expect("XLS fill must succeed with SST support");
     assert!(output.exists());
     let rows = EasyExcel::read_dynamic_sync(&output)
         .head_row_number(0)
@@ -1962,11 +2007,13 @@ fn fill_t04_complex_fill_xls() {
 #[test]
 fn fill_t05_horizontal_fill_xlsx() {
     let template = fixture("fill/horizontal.xlsx");
-    assert!(template.exists(), "required Java fixture missing: {}", template.display());
+    assert!(
+        template.exists(),
+        "required Java fixture missing: {}",
+        template.display()
+    );
     let output = temp_path("fill_horizontal07.xlsx");
-    let data = TemplateData::new()
-        .with("name", "张三")
-        .with("number", 5.2);
+    let data = TemplateData::new().with("name", "张三").with("number", 5.2);
     EasyExcel::fill_template(&template, &output, &data).unwrap();
     // Read back and assert (Java: assertEquals(5, list.size()), map0.get(2)=="张三")
     let rows = EasyExcel::read_dynamic_sync(&output)
@@ -1979,7 +2026,9 @@ fn fill_t05_horizontal_fill_xlsx() {
         for (_, val) in row.values() {
             match val {
                 DynamicValue::String(s) if s.contains("张三") => found_name = true,
-                DynamicValue::ActualData(easyexcel::CellValue::String(s)) if s.contains("张三") => found_name = true,
+                DynamicValue::ActualData(easyexcel::CellValue::String(s)) if s.contains("张三") => {
+                    found_name = true
+                }
                 _ => {}
             }
         }
@@ -1997,11 +2046,8 @@ fn fill_t06_horizontal_fill_xls() {
     let xls = fixture("xls/fill/horizontal.xls");
     assert_xls_readable(&xls);
     let output = temp_path("fill_t06_horizontal_fill_xls.xls");
-    let data = TemplateData::new()
-        .with("name", "张三")
-        .with("number", 5.2);
-    EasyExcel::fill_template(&xls, &output, &data)
-        .expect("XLS fill must succeed with SST support");
+    let data = TemplateData::new().with("name", "张三").with("number", 5.2);
+    EasyExcel::fill_template(&xls, &output, &data).expect("XLS fill must succeed with SST support");
     assert!(output.exists());
     let rows = EasyExcel::read_dynamic_sync(&output)
         .head_row_number(0)
@@ -2014,11 +2060,13 @@ fn fill_t06_horizontal_fill_xls() {
 #[test]
 fn fill_t07_by_name_fill_xlsx() {
     let template = fixture("fill/byName.xlsx");
-    assert!(template.exists(), "required Java fixture missing: {}", template.display());
+    assert!(
+        template.exists(),
+        "required Java fixture missing: {}",
+        template.display()
+    );
     let output = temp_path("fill_byName07.xlsx");
-    let data = TemplateData::new()
-        .with("name", "张三")
-        .with("number", 5.2);
+    let data = TemplateData::new().with("name", "张三").with("number", 5.2);
     EasyExcel::fill_template(&template, &output, &data).unwrap();
     let bytes = std::fs::read(&output).unwrap();
     assert!(bytes.starts_with(b"PK"));
@@ -2031,11 +2079,8 @@ fn fill_t08_by_name_fill_xls() {
     let xls = fixture("xls/fill/byName.xls");
     assert_xls_readable(&xls);
     let output = temp_path("fill_t08_by_name_fill_xls.xls");
-    let data = TemplateData::new()
-        .with("name", "张三")
-        .with("number", 5.2);
-    EasyExcel::fill_template(&xls, &output, &data)
-        .expect("XLS fill must succeed with SST support");
+    let data = TemplateData::new().with("name", "张三").with("number", 5.2);
+    EasyExcel::fill_template(&xls, &output, &data).expect("XLS fill must succeed with SST support");
     assert!(output.exists());
     let rows = EasyExcel::read_dynamic_sync(&output)
         .head_row_number(0)
@@ -2053,11 +2098,13 @@ fn fill_t08_by_name_fill_xls() {
 #[test]
 fn fill_t09_composite_fill_xlsx() {
     let template = fixture("fill/composite.xlsx");
-    assert!(template.exists(), "required Java fixture missing: {}", template.display());
+    assert!(
+        template.exists(),
+        "required Java fixture missing: {}",
+        template.display()
+    );
     let output = temp_path("fill_composite07.xlsx");
-    let data = TemplateData::new()
-        .with("name", "张三")
-        .with("number", 5.2);
+    let data = TemplateData::new().with("name", "张三").with("number", 5.2);
     EasyExcel::fill_template(&template, &output, &data).unwrap();
     // Read back and assert (Java: map0.get(21)=="张三", map27.get(0)=="张三", map29.get(3)=="张三")
     let rows = EasyExcel::read_dynamic_sync(&output)
@@ -2070,7 +2117,9 @@ fn fill_t09_composite_fill_xlsx() {
         for (_, val) in row.values() {
             match val {
                 DynamicValue::String(s) if s.contains("张三") => found_name = true,
-                DynamicValue::ActualData(easyexcel::CellValue::String(s)) if s.contains("张三") => found_name = true,
+                DynamicValue::ActualData(easyexcel::CellValue::String(s)) if s.contains("张三") => {
+                    found_name = true
+                }
                 _ => {}
             }
         }
@@ -2088,11 +2137,8 @@ fn fill_t10_composite_fill_xls() {
     let xls = fixture("xls/fill/composite.xls");
     assert_xls_readable(&xls);
     let output = temp_path("fill_t10_composite_fill_xls.xls");
-    let data = TemplateData::new()
-        .with("name", "张三")
-        .with("number", 5.2);
-    EasyExcel::fill_template(&xls, &output, &data)
-        .expect("XLS fill must succeed with SST support");
+    let data = TemplateData::new().with("name", "张三").with("number", 5.2);
+    EasyExcel::fill_template(&xls, &output, &data).expect("XLS fill must succeed with SST support");
     assert!(output.exists());
     let rows = EasyExcel::read_dynamic_sync(&output)
         .head_row_number(0)
@@ -2109,7 +2155,11 @@ fn fill_t10_composite_fill_xls() {
 #[test]
 fn extra_t01_read_xlsx() {
     let path = fixture("demo/extra.xlsx");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
     let rows = EasyExcel::read_dynamic_sync(&path)
         .extra_read(CellExtraType::Comment)
         .extra_read(CellExtraType::Hyperlink)
@@ -2121,10 +2171,12 @@ fn extra_t01_read_xlsx() {
 #[test]
 fn extra_t02_read_xls() {
     let path = fixture("xls/extra/extra.xls");
-    assert!(path.exists(), "required Java fixture missing: {}", path.display());
-    let rows = EasyExcel::read_dynamic_sync(&path)
-        .do_read_sync()
-        .unwrap();
+    assert!(
+        path.exists(),
+        "required Java fixture missing: {}",
+        path.display()
+    );
+    let rows = EasyExcel::read_dynamic_sync(&path).do_read_sync().unwrap();
     assert!(!rows.is_empty(), "Java extra.xls fixture must yield rows");
 }
 

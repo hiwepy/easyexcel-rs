@@ -10,8 +10,8 @@
 //! Naming: `mod <java_class_snake>` + `fn <java_method_snake>`.
 
 use easyexcel::{EasyExcel, ExcelRow};
-use easyexcel_core::{IntoExcelCell, WriteCellData};
 use easyexcel_core::ExcelRow as ExcelRowTrait;
+use easyexcel_core::{IntoExcelCell, WriteCellData};
 
 // ---------------------------------------------------------------------------
 // Top-level test structs (visible to derive macro)
@@ -173,6 +173,7 @@ mod poi_handle_test {
             column_index: None,
             field: "",
             format: None,
+            use_1904_windowing: false,
         };
         let cv = IntoExcelCell::to_excel_cell(&data, &ctx).unwrap();
         if let easyexcel::CellValue::String(s) = cv {

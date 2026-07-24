@@ -13,40 +13,36 @@
 
 ### A.1 Factory / facade methods
 
-| # | Java method                                               | Rust method                                    | Status        |
-|---|-----------------------------------------------------------|------------------------------------------------|---------------|
-| 1 | `write()`                                                 | `EasyExcel::write<T>(path)`                    | [OK-ADAPTED]  |
-| 2 | `write(File)`                                             | `EasyExcel::write<T>(path)`                    | [OK-ADAPTED]  |
-| 3 | `write(File, Class)`                                      | `EasyExcel::write<T>(path).head(T::class)`     | [OK-ADAPTED]  |
-| 4 | `write(String)`                                           | `EasyExcel::write<T>(path)`                    | [OK-ADAPTED]  |
-| 5 | `write(String, Class)`                                    | `EasyExcel::write<T>(path).head(T::class)`     | [OK-ADAPTED]  |
-| 6 | `write(OutputStream)`                                     | `EasyExcel::write<T>(path).to_writer(...)`     | [OK-ADAPTED]  |
-| 7 | `write(OutputStream, Class)`                              | `EasyExcel::write<T>(path).to_writer(...).head(T::class)` | [OK-ADAPTED] |
-| 8 | `write(Writer, Class)`                                    | (no Writer abstraction; use `to_writer(W)`)    | [HANDLE]      |
-| 9 | `write(Writer, Class, List<List<String>>)`                | `EasyExcel::write<T>(path).head(Lists)`        | [HANDLE]      |
-| 10| `writerSheet()`                                           | `EasyExcel::writer_sheet::<T>(None)`           | [OK-RENAMED]  |
-| 11| `writerSheet(Integer)`                                    | `EasyExcel::writer_sheet_index::<T>(idx)`     | [OK-RENAMED]  |
-| 12| `writerSheet(String)`                                     | `EasyExcel::writer_sheet::<T>(name)`           | [OK-RENAMED]  |
-| 13| `writerTable(Integer)`                                    | `EasyExcel::writer_table(idx)`                 | [GAP] (added in Phase 4) |
-| 14| `read()`                                                  | `EasyExcel::read<T,L>(path, listener)`         | [OK-ADAPTED]  |
-| 15| `read(File)`                                              | `EasyExcel::read<T,L>(path, listener)`         | [OK-ADAPTED]  |
-| 16| `read(File, ReadListener)`                                | `EasyExcel::read<T,L>(path, listener)`         | [OK]          |
-| 17| `read(File, Class, ReadListener)`                         | `EasyExcel::read<T,L>(path, listener)` + `head()` | [OK-ADAPTED] |
-| 18| `read(String)`                                            | `EasyExcel::read<T,L>(path, listener)`         | [OK-ADAPTED]  |
-| 19| `read(String, ReadListener)`                              | `EasyExcel::read<T,L>(path, listener)`         | [OK]          |
-| 20| `read(String, Class, ReadListener)`                       | `EasyExcel::read<T,L>(path, listener)` + `head()` | [OK-ADAPTED] |
-| 21| `read(InputStream)`                                       | `EasyExcel::read<T,L>(path, listener)`         | [HANDLE]      |
-| 22| `read(InputStream, ReadListener)`                         | `EasyExcel::read<T,L>(path, listener)`         | [OK]          |
-| 23| `read(InputStream, Class, ReadListener)`                  | `EasyExcel::read<T,L>(path, listener)` + `head()` | [HANDLE]   |
-| 24| `read(Reader)`                                            | (no Reader abstraction in Rust facade)        | [HANDLE]      |
-| 25| `read(Reader, ReadListener)`                              | (no Reader abstraction in Rust facade)        | [HANDLE]      |
-| 26| `read(Reader, Class, ReadListener)`                       | (no Reader abstraction in Rust facade)        | [HANDLE]      |
-| 27| `readSheet()`                                             | `ExcelReaderSheetBuilder::default()`           | [OK-ADAPTED]  |
-| 28| `readSheet(Integer)`                                      | `ExcelReaderSheetBuilder::sheet_no(idx)`       | [OK-RENAMED]  |
-| 29| `readSheet(String)`                                       | `ExcelReaderSheetBuilder::sheet_name(name)`    | [OK-RENAMED]  |
-| 30| `readTable(Integer)`                                      | (not in facade; builder-only)                  | [HANDLE]      |
+| # | Java method | Rust method | Status |
+|---|-------------|-------------|--------|
+| 1 | `write()` | `EasyExcel::writer()` | [OK-RENAMED] |
+| 2 | `write(File)` | `EasyExcel::writer_to_path(path)` | [OK-ADAPTED] |
+| 3 | `write(File, Class)` | `EasyExcel::write::<T>(path)` / generic `T` | [OK-ADAPTED] |
+| 4 | `write(String)` | `EasyExcel::writer_to_path(path)` | [OK-ADAPTED] |
+| 5 | `write(String, Class)` | `EasyExcel::write::<T>(path)` / generic `T` | [OK-ADAPTED] |
+| 6 | `write(OutputStream)` | `EasyExcel::writer_to_output_stream(output)` | [OK-ADAPTED] |
+| 7 | `write(OutputStream, Class)` | `EasyExcel::write::<T>(logical_path).to_output_stream(output)` | [OK-ADAPTED] |
+| 8 | `writerSheet()` | `EasyExcel::writer_sheet_builder()` | [OK-RENAMED] |
+| 9 | `writerSheet(Integer)` | `EasyExcel::writer_sheet_builder_index(index)` | [OK-RENAMED] |
+| 10 | `writerSheet(String)` | `EasyExcel::writer_sheet_builder_name(name)` | [OK-RENAMED] |
+| 11 | `writerSheet(Integer, String)` | `EasyExcel::writer_sheet_builder_with(index, name)` | [OK-RENAMED] |
+| 12 | `writerTable()` | `EasyExcel::writer_table_builder_default()` | [OK-RENAMED] |
+| 13 | `writerTable(Integer)` | `EasyExcel::writer_table_builder(index)` | [OK-RENAMED] |
+| 14 | `read()` | `EasyExcel::reader()` | [OK-RENAMED] |
+| 15 | `read(File)` | `EasyExcel::reader_from_path(path)` | [OK-ADAPTED] |
+| 16 | `read(File, ReadListener)` | `reader_from_path(path).register_read_listener(listener)` | [OK-ADAPTED] |
+| 17 | `read(File, Class, ReadListener)` | `EasyExcel::read::<T, L>(path, listener)` | [OK-ADAPTED] |
+| 18 | `read(String)` | `EasyExcel::reader_from_path(path)` | [OK-ADAPTED] |
+| 19 | `read(String, ReadListener)` | `reader_from_path(path).register_read_listener(listener)` | [OK-ADAPTED] |
+| 20 | `read(String, Class, ReadListener)` | `EasyExcel::read::<T, L>(path, listener)` | [OK-ADAPTED] |
+| 21 | `read(InputStream)` | `EasyExcel::reader_from_input_stream(reader)` | [OK-ADAPTED] |
+| 22 | `read(InputStream, ReadListener)` | `reader_from_input_stream(reader)?.register_read_listener(listener)` | [OK-ADAPTED] |
+| 23 | `read(InputStream, Class, ReadListener)` | previous builder + generic `T: ExcelRow` | [OK-ADAPTED] |
+| 24 | `readSheet()` | `EasyExcel::read_sheet()` | [OK-RENAMED] |
+| 25 | `readSheet(Integer)` / `readSheet(String)` | `read_sheet_index` / `read_sheet_name` | [OK-RENAMED] |
+| 26 | `readSheet(Integer, String)` | `EasyExcel::read_sheet_with(index, name)` | [OK-RENAMED] |
 
-**Phase 4 action items**: introduce `EasyExcel::write_with_table(...)` to expose the three-arg `ExcelWriter.write(Collection, WriteSheet, WriteTable)` overload at the public facade level.
+Java 4.0.3 当前基线没有 `Writer` 或 `readTable` factory overload；旧矩阵中的这些行已移除。
 
 ---
 
@@ -54,16 +50,16 @@
 
 | # | Java method                              | Rust method                                  | Status        |
 |---|------------------------------------------|----------------------------------------------|---------------|
-| 1 | `ExcelReader(ReadWorkbook)` constructor  | `ExcelReader::new(read_workbook)`            | [OK-RENAMED]  |
-| 2 | `read()` (@Deprecated)                   | `ExcelReader::read_all()`                    | [OK-RENAMED]  |
+| 1 | `ExcelReader(ReadWorkbook)` constructor  | `ExcelReader::new(path, options, listener)`  | [OK-ADAPTED]  |
+| 2 | `read()` (@Deprecated)                   | `ExcelReader::read_deprecated()`             | [OK-RENAMED]  |
 | 3 | `readAll()`                              | `ExcelReader::read_all()`                    | [OK-RENAMED]  |
-| 4 | `read(ReadSheet...)`                     | `ExcelReader::read(sheet)`                   | [OK-RENAMED]  |
-| 5 | `read(List<ReadSheet>)`                  | `ExcelReader::read_sheet(sheet)`             | [OK-ADAPTED]  |
+| 4 | `read(ReadSheet...)`                     | `ExcelReader::read(&[ReadSheet])`            | [OK-ADAPTED]  |
+| 5 | `read(List<ReadSheet>)`                  | `ExcelReader::read(&[ReadSheet])`            | [OK-ADAPTED]  |
 | 6 | `analysisContext()`                      | `ExcelReader::analysis_context()`             | [OK-RENAMED]  |
-| 7 | `getAnalysisContext()` (@Deprecated)     | `ExcelReader::analysis_context()`             | [OK-RENAMED]  |
+| 7 | `getAnalysisContext()` (@Deprecated)     | `ExcelReader::get_analysis_context()`         | [OK-RENAMED]  |
 | 8 | `excelExecutor()`                        | `ExcelReader::excel_executor()`              | [OK-RENAMED]  |
 | 9 | `finish()`                               | `ExcelReader::finish()`                      | [OK]          |
-| 10| `close()`                                | `ExcelReader::close()` (auto)                | [OK]          |
+| 10| `close()`                                | `ExcelReader::close()`                       | [OK]          |
 | 11| `finalize()`                             | `Drop` impl                                  | [OK-ADAPTED]  |
 
 ---
@@ -89,7 +85,7 @@
 
 | # | Java method                                              | Rust trait method                              | Status        |
 |---|----------------------------------------------------------|------------------------------------------------|---------------|
-| 1 | `analysis(List<ReadSheet>, Boolean)`                     | `ExcelAnalyser::analysis(...)`                 | [OK-RENAMED]  |
+| 1 | `analysis(List<ReadSheet>, Boolean)`                     | `ExcelAnalyser::analysis::<T,L>(&mut listener)` + `ReadOptions` sheet selection | [OK-ADAPTED] |
 | 2 | `analysisContext()`                                      | `ExcelAnalyser::analysis_context()`            | [OK-RENAMED]  |
 | 3 | `excelExecutor()`                                        | `ExcelAnalyser::excel_executor()`              | [OK-RENAMED]  |
 | 4 | `finish()`                                               | `ExcelAnalyser::finish()`                      | [OK]          |
@@ -102,10 +98,20 @@
 | 2 | `analysis(...)`                      | `ExcelAnalyserImpl::analysis(...)`           | [OK-RENAMED]  |
 | 3 | `analysisContext()`                  | `ExcelAnalyserImpl::analysis_context()`       | [OK-RENAMED]  |
 | 4 | `excelExecutor()`                    | `ExcelAnalyserImpl::excel_executor()`         | [OK-RENAMED]  |
-| 5 | `finish()`                           | `ExcelAnalyserImpl::finish()`                 | [OK]          |
+| 5 | `finish()`                           | `ExcelAnalyserImpl::finish()`                 | [OK-ADAPTED]  |
 | 6 | `choiceExcelExecutor()`              | `ExcelAnalyserImpl::choice_excel_executor()` | [OK-RENAMED]  |
-| 7 | `removeThreadLocalCache()`           | `ExcelAnalyserImpl::remove_thread_local_cache()` | [OK-RENAMED] |
-| 8 | `clearEncrypt03()`                   | `ExcelAnalyserImpl::clear_encrypt_03()`      | [OK-RENAMED]  |
+| 7 | `removeThreadLocalCache()`           | `finish()` 清理 formatter 与磁盘缓存的真实 TLS 句柄；日期/字段元数据无运行时缓存 | [OK-ADAPTED] |
+| 8 | `clearEncrypt03()`                   | 密码只属于单个 `ReadOptions`，从未写入 POI 式全局/TLS 状态 | [OK-ADAPTED]  |
+
+### D.2 ExcelReadExecutor / CsvExcelReadExecutor
+
+| Java method | Rust method | Status |
+|-------------|-------------|--------|
+| `ExcelReadExecutor.sheetList()` | `ExcelReadExecutor::sheet_list()` | [OK-RENAMED] |
+| `ExcelReadExecutor.execute()` | `ExcelReadExecutor::execute::<T,L>(options, listener)` | [OK-ADAPTED] |
+| `CsvExcelReadExecutor(CsvReadContext)` | `CsvExcelReadExecutor::from_path(path)` + `ReadOptions` | [OK-ADAPTED] |
+| `CsvExcelReadExecutor.sheetList()` | `sheet_list()` | [OK-RENAMED] |
+| `CsvExcelReadExecutor.execute()` | typed `execute()` using the real CSV parser | [OK-ADAPTED] |
 
 ---
 

@@ -17,7 +17,8 @@ use super::*;
 /// Reads a ZIP entry from an XLSX package as UTF-8 text (integration asserts).
 fn zip_entry_text(path: &Path, name: &str) -> Result<String> {
     let file = fs::File::open(path)?;
-    let mut archive = ZipArchive::new(file).map_err(|error| ExcelError::Format(error.to_string()))?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|error| ExcelError::Format(error.to_string()))?;
     let mut entry = archive
         .by_name(name)
         .map_err(|error| ExcelError::Format(error.to_string()))?;
@@ -45,6 +46,216 @@ impl ExcelRow for Value {
     fn to_row(&self) -> Result<Vec<CellValue>> {
         Ok(vec![CellValue::String(self.0.clone())])
     }
+}
+
+#[test]
+fn easy_excel_inherits_factory_entry_points_through_the_same_rust_type() {
+    assert_eq!(
+        std::any::TypeId::of::<EasyExcel>(),
+        std::any::TypeId::of::<EasyExcelFactory>()
+    );
+    assert_eq!(EasyExcelFactory::writer_table(3).table_no(), 3);
+    assert_eq!(
+        EasyExcelFactory::writer_sheet_index::<Value>(4)
+            .options()
+            .sheet_index,
+        Some(4)
+    );
+}
+
+#[test]
+fn easy_excel_factory_builds_all_unbound_sheet_and_table_overloads() {
+    let default_read_sheet = EasyExcelFactory::read_sheet().build();
+    assert!(!default_read_sheet.has_sheet_no());
+    assert!(default_read_sheet.sheet_name().is_empty());
+
+    let indexed_read_sheet = EasyExcelFactory::read_sheet_index(2).build();
+    assert!(indexed_read_sheet.has_sheet_no());
+    assert_eq!(indexed_read_sheet.sheet_no(), 2);
+
+    let named_read_sheet = EasyExcelFactory::read_sheet_name("Named").build();
+    assert!(!named_read_sheet.has_sheet_no());
+    assert_eq!(named_read_sheet.sheet_name(), "Named");
+
+    let combined_read_sheet = EasyExcelFactory::read_sheet_with(3, "Combined").build();
+    assert_eq!(combined_read_sheet.sheet_no(), 3);
+    assert_eq!(combined_read_sheet.sheet_name(), "Combined");
+
+    let default_write_sheet = EasyExcelFactory::writer_sheet_builder().build();
+    assert_eq!(default_write_sheet.sheet_no(), 0);
+    assert!(default_write_sheet.sheet_name().is_empty());
+
+    let indexed_write_sheet = EasyExcelFactory::writer_sheet_builder_index(4).build();
+    assert_eq!(indexed_write_sheet.sheet_no(), 4);
+
+    let named_write_sheet = EasyExcelFactory::writer_sheet_builder_name("Output").build();
+    assert_eq!(named_write_sheet.sheet_name(), "Output");
+
+    let combined_write_sheet =
+        EasyExcelFactory::writer_sheet_builder_with(5, "CombinedOutput").build();
+    assert_eq!(combined_write_sheet.sheet_no(), 5);
+    assert_eq!(combined_write_sheet.sheet_name(), "CombinedOutput");
+
+    assert_eq!(
+        EasyExcelFactory::writer_table_builder_default()
+            .build()
+            .table_no(),
+        0
+    );
+    assert_eq!(
+        EasyExcelFactory::writer_table_builder(6).build().table_no(),
+        6
+    );
+}
+
+#[test]
+fn easy_excel_factory_input_stream_uses_the_real_xlsx_reader_and_cleans_up() -> Result<()> {
+    let directory = tempdir()?;
+    let source = directory.path().join("factory-stream.xlsx");
+    EasyExcelFactory::write::<Value>(&source)
+        .need_head(false)
+        .do_write([Value("from-stream".to_owned())])?;
+    let bytes = fs::read(source)?;
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let listener = OrderedReadListener {
+        name: "stream",
+        events: Arc::clone(&events),
+    };
+    let builder =
+        EasyExcelFactory::reader_from_input_stream(Cursor::new(bytes))?.head_row_number(0);
+    let temporary_path = builder
+        .file
+        .as_ref()
+        .expect("input stream builder must expose its materialised path")
+        .to_owned();
+    assert!(temporary_path.exists());
+
+    let builder = builder.register_read_listener::<Value, _>(listener);
+    let mut reader = builder.build()?;
+    assert!(reader.has_temporary_input());
+    reader.read_all()?;
+    reader.finish();
+    assert!(!reader.has_temporary_input());
+
+    assert_eq!(
+        *events.lock().expect("factory stream events lock"),
+        vec!["stream:from-stream"]
+    );
+    assert!(
+        !temporary_path.exists(),
+        "temporary input must be deleted immediately by finish"
+    );
+    Ok(())
+}
+
+#[test]
+fn easy_excel_factory_input_stream_is_cleaned_when_analysis_fails() -> Result<()> {
+    struct RejectRow;
+
+    impl ReadListener<Value> for RejectRow {
+        fn invoke(&mut self, _data: Value, _context: &AnalysisContext) -> Result<()> {
+            Err(ExcelError::Format("listener rejected row".to_owned()))
+        }
+    }
+
+    let directory = tempdir()?;
+    let source = directory.path().join("factory-stream-error.xlsx");
+    EasyExcelFactory::write::<Value>(&source)
+        .need_head(false)
+        .do_write([Value("reject-me".to_owned())])?;
+    let builder = EasyExcelFactory::reader_from_input_stream(Cursor::new(fs::read(source)?))?
+        .head_row_number(0);
+    let temporary_path = builder
+        .file
+        .as_ref()
+        .expect("materialised input path")
+        .to_owned();
+    let mut reader = builder.build(RejectRow)?;
+
+    let error = reader.read_all().expect_err("listener must reject the row");
+    assert!(error.to_string().contains("listener rejected row"));
+    assert!(!reader.has_temporary_input());
+    assert!(
+        !temporary_path.exists(),
+        "analysis failure must run finish and delete temporary input"
+    );
+    Ok(())
+}
+
+#[test]
+fn easy_excel_factory_detects_an_encrypted_xlsx_input_stream() -> Result<()> {
+    let directory = tempdir()?;
+    let source = directory.path().join("factory-encrypted.xlsx");
+    EasyExcelFactory::write::<Value>(&source)
+        .password("stream-secret")
+        .need_head(false)
+        .do_write([Value("encrypted-stream".to_owned())])?;
+    let bytes = fs::read(source)?;
+    assert!(bytes.starts_with(b"\xD0\xCF\x11\xE0"));
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let listener = OrderedReadListener {
+        name: "encrypted",
+        events: Arc::clone(&events),
+    };
+    let mut reader = EasyExcelFactory::reader_from_input_stream(Cursor::new(bytes))?
+        .password("stream-secret")
+        .head_row_number(0)
+        .build(listener)?;
+    reader.read_all()?;
+    assert_eq!(
+        *events.lock().expect("encrypted stream events lock"),
+        vec!["encrypted:encrypted-stream"]
+    );
+    Ok(())
+}
+
+#[test]
+fn easy_excel_factory_path_and_output_stream_builders_execute_real_writes() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("factory-path.xlsx");
+    EasyExcelFactory::writer_to_path(&path)
+        .sheet_name("Path")
+        .expect("path-backed writer sheet")
+        .need_head(false)
+        .do_write([Value("path".to_owned())])?;
+    assert_eq!(
+        EasyExcel::read_sync::<Value>(&path)
+            .sheet("Path")
+            .head_row_number(0)
+            .do_read_sync()?,
+        vec![Value("path".to_owned())]
+    );
+
+    let output = ExcelOutputStream::new(Cursor::new(Vec::<u8>::new()));
+    let inspect = output.clone();
+    EasyExcelFactory::writer()
+        .auto_close_stream(false)
+        .output_stream(output)
+        .sheet_name("Stream")
+        .need_head(false)
+        .do_write([Value("output-stream".to_owned())])?;
+    let bytes = inspect
+        .with_inner(|cursor| cursor.get_ref().clone())
+        .expect("auto_close_stream(false) keeps output inspectable");
+    assert!(bytes.starts_with(b"PK"));
+
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let listener = OrderedReadListener {
+        name: "output",
+        events: Arc::clone(&observed),
+    };
+    EasyExcelFactory::reader_from_input_stream(Cursor::new(bytes))?
+        .head_row_number(0)
+        .sheet_name("Stream")
+        .build(listener)?
+        .read_all()?;
+    assert_eq!(
+        *observed.lock().expect("factory output events lock"),
+        vec!["output:output-stream"]
+    );
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -88,6 +299,21 @@ struct ToggleFacadeWrite {
     fail: Arc<AtomicBool>,
 }
 
+struct OrderedReadListener {
+    name: &'static str,
+    events: Arc<Mutex<Vec<String>>>,
+}
+
+impl ReadListener<Value> for OrderedReadListener {
+    fn invoke(&mut self, data: Value, _context: &AnalysisContext) -> Result<()> {
+        self.events
+            .lock()
+            .expect("ordered listener lock")
+            .push(format!("{}:{}", self.name, data.0));
+        Ok(())
+    }
+}
+
 impl Write for ToggleFacadeWrite {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         if self.fail.load(Ordering::SeqCst) {
@@ -118,6 +344,52 @@ impl ExcelRow for FallibleValue {
             Ok(vec![CellValue::String(self.value.to_owned())])
         }
     }
+}
+
+#[test]
+fn writer_builder_excel_type_overrides_path_extension() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("values.data");
+
+    EasyExcel::write::<Value>(&path)
+        .excel_type(easyexcel_core::support::ExcelTypeEnum::Csv)
+        .with_bom(false)
+        .do_write(vec![Value("one".to_owned())])?;
+
+    assert_eq!(fs::read_to_string(path)?, "Value\none\n");
+    Ok(())
+}
+
+#[test]
+fn reader_builder_register_read_listener_dispatches_in_registration_order() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path().join("listeners.csv");
+    fs::write(&path, "Value\none\ntwo\n")?;
+    let events = Arc::new(Mutex::new(Vec::new()));
+
+    EasyExcel::read::<Value, _>(
+        &path,
+        OrderedReadListener {
+            name: "first",
+            events: Arc::clone(&events),
+        },
+    )
+    .register_read_listener(OrderedReadListener {
+        name: "second",
+        events: Arc::clone(&events),
+    })
+    .do_read()?;
+
+    assert_eq!(
+        *events.lock().expect("ordered listener lock"),
+        vec![
+            "first:one".to_owned(),
+            "second:one".to_owned(),
+            "first:two".to_owned(),
+            "second:two".to_owned(),
+        ]
+    );
+    Ok(())
 }
 
 fn write_minimal_template(path: &Path, shared_strings: &str, worksheet: &str) -> Result<()> {
@@ -246,8 +518,8 @@ impl Converter<String> for PrefixConverter {
     fn convert_to_excel_data(
         &self,
         context: &WriteConverterContext<'_, String>,
-    ) -> Result<CellValue> {
-        Ok(CellValue::String(format!(
+    ) -> Result<WriteCellData> {
+        Ok(WriteCellData::from_string(format!(
             "{}:{}",
             self.prefix,
             context.value()
@@ -269,8 +541,11 @@ impl Converter<String> for FieldPrefixConverter {
     fn convert_to_excel_data(
         &self,
         context: &WriteConverterContext<'_, String>,
-    ) -> Result<CellValue> {
-        Ok(CellValue::String(format!("field:{}", context.value())))
+    ) -> Result<WriteCellData> {
+        Ok(WriteCellData::from_string(format!(
+            "field:{}",
+            context.value()
+        )))
     }
 }
 
@@ -278,6 +553,32 @@ impl Converter<String> for FieldPrefixConverter {
 struct FieldConverterRow {
     #[excel(name = "Value", index = 0, converter = FieldPrefixConverter)]
     value: String,
+}
+
+#[derive(Default)]
+struct RejectingWriteConverter;
+
+impl Converter<String> for RejectingWriteConverter {
+    fn convert_to_excel_data(
+        &self,
+        context: &WriteConverterContext<'_, String>,
+    ) -> Result<WriteCellData> {
+        if context.value() == "fail" {
+            Err(ExcelError::Format("converter rejected value".to_owned()))
+        } else {
+            Ok(WriteCellData::from_string(context.value().clone()))
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, ExcelRow)]
+struct LocatedWriteFailureRow {
+    #[excel(name = "Forced", index = 2)]
+    forced: String,
+    #[excel(name = "Late", order = 20)]
+    late: String,
+    #[excel(name = "Failing", order = 10, converter = RejectingWriteConverter)]
+    failing: String,
 }
 
 struct WideCell(CellValue);
@@ -732,6 +1033,41 @@ fn facade_reads_and_writes_java_style_dynamic_rows() -> Result<()> {
     EasyExcel::write::<Value>(directory.path().join("typed-field-include.xlsx"))
         .include_column_field_names(["value"])
         .do_write([Value("included".to_owned())])?;
+    Ok(())
+}
+
+#[test]
+fn facade_applies_1904_windowing_to_numeric_date_converters() -> Result<()> {
+    #[derive(Debug, PartialEq, ExcelRow)]
+    struct NumericDates {
+        #[excel(index = 0, use_1904_windowing = true)]
+        date: NaiveDate,
+        #[excel(index = 1, use_1904_windowing = false)]
+        datetime: chrono::NaiveDateTime,
+    }
+
+    let directory = tempdir()?;
+    let path = directory.path().join("numeric-date-1904.xlsx");
+    let source = DynamicRow::new(BTreeMap::from([
+        (0, DynamicValue::ActualData(CellValue::Int(0))),
+        (1, DynamicValue::ActualData(CellValue::Float(1.5))),
+    ]));
+    EasyExcel::write::<DynamicRow>(&path).do_write([source])?;
+
+    let rows = EasyExcel::read_sync::<NumericDates>(&path)
+        .head_row_number(0)
+        .use_1904_windowing(true)
+        .do_read_sync()?;
+    assert_eq!(
+        rows,
+        vec![NumericDates {
+            date: NaiveDate::from_ymd_opt(1904, 1, 1).expect("date"),
+            datetime: NaiveDate::from_ymd_opt(1900, 1, 1)
+                .expect("date")
+                .and_hms_opt(12, 0, 0)
+                .expect("time"),
+        }]
+    );
     Ok(())
 }
 
@@ -1303,11 +1639,13 @@ fn facade_borrowed_xlsx_stream_is_real_and_remains_caller_owned() -> Result<()> 
     // OLE/CFB compound-document signature (D0 CF 11 E0).
     assert!(xls_stream.bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]));
     // Phase 5.3: XLS password is now supported via BIFF8 RC4
-    assert!(EasyExcel::write::<Value>("response.xls")
-        .password("123456")
-        .to_writer(&mut FacadeProbeWrite::default())
-        .do_write([Value("encrypted".to_owned())])
-        .is_ok());
+    assert!(
+        EasyExcel::write::<Value>("response.xls")
+            .password("123456")
+            .to_writer(&mut FacadeProbeWrite::default())
+            .do_write([Value("encrypted".to_owned())])
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -1624,10 +1962,12 @@ fn facade_propagates_read_sync_and_write_failures() {
         .expect("empty BIFF8 write");
     assert!(xls_empty.exists());
     // Phase 5.3: XLS password is now supported via BIFF8 RC4
-    assert!(EasyExcel::write::<Value>(directory.path().join("encrypted.xls"))
-        .password("123456")
-        .do_write(Vec::new())
-        .is_ok());
+    assert!(
+        EasyExcel::write::<Value>(directory.path().join("encrypted.xls"))
+            .password("123456")
+            .do_write(Vec::new())
+            .is_ok()
+    );
 
     let date = NaiveDate::from_ymd_opt(2026, 7, 17).expect("valid date");
     for (index, value) in [
@@ -1719,6 +2059,26 @@ fn registered_converter_runs_in_sync_and_event_read_paths() -> Result<()> {
 
 #[test]
 fn registered_write_converter_uses_latest_registration_and_field_precedence() -> Result<()> {
+    struct OriginalValueProbe(
+        Arc<Mutex<Vec<(Option<CellValue>, Option<&'static str>, CellValue)>>>,
+    );
+
+    impl WriteHandler for OriginalValueProbe {
+        fn after_cell_data_converted(&mut self, context: &WriteCellContext) -> Result<()> {
+            if !context.is_head {
+                self.0
+                    .lock()
+                    .map_err(|_| ExcelError::Format("converter probe poisoned".to_owned()))?
+                    .push((
+                        context.original_value.clone(),
+                        context.original_field_type,
+                        context.value.clone(),
+                    ));
+            }
+            Ok(())
+        }
+    }
+
     let directory = tempdir()?;
     let global_path = directory.path().join("registered-write.xlsx");
     EasyExcel::write::<ConverterRow>(&global_path)
@@ -1731,11 +2091,24 @@ fn registered_write_converter_uses_latest_registration_and_field_precedence() ->
     assert_eq!(global[0].value, "latest:source");
 
     let field_path = directory.path().join("field-precedence.xlsx");
+    let observed = Arc::new(Mutex::new(Vec::new()));
     EasyExcel::write::<FieldConverterRow>(&field_path)
         .register_converter::<String, _>(PrefixConverter::string("global"))
+        .register_write_handler(OriginalValueProbe(Arc::clone(&observed)))
         .do_write([FieldConverterRow {
             value: "source".to_owned(),
         }])?;
+    assert_eq!(
+        observed
+            .lock()
+            .map_err(|_| ExcelError::Format("converter probe poisoned".to_owned()))?
+            .as_slice(),
+        [(
+            Some(CellValue::String("source".to_owned())),
+            Some("String"),
+            CellValue::String("field:source".to_owned()),
+        )]
+    );
     let written = EasyExcel::read_sync::<ConverterRow>(&field_path).do_read_sync()?;
     assert_eq!(written[0].value, "field:source");
 
@@ -1743,6 +2116,78 @@ fn registered_write_converter_uses_latest_registration_and_field_precedence() ->
         .register_converter::<String, _>(PrefixConverter::string("global"))
         .do_read_sync()?;
     assert_eq!(read[0].value, "field:latest:source");
+    Ok(())
+}
+
+#[test]
+fn write_converter_errors_report_physical_sheet_row_column_and_field() -> Result<()> {
+    fn row(failing: &str) -> LocatedWriteFailureRow {
+        LocatedWriteFailureRow {
+            forced: "forced".to_owned(),
+            late: "late".to_owned(),
+            failing: failing.to_owned(),
+        }
+    }
+
+    fn assert_location(error: ExcelError, expected_row: u32) {
+        match error {
+            ExcelError::Data {
+                sheet,
+                row,
+                column,
+                field,
+                value,
+                message,
+            } => {
+                assert_eq!(sheet, "Diagnostics");
+                assert_eq!(row, expected_row);
+                assert_eq!(column, Some(0));
+                assert_eq!(field, "failing");
+                assert!(value.is_empty());
+                assert!(message.contains("converter rejected value"));
+            }
+            other => panic!("expected location-aware conversion error, got {other:?}"),
+        }
+    }
+
+    let directory = tempdir()?;
+    for extension in ["xlsx", "xls", "csv"] {
+        let path = directory
+            .path()
+            .join(format!("located-write-error.{extension}"));
+        let error = EasyExcel::write::<LocatedWriteFailureRow>(&path)
+            .sheet("Diagnostics")
+            .with_bom(false)
+            .do_write([row("ok"), row("fail")])
+            .expect_err("the second data row must fail conversion");
+        assert_location(error, 2);
+    }
+
+    let template = directory.path().join("located-write-template.xlsx");
+    EasyExcel::write::<Value>(&template)
+        .sheet("Diagnostics")
+        .need_head(false)
+        .do_write([Value("existing".to_owned())])?;
+    let template_output = directory.path().join("located-write-template-output.xlsx");
+    let template_error = EasyExcel::write::<LocatedWriteFailureRow>(&template_output)
+        .with_template(&template)
+        .sheet("Diagnostics")
+        .need_head(false)
+        .do_write([row("ok"), row("fail")])
+        .expect_err("template conversion must use the appended physical row");
+    assert_location(template_error, 2);
+
+    for extension in ["xlsx", "xls", "csv"] {
+        EasyExcel::write::<LocatedWriteFailureRow>(
+            directory
+                .path()
+                .join(format!("excluded-converter.{extension}")),
+        )
+        .sheet("Diagnostics")
+        .with_bom(false)
+        .exclude_column_field_names(["failing"])
+        .do_write([row("fail")])?;
+    }
     Ok(())
 }
 
@@ -1951,7 +2396,9 @@ fn with_template_do_write_preserves_styles_and_merges() -> Result<()> {
     let styles_before = zip_entry_text(&template, "xl/styles.xml")?;
     let sheet_before = zip_entry_text(&template, "xl/worksheets/sheet1.xml")?;
     assert!(
-        styles_before.contains("<b") || styles_before.contains("<b/>") || styles_before.contains("<b "),
+        styles_before.contains("<b")
+            || styles_before.contains("<b/>")
+            || styles_before.contains("<b "),
         "template must carry bold style marker: {styles_before}"
     );
     assert!(
@@ -2008,7 +2455,10 @@ fn with_template_new_sheet_keeps_existing_styles_and_merges() -> Result<()> {
 
     let styles_after = zip_entry_text(&output, "xl/styles.xml")?;
     let styled_after = zip_entry_text(&output, "xl/worksheets/sheet1.xml")?;
-    assert_eq!(styles_before, styles_after, "styles.xml must stay untouched");
+    assert_eq!(
+        styles_before, styles_after,
+        "styles.xml must stay untouched"
+    );
     assert_eq!(
         styled_before, styled_after,
         "existing Styled sheet (incl. mergeCells) must stay byte-identical"

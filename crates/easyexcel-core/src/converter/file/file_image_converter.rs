@@ -1,9 +1,16 @@
 //! Mirrors Java `com.alibaba.excel.converters.file.FileImageConverter`.
 //!
-//! The actual conversion logic lives in
-//! `easyexcel-core/src/from_into_impls.rs`. This struct exists
-//! for 1:1 Java package parity.
-
 /// Mirrors Java `FileImageConverter`.
-#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct FileImageConverter;
+
+impl crate::Converter<std::path::PathBuf> for FileImageConverter {
+    fn convert_to_excel_data(
+        &self,
+        context: &crate::WriteConverterContext<'_, std::path::PathBuf>,
+    ) -> Result<crate::WriteCellData, crate::ExcelError> {
+        std::fs::read(context.value())
+            .map(crate::WriteCellData::from_image)
+            .map_err(Into::into)
+    }
+}

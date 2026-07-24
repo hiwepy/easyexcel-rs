@@ -12,7 +12,9 @@ use easyexcel_core::{
     ExcelError, Result, WriteDirection, WriteFillConfig, WriteFillExecutor, WriteFillSheet,
 };
 
-use crate::{ExcelTemplateWriter, FillConfig, FillDirection, FillWrapper, TemplateData, TemplateSheet};
+use crate::{
+    ExcelTemplateWriter, FillConfig, FillDirection, FillWrapper, TemplateData, TemplateSheet,
+};
 
 /// Stateful template fill executor for [`easyexcel_writer::ExcelBuilderImpl`].
 ///
@@ -50,7 +52,10 @@ impl BuilderFillExecutor {
     /// # Errors
     ///
     /// Returns I/O or OOXML package errors when the template cannot be read.
-    pub fn from_template_path(template: impl AsRef<Path>, output: impl Into<PathBuf>) -> Result<Self> {
+    pub fn from_template_path(
+        template: impl AsRef<Path>,
+        output: impl Into<PathBuf>,
+    ) -> Result<Self> {
         Ok(Self {
             inner: ExcelTemplateWriter::new(template, output)?,
         })
@@ -118,7 +123,9 @@ fn to_template_sheet(sheet: &WriteFillSheet) -> TemplateSheet {
 }
 
 fn to_template_fill_config(config: WriteFillConfig) -> FillConfig {
-    let mut fill_config = FillConfig::new().force_new_row(config.force_new_row);
+    let mut fill_config = FillConfig::new()
+        .force_new_row(config.force_new_row)
+        .auto_style(config.auto_style);
     if let Some(direction) = config.direction {
         fill_config = fill_config.direction(match direction {
             WriteDirection::Vertical => FillDirection::Vertical,
@@ -126,4 +133,22 @@ fn to_template_fill_config(config: WriteFillConfig) -> FillConfig {
         });
     }
     fill_config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_fill_config_propagates_direction_force_row_and_auto_style() {
+        let config = to_template_fill_config(WriteFillConfig {
+            force_new_row: true,
+            direction: Some(WriteDirection::Horizontal),
+            auto_style: false,
+        });
+
+        assert_eq!(config.get_direction(), FillDirection::Horizontal);
+        assert!(config.get_force_new_row());
+        assert!(!config.get_auto_style());
+    }
 }

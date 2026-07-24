@@ -4,6 +4,7 @@ use crate::cell_value::CellValue;
 use crate::convert_context::ConvertContext;
 use crate::excel_column::ExcelColumn;
 use crate::formula_data::FormulaData;
+use bigdecimal::BigDecimal;
 
 /// Context supplied to a custom cell-to-Rust converter.
 ///
@@ -14,6 +15,8 @@ use crate::formula_data::FormulaData;
 pub struct ReadConverterContext<'a> {
     cell: Option<&'a CellValue>,
     formula: Option<&'a FormulaData>,
+    display_value: Option<&'a str>,
+    decimal_value: Option<&'a BigDecimal>,
     column: &'a ExcelColumn,
     context: &'a ConvertContext,
 }
@@ -29,6 +32,8 @@ impl<'a> ReadConverterContext<'a> {
         Self {
             cell,
             formula: None,
+            display_value: None,
+            decimal_value: None,
             column,
             context,
         }
@@ -46,6 +51,33 @@ impl<'a> ReadConverterContext<'a> {
         Self {
             cell,
             formula,
+            display_value: None,
+            decimal_value: None,
+            column,
+            context,
+        }
+    }
+
+    /// Creates a context with the full scalar metadata retained by Java `ReadCellData`.
+    ///
+    /// `display_value` mirrors `ReadCellData.stringValue` after POI
+    /// `DataFormatter`; `decimal_value` mirrors the exact
+    /// `ReadCellData.numberValue` parsed from OOXML rather than its `f64`
+    /// transport representation.
+    #[must_use]
+    pub const fn with_cell_metadata(
+        cell: Option<&'a CellValue>,
+        formula: Option<&'a FormulaData>,
+        display_value: Option<&'a str>,
+        decimal_value: Option<&'a BigDecimal>,
+        column: &'a ExcelColumn,
+        context: &'a ConvertContext,
+    ) -> Self {
+        Self {
+            cell,
+            formula,
+            display_value,
+            decimal_value,
             column,
             context,
         }
@@ -61,6 +93,18 @@ impl<'a> ReadConverterContext<'a> {
     #[must_use]
     pub const fn formula(&self) -> Option<&'a FormulaData> {
         self.formula
+    }
+
+    /// Returns the Excel/POI-compatible rendered text when the reader retained it.
+    #[must_use]
+    pub const fn display_value(&self) -> Option<&'a str> {
+        self.display_value
+    }
+
+    /// Returns the exact decimal token retained from the source workbook.
+    #[must_use]
+    pub const fn decimal_value(&self) -> Option<&'a BigDecimal> {
+        self.decimal_value
     }
 
     /// Returns the field's static column metadata. (Java `getContentProperty()`)

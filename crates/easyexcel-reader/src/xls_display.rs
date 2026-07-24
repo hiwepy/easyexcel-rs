@@ -7,14 +7,12 @@
 //! mode can match Java short dates (`yyyy-m-d h:mm`) and related formats.
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
-use cfb::CompoundFile;
 use easyexcel_core::constant::builtin_format_code;
 use ssfmt::Locale;
 
+use crate::analysis::v03::biff_record_stream::read_workbook_stream;
 use crate::xlsx_rows::format_with_code;
 
 /// Per-sheet map of `(row, col) → formatted STRING display`.
@@ -24,7 +22,11 @@ pub(crate) type SheetDisplays = HashMap<(u32, usize), String>;
 ///
 /// Returns one map per worksheet (BoundSheet order). Failures are soft: callers
 /// may fall back to calamine `as_text()` when a sheet map is missing.
-pub(crate) fn load_xls_displays(path: &Path, date_1904: bool, locale: &Locale) -> Vec<SheetDisplays> {
+pub(crate) fn load_xls_displays(
+    path: &Path,
+    date_1904: bool,
+    locale: &Locale,
+) -> Vec<SheetDisplays> {
     match load_xls_displays_inner(path, date_1904, locale) {
         Ok(sheets) => sheets,
         Err(_) => Vec::new(),
@@ -36,14 +38,7 @@ fn load_xls_displays_inner(
     date_1904: bool,
     locale: &Locale,
 ) -> Result<Vec<SheetDisplays>, String> {
-    let file = File::open(path).map_err(|e| e.to_string())?;
-    let mut cfb = CompoundFile::open(file).map_err(|e| e.to_string())?;
-    let mut stream = cfb
-        .open_stream("/Workbook")
-        .or_else(|_| cfb.open_stream("/Book"))
-        .map_err(|e| e.to_string())?;
-    let mut wb = Vec::new();
-    stream.read_to_end(&mut wb).map_err(|e| e.to_string())?;
+    let wb = read_workbook_stream(path).map_err(|error| error.to_string())?;
     Ok(parse_workbook_displays(&wb, date_1904, locale))
 }
 
@@ -127,10 +122,9 @@ fn parse_workbook_displays(wb: &[u8], date_1904: bool, locale: &Locale) -> Vec<S
                 // MulRk: row, firstCol, then repeating (xf, rk) until lastCol
                 let row = u16::from_le_bytes([payload[0], payload[1]]) as u32;
                 let first_col = u16::from_le_bytes([payload[2], payload[3]]) as usize;
-                let last_col = u16::from_le_bytes([
-                    payload[payload.len() - 2],
-                    payload[payload.len() - 1],
-                ]) as usize;
+                let last_col =
+                    u16::from_le_bytes([payload[payload.len() - 2], payload[payload.len() - 1]])
+                        as usize;
                 let mut offset = 4usize;
                 let mut col = first_col;
                 while col <= last_col && offset + 6 <= payload.len().saturating_sub(2) {
@@ -308,19 +302,34 @@ mod tests {
                 "12月",
             ],
             month_names_full: [
-                "一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月",
-                "十一月", "十二月",
+                "一月",
+                "二月",
+                "三月",
+                "四月",
+                "五月",
+                "六月",
+                "七月",
+                "八月",
+                "九月",
+                "十月",
+                "十一月",
+                "十二月",
             ],
             day_names_short: ["日", "一", "二", "三", "四", "五", "六"],
             day_names_full: [
-                "星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六",
+                "星期日",
+                "星期一",
+                "星期二",
+                "星期三",
+                "星期四",
+                "星期五",
+                "星期六",
             ],
         };
         // 2020-01-01 01:01
         let serial = 43831.0 + 1.0 / 24.0 + 1.0 / 1440.0;
         assert_eq!(
-            format_with_code(serial, r#"[DBNum1]上午/下午h"时"mm"分""#, false, &locale)
-                .as_deref(),
+            format_with_code(serial, r#"[DBNum1]上午/下午h"时"mm"分""#, false, &locale).as_deref(),
             Some("上午1时01分")
         );
         assert_eq!(

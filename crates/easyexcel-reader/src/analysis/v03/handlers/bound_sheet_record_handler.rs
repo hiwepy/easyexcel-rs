@@ -42,14 +42,36 @@ impl BoundSheetRecordHandler {
 pub const BOUND_SHEET_SID: u16 = 0x0085;
 
 impl XlsRecordHandler for BoundSheetRecordHandler {
-    /// Java `BoundSheetRecordHandler.processRecord` — reads BOF position; sheet
-    /// name decoding is left to [`Self::process_bound_sheet`].
+    /// Java `BoundSheetRecordHandler.processRecord` — reads BOF position and
+    /// the BIFF8 short-Unicode sheet name.
     fn process_record(&mut self, record_sid: u16, data: &[u8]) {
-        if record_sid != BOUND_SHEET_SID || data.len() < 6 {
+        if record_sid != BOUND_SHEET_SID || data.len() < 8 {
             return;
         }
         let bof_position = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-        self.process_bound_sheet(String::new(), bof_position);
+        let character_count = data[6] as usize;
+        let is_utf16 = data[7] & 0x01 != 0;
+        let raw = &data[8..];
+        let name = if is_utf16 {
+            let byte_count = character_count.saturating_mul(2);
+            if raw.len() < byte_count {
+                return;
+            }
+            let units = raw[..byte_count]
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                .collect::<Vec<_>>();
+            String::from_utf16_lossy(&units)
+        } else {
+            if raw.len() < character_count {
+                return;
+            }
+            raw[..character_count]
+                .iter()
+                .map(|byte| char::from(*byte))
+                .collect()
+        };
+        self.process_bound_sheet(name, bof_position);
     }
 }
 
@@ -65,5 +87,15 @@ mod tests {
         let ordered = handler.ordered_sheets();
         assert_eq!(ordered[0].name, "A");
         assert_eq!(ordered[1].name, "B");
+    }
+
+    #[test]
+    fn decodes_compressed_biff8_sheet_name() {
+        let mut handler = BoundSheetRecordHandler::new();
+        let mut payload = vec![0x20, 0, 0, 0, 0, 0, 4, 0];
+        payload.extend_from_slice(b"Data");
+        handler.process_record(BOUND_SHEET_SID, &payload);
+        assert_eq!(handler.sheets[0].name, "Data");
+        assert_eq!(handler.sheets[0].bof_position, 32);
     }
 }

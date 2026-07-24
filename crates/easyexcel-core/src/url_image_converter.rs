@@ -13,6 +13,7 @@ use crate::convert_context::ConvertContext;
 use crate::converter::Converter;
 use crate::excel_error::ExcelError;
 use crate::into_excel_cell::IntoExcelCell;
+use crate::write_cell_data::WriteCellData;
 use crate::write_converter_context::WriteConverterContext;
 
 /// Java `UrlImageConverter` equivalent with Java's default timeout values.
@@ -79,8 +80,9 @@ impl Converter<Url> for UrlImageConverter {
     fn convert_to_excel_data(
         &self,
         context: &WriteConverterContext<'_, Url>,
-    ) -> Result<CellValue, ExcelError> {
-        self.download(context.value()).map(CellValue::Image)
+    ) -> Result<WriteCellData, ExcelError> {
+        self.download(context.value())
+            .map(WriteCellData::from_image)
     }
 }
 

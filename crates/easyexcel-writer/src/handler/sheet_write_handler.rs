@@ -1,16 +1,8 @@
 //! Mirrors Java `com.alibaba.excel.write.handler.SheetWriteHandler`.
 
-use std::sync::atomic::{AtomicU32, Ordering};
-use easyexcel_core::WriteSheetContext;
-
-static CALLS: AtomicU32 = AtomicU32::new(0);
-pub fn sheet_handler_calls() -> u32 { CALLS.load(Ordering::Relaxed) }
-
-pub trait SheetWriteHandler: easyexcel_core::WriteHandler {
-    fn before_sheet_create(&mut self, _context: &WriteSheetContext) {
-        CALLS.fetch_add(1, Ordering::Relaxed);
-    }
-    fn after_sheet_create(&mut self, _context: &WriteSheetContext) {
-        CALLS.fetch_add(1, Ordering::Relaxed);
-    }
-}
+/// Marks a handler as the Rust counterpart of Java `SheetWriteHandler`.
+///
+/// Implement `before_sheet_create` and `after_sheet_create` on
+/// [`easyexcel_core::WriteHandler`]; those are the hooks invoked by the
+/// writer engine.
+pub trait SheetWriteHandler: easyexcel_core::WriteHandler {}

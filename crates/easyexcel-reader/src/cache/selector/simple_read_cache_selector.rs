@@ -7,7 +7,7 @@
 //! [`Ehcache`](super::super::Ehcache) / disk.
 
 use super::read_cache_selector::ReadCacheSelector;
-use crate::read_cache::{ReadCacheMode, DEFAULT_MAX_MEMORY_SHARED_STRINGS_BYTES};
+use crate::read_cache::{DEFAULT_MAX_MEMORY_SHARED_STRINGS_BYTES, ReadCacheMode};
 
 /// Simple cache selector matching Java's 5 MB map-cache boundary.
 ///
